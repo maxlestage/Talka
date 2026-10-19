@@ -152,9 +152,13 @@ public enum TalkaCrypto {
     public static func safetyNumber(_ a: String, _ b: String) -> String {
         let (x, y) = a < b ? (a, b) : (b, a)
         let h = Array(SHA256.hash(data: Data("talka-safety:\(x):\(y)".utf8)))
-        return (0..<12).map { i in
-            String(format: "%05d", ((Int(h[i * 2]) << 8) | Int(h[i * 2 + 1])) % 100_000)
-        }.joined(separator: " ")
+        var groups: [String] = []
+        for i in 0..<12 {
+            let high = Int(h[i * 2]) << 8
+            let value: Int = (high | Int(h[i * 2 + 1])) % 100_000
+            groups.append(String(format: "%05d", value))
+        }
+        return groups.joined(separator: " ")
     }
 
     nonisolated(unsafe) private static var pairKeys: [String: SymmetricKey] = [:]
