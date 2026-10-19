@@ -88,6 +88,13 @@ def prepare():
     output("team_id", b["attributes"]["seedId"])
     a = app()
     if not a:
+        # Ce que la clé voit : une app créée avec un autre identifiant, par exemple.
+        apps = call("GET", "/apps", query={"limit": 50})["data"]
+        print("Apps visibles par la clé d'API :")
+        for x in apps:
+            print(f"  - {x['attributes']['name']} : {x['attributes']['bundleId']}")
+        if not apps:
+            print("  (aucune)")
         print(
             "\n::error title=Créez l'app dans App Store Connect::"
             f"L'identifiant {BUNDLE_ID} est prêt, mais l'app n'existe pas encore dans App Store Connect. "
