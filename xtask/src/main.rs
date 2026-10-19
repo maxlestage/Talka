@@ -5,6 +5,7 @@
 //! cargo xtask web             # client/ → client/pkg/ (WebAssembly)
 //! cargo xtask pages-enabled   # GitHub Actions : GitHub Pages est-il activé ?
 //! cargo xtask api-url         # GitHub Actions : l'adresse du relais
+//! cargo xtask heroku          # GitHub Actions : le relais sur Heroku
 //! ```
 //!
 //! `web` compile la crate `talka-web` pour `wasm32-unknown-unknown`, puis
@@ -17,7 +18,9 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
-const USAGE: &str = "usage : cargo xtask web | pages-enabled | api-url";
+mod heroku;
+
+const USAGE: &str = "usage : cargo xtask web | pages-enabled | api-url | heroku";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -25,6 +28,7 @@ fn main() -> ExitCode {
         Some("web") => web(),
         Some("pages-enabled") => pages_enabled(),
         Some("api-url") => api_url(),
+        Some("heroku") => heroku::deploy(),
         _ => Err(USAGE.to_owned()),
     };
     match result {
@@ -108,7 +112,10 @@ fn env(name: &str) -> Option<String> {
 fn append(var: &str, line: &str) {
     use std::io::Write;
     if let Some(path) = env(var)
-        && let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(path)
+        && let Ok(mut f) = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
     {
         let _ = writeln!(f, "{line}");
     }
@@ -160,16 +167,13 @@ fn pages_enabled() -> Result<(), String> {
 }
 
 /// L'adresse du relais Talka : `TALKA_API_URL`, sinon l'app Heroku
-/// (`HEROKU_API_KEY` + `HEROKU_APP_NAME`).
+/// (`HEROKU_API_KEY`, et `HEROKU_APP_NAME` ou `talka-<propriétaire>`).
 fn api_url() -> Result<(), String> {
     let mut url = env("TALKA_API_URL").unwrap_or_default();
     if url.is_empty()
-        && let (Some(key), Some(app)) = (env("HEROKU_API_KEY"), env("HEROKU_APP_NAME"))
-        && let Ok((200, info)) = get(
-            &format!("https://api.heroku.com/apps/{app}"),
-            &format!("Bearer {key}"),
-            "application/vnd.heroku+json; version=3",
-        )
+        && env("HEROKU_API_KEY").is_some()
+        && let Some(app) = heroku::app_name()
+        && let Ok((200, info)) = heroku::heroku("GET", &format!("/apps/{app}"), None)
     {
         url = info["web_url"].as_str().unwrap_or_default().to_owned();
     }

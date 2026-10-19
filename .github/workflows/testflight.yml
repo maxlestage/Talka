@@ -23,8 +23,11 @@ jobs:
       run:
         working-directory: ios
     env:
-      # Le serveur Talka intégré à l'application (sinon demandé au lancement).
-      TALKA_SERVER: ${{ vars.TALKA_API_URL }}
+      # Le relais Talka intégré à l'application : TALKA_API_URL, sinon l'app
+      # Heroku (HEROKU_API_KEY). Sans eux, l'app demande l'adresse au lancement.
+      TALKA_API_URL: ${{ vars.TALKA_API_URL }}
+      HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+      HEROKU_APP_NAME: ${{ vars.HEROKU_APP_NAME }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY: ${{ secrets.ASC_KEY }}
@@ -60,6 +63,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/keys"
           printf '%s\n' "$ASC_KEY" | sed 's/\\n/\n/g' > "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+      - name: Adresse du relais
+        id: api
+        if: steps.ready.outputs.ok == 'true'
+        working-directory: .
+        run: cargo xtask api-url
       - name: Archive signée
         if: steps.ready.outputs.ok == 'true'
         env:
@@ -73,7 +81,7 @@ jobs:
             -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
             -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic \
-            CURRENT_PROJECT_VERSION="${{ github.run_number }}" TALKA_SERVER="$TALKA_SERVER" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" TALKA_SERVER="${{ steps.api.outputs.url }}" \
             archive | tail -n 60
       - name: Envoi à App Store Connect (TestFlight)
         if: steps.ready.outputs.ok == 'true'

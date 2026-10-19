@@ -32,7 +32,23 @@ final class AppModel {
 
     init() {
         locked = store.read("kv", "pin", as: PinHash.self) != nil
+        adoptBuiltInServer()
         if Engine.hasAccount(store) { start() }
+    }
+
+    /// Une version qui apporte un (nouveau) serveur intégré le fait adopter :
+    /// l'adresse saisie avant, faute de mieux, est oubliée. Une adresse choisie
+    /// ensuite dans les réglages reste prioritaire.
+    func adoptBuiltInServer() {
+        let builtIn = Self.builtInServer
+        let key = "talka.builtInServer"
+        guard !builtIn.isEmpty, UserDefaults.standard.string(forKey: key) != builtIn else { return }
+        UserDefaults.standard.set(builtIn, forKey: key)
+        if var s = store.read("kv", "settings", as: TalkaKit.Settings.self), !s.server.isEmpty {
+            s.server = ""
+            store.write("kv", "settings", s)
+            store.save()
+        }
     }
 
     // ----- Le serveur -----
