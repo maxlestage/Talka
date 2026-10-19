@@ -4,21 +4,44 @@
 
 use paquets::prelude::*;
 
-use crate::assets;
+use crate::{Site, assets};
 
 const DESCRIPTION: &str = "Talka, la messagerie où un code remplace votre numéro de téléphone : \
 discussions, groupes, appels audio et vidéo, vocaux, statuts. Chiffrée de bout en bout, sans \
 compte et sans base de données : tout reste dans votre navigateur.";
 
-/// Les balises communes : icônes, couleur du thème.
-fn head_tags() -> String {
+/// Ce qui permet de charger le navigateur (Rust compilé en WebAssembly) et
+/// de lui dire où il est : la page (`site` ou `app`), le chemin du site, le
+/// relais, et si c'est l'export statique (GitHub Pages).
+fn head_tags(site: &Site, page: &str) -> String {
+    let manifest = if site.export {
+        format!(
+            r#"<link rel="manifest" href="{}"/>"#,
+            attr(&site.url("/manifest.webmanifest"))
+        )
+    } else {
+        String::new()
+    };
     format!(
-        r##"<link rel="icon" href="/logo.svg" type="image/svg+xml"/><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"/><meta name="apple-mobile-web-app-capable" content="yes"/><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/><meta name="color-scheme" content="light dark"/><meta name="theme-color" content="#008069"/><script type="module" src="{}"></script>"##,
-        assets::url("site.js")
+        r##"<link rel="icon" href="{logo}" type="image/svg+xml"/><link rel="apple-touch-icon" href="{touch}"/>{manifest}<meta name="mobile-web-app-capable" content="yes"/><meta name="apple-mobile-web-app-capable" content="yes"/><meta name="apple-mobile-web-app-title" content="Talka"/><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/><meta name="color-scheme" content="light dark"/><meta name="theme-color" content="#008069"/><meta name="talka-page" content="{page}"/><meta name="talka-base" content="{base}"/><meta name="talka-api" content="{api}"/><meta name="talka-static" content="{export}"/><link rel="preload" href="{wasm}" as="fetch" type="application/wasm" crossorigin=""/><script type="module" src="{js}"></script>"##,
+        logo = attr(&site.url("/logo.svg")),
+        touch = attr(&site.url("/icons/apple-touch-icon.png")),
+        base = attr(&site.base),
+        api = attr(&site.api),
+        export = if site.export { "1" } else { "" },
+        wasm = attr(&site.url(&assets::url(assets::WASM))),
+        js = attr(&site.url(&assets::url(assets::WASM_JS))),
     )
 }
 
-fn site_page(title: &str, description: &str) -> Page {
+/// Une valeur d'attribut HTML.
+fn attr(v: &str) -> String {
+    v.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+}
+
+fn site_page(site: &Site, title: &str, description: &str) -> Page {
     Page::new(title)
         .lang("fr")
         .description(description)
@@ -26,20 +49,20 @@ fn site_page(title: &str, description: &str) -> Page {
             Seo::new()
                 .site_name("Talka")
                 .locale("fr_FR")
-                .image("/icons/icon-512.png"),
+                .image(site.url("/icons/icon-512.png")),
         )
         .plain()
-        .head(head_tags())
-        .stylesheet(assets::url("site.css"))
+        .head(head_tags(site, "site"))
+        .stylesheet(site.url(&assets::url("site.css")))
 }
 
-fn logo() -> Element {
+fn logo(site: &Site) -> Element {
     a().class("brand")
-        .href("/")
+        .href(site.url("/"))
         .attr("aria-label", "Talka, accueil")
         .child(
             img()
-                .attr("src", "/logo.svg")
+                .attr("src", site.url("/logo.svg"))
                 .attr("alt", "")
                 .attr("width", "36")
                 .attr("height", "36"),
@@ -47,32 +70,39 @@ fn logo() -> Element {
         .child(span().text("Talka"))
 }
 
-fn site_header() -> Element {
+fn site_header(site: &Site) -> Element {
     header().class("site-header").child(
         div()
             .class("wrap bar")
-            .child(logo())
+            .child(logo(site))
             .child(
                 nav()
                     .class("links")
                     .attr("aria-label", "Sections")
-                    .child(a().href("/#fonctionnalites").text("Fonctionnalités"))
-                    .child(a().href("/#code").text("Le code"))
-                    .child(a().href("/#securite").text("Sécurité"))
-                    .child(a().href("/#faq").text("FAQ")),
+                    .child(
+                        a().href(site.url("/#fonctionnalites"))
+                            .text("Fonctionnalités"),
+                    )
+                    .child(a().href(site.url("/#code")).text("Le code"))
+                    .child(a().href(site.url("/#securite")).text("Sécurité"))
+                    .child(a().href(site.url("/#faq")).text("FAQ")),
             )
-            .child(a().class("button small").href("/app").text("Ouvrir Talka")),
+            .child(
+                a().class("button small")
+                    .href(site.url("/app/"))
+                    .text("Ouvrir Talka"),
+            ),
     )
 }
 
-fn site_footer() -> Element {
+fn site_footer(site: &Site) -> Element {
     footer()
         .class("site-footer")
         .child(
             div()
                 .class("wrap foot")
                 .child(
-                    div().child(logo()).child(
+                    div().child(logo(site)).child(
                         p().class("muted").text(
                             "La messagerie sans numéro, sans compte et sans base de données.",
                         ),
@@ -81,9 +111,12 @@ fn site_footer() -> Element {
                 .child(
                     nav()
                         .class("foot-links")
-                        .child(a().href("/app").text("L'application"))
-                        .child(a().href("/confidentialite").text("Confidentialité"))
-                        .child(a().href("/#faq").text("Questions"))
+                        .child(a().href(site.url("/app/")).text("L'application"))
+                        .child(
+                            a().href(site.url("/confidentialite/"))
+                                .text("Confidentialité"),
+                        )
+                        .child(a().href(site.url("/#faq")).text("Questions"))
                         .child(
                             a().href("https://github.com/maxlestage/Paquets")
                                 .attr("rel", "noopener")
@@ -178,7 +211,7 @@ fn faq(q: &str, a_: &str) -> Element {
 }
 
 /// La page d'accueil : le site de présentation.
-pub fn home() -> Page {
+pub fn home(site: &Site) -> Page {
     let hero = section()
         .class("hero")
         .child(
@@ -197,7 +230,7 @@ pub fn home() -> Page {
                         .child(
                             div()
                                 .class("cta")
-                                .child(a().class("button").href("/app").text("Ouvrir Talka, c'est gratuit"))
+                                .child(a().class("button").href(site.url("/app/")).text("Ouvrir Talka, c'est gratuit"))
                                 .child(a().class("button ghost").href("#code").text("Comment ça marche ?")),
                         )
                         .child(
@@ -308,7 +341,7 @@ pub fn home() -> Page {
                 .child(
                     div()
                         .class("features three")
-                        .child(feature("🔑", "Des clés à vous", "ECDH P-256 et AES-256-GCM, tirés par WebCrypto sur votre appareil. Chaque conversation a sa propre clé."))
+                        .child(feature("🔑", "Des clés à vous", "ECDH P-256 et AES-256-GCM, calculés sur votre appareil par du code Rust compilé en WebAssembly. Chaque conversation a sa propre clé."))
                         .child(feature("🧾", "Le code est une preuve", "Votre code est l'empreinte SHA-256 de vos clés publiques : le serveur ne peut pas glisser les siennes à la place."))
                         .child(feature("✍️", "Connexion signée", "Pour recevoir vos messages, votre appareil signe un défi du serveur (ECDSA). Sans votre clé, pas de connexion."))
                         .child(feature("🧹", "Rien ne traîne", "Un message attend au plus 30 jours sur le relais s'il n'est pas livré, puis disparaît."))
@@ -330,7 +363,7 @@ pub fn home() -> Page {
                         .child(p().class("lead").text(
                             "Le serveur de Talka est une application Paquets, le framework full-stack en Rust : \
                              Vitesse pour le HTTP et la WebSocket, Securite pour le bouclier, Active pour ces pages \
-                             rendues par le serveur et l'application installable.",
+                             rendues par le serveur. Et l'application elle-même est écrite en Rust, compilée en WebAssembly.",
                         ))
                         .child(a().class("button ghost").href("https://github.com/maxlestage/Paquets").attr("rel", "noopener").text("Découvrir Paquets")),
                 )
@@ -339,7 +372,7 @@ pub fn home() -> Page {
                         .child(li().child(strong().text("⚡ Vitesse")).child(span().text("HTTP, WebSocket du relais")))
                         .child(li().child(strong().text("🛡️ Securite")).child(span().text("WAF, débit, CSP, HTTPS")))
                         .child(li().child(strong().text("🌿 Active")).child(span().text("pages SEO, PWA")))
-                        .child(li().child(strong().text("🧠 Navigateur")).child(span().text("IndexedDB, WebCrypto, WebRTC"))),
+                        .child(li().child(strong().text("🦀 Navigateur")).child(span().text("Rust en WebAssembly, IndexedDB, WebRTC"))),
                 ),
         );
 
@@ -368,14 +401,19 @@ pub fn home() -> Page {
                 p().class("lead")
                     .text("Ouvrez Talka, choisissez un nom, et partagez votre code. C'est tout."),
             )
-            .child(a().class("button big").href("/app").text("Ouvrir Talka")),
+            .child(
+                a().class("button big")
+                    .href(site.url("/app/"))
+                    .text("Ouvrir Talka"),
+            ),
     );
 
     site_page(
+        site,
         "Talka — la messagerie où un code remplace votre numéro",
         DESCRIPTION,
     )
-    .body(site_header())
+    .body(site_header(site))
     .body(
         html::main()
             .child(hero)
@@ -387,11 +425,11 @@ pub fn home() -> Page {
             .child(faq_section)
             .child(cta),
     )
-    .body(site_footer())
+    .body(site_footer(site))
 }
 
 /// La page de confidentialité.
-pub fn privacy() -> Page {
+pub fn privacy(site: &Site) -> Page {
     let item = |title: &str, text: &str| {
         div()
             .class("legal-item")
@@ -399,10 +437,11 @@ pub fn privacy() -> Page {
             .child(p().text(text.to_owned()))
     };
     site_page(
+        site,
         "Confidentialité — Talka",
         "Ce que Talka garde, et surtout ce qu'il ne garde pas.",
     )
-    .body(site_header())
+    .body(site_header(site))
     .body(
         html::main().class("section").child(
             div()
@@ -417,50 +456,54 @@ pub fn privacy() -> Page {
                 .child(item("Cookies et pisteurs", "Aucun. Talka n'utilise ni cookie publicitaire, ni outil de mesure d'audience.")),
         ),
     )
-    .body(site_footer())
+    .body(site_footer(site))
 }
 
-/// La coquille de l'application : le module JavaScript fait le reste.
-pub fn app_shell() -> Page {
+/// La coquille de l'application : le navigateur, en Rust compilé en
+/// WebAssembly, fait le reste.
+pub fn app_shell(site: &Site) -> Page {
     Page::new("Talka")
         .lang("fr")
         .description(DESCRIPTION)
-        .seo(Seo::new().site_name("Talka").noindex(false))
+        .seo(Seo::new().site_name("Talka"))
         .plain()
-        .head(format!(
-            r##"<link rel="icon" href="/logo.svg" type="image/svg+xml"/><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"/><meta name="apple-mobile-web-app-capable" content="yes"/><meta name="apple-mobile-web-app-title" content="Talka"/><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/><meta name="color-scheme" content="light dark"/><meta name="theme-color" content="#008069"/><script type="module" src="{}"></script>"##,
-            assets::url("app/main.js")
-        ))
-        .stylesheet(assets::url("app.css"))
+        .head(head_tags(site, "app"))
+        .stylesheet(site.url(&assets::url("app.css")))
         .body(
             div()
                 .id("root")
                 .class("boot")
                 .child(
                     img()
-                        .attr("src", "/logo.svg")
+                        .attr("src", site.url("/logo.svg"))
                         .attr("alt", "")
                         .attr("width", "72")
                         .attr("height", "72"),
                 )
                 .child(p().text("Talka")),
         )
-        .body(noscript().text("Talka a besoin de JavaScript pour fonctionner."))
+        .body(
+            noscript().text("Talka a besoin de JavaScript (pour charger son module WebAssembly)."),
+        )
 }
 
 /// La page 404.
-pub fn not_found() -> Page {
-    site_page("Page introuvable — Talka", "Cette page n'existe pas.")
+pub fn not_found(site: &Site) -> Page {
+    site_page(site, "Page introuvable — Talka", "Cette page n'existe pas.")
         .seo(Seo::new().noindex(true))
         .status(404)
-        .body(site_header())
+        .body(site_header(site))
         .body(
             html::main().class("section final").child(
                 div()
                     .class("wrap center")
                     .child(h1().text("Cette page s'est perdue 🫥"))
                     .child(p().class("lead").text("Elle n'existe pas, ou plus."))
-                    .child(a().class("button").href("/").text("Retour à l'accueil")),
+                    .child(
+                        a().class("button")
+                            .href(site.url("/"))
+                            .text("Retour à l'accueil"),
+                    ),
             ),
         )
 }

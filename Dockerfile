@@ -1,12 +1,13 @@
-# Talka : un seul binaire, le serveur Paquets, avec le site et l'application
-# rangés dedans.
+# Talka : un seul binaire, le serveur Paquets, avec le site et le navigateur
+# (Rust compilé en WebAssembly) rangés dedans.
 #
 #   docker build -t talka . && docker run --rm -p 8080:8080 talka
 
 FROM rust:1-slim-bookworm AS build
+RUN rustup target add wasm32-unknown-unknown
 WORKDIR /src
 COPY . .
-RUN cargo build --release --bin talka && cp target/release/talka /talka
+RUN cargo xtask web && cargo build --release --bin talka && cp target/release/talka /talka
 
 FROM debian:bookworm-slim
 RUN useradd --system --uid 10001 talka

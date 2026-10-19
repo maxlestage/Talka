@@ -1,0 +1,405 @@
+//! Ce que garde l'appareil (IndexedDB) et ce qui voyage, chiffré, entre
+//! appareils (`Wire`). Tout est (dé)sérialisé avec serde.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Profile {
+    pub name: String,
+    pub about: String,
+    pub avatar: String,
+    pub v: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// `auto`, `light` ou `dark`.
+    pub theme: String,
+    pub read_receipts: bool,
+    pub hide_online: bool,
+    pub notify: bool,
+    pub sound: bool,
+    pub enter_sends: bool,
+    pub wallpaper: String,
+    pub font_size: u32,
+    /// Verrouillage automatique : secondes passées hors de Talka.
+    pub lock_after: u32,
+    /// Sur GitHub Pages sans relais configuré : l'adresse choisie.
+    pub server: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            theme: "auto".into(),
+            read_receipts: true,
+            hide_online: false,
+            notify: false,
+            sound: true,
+            enter_sends: true,
+            wallpaper: "doodle".into(),
+            font_size: 15,
+            lock_after: 0,
+            server: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Contact {
+    pub code: String,
+    /// Le nom que vous lui donnez.
+    pub name: String,
+    /// Le nom qu'il s'est choisi (affiché `~Nom`).
+    pub profile_name: String,
+    pub about: String,
+    pub avatar: String,
+    pub sign: String,
+    pub dh: String,
+    pub blocked: bool,
+    pub saved: bool,
+    pub added_at: f64,
+    pub profile_v: u64,
+    pub sent_profile_v: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Last {
+    pub id: String,
+    pub from: String,
+    pub text: String,
+    pub at: f64,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Chat {
+    /// Le code du contact, ou `g:<id>` pour un groupe.
+    pub id: String,
+    pub group: bool,
+    pub name: String,
+    pub avatar: String,
+    pub members: Vec<String>,
+    pub admins: Vec<String>,
+    pub created_by: String,
+    pub created_at: f64,
+    pub last_at: f64,
+    pub unread: u32,
+    pub marked_unread: bool,
+    pub pinned: bool,
+    pub archived: bool,
+    pub muted: bool,
+    /// Messages éphémères : leur durée de vie en secondes (0 : désactivés).
+    pub timer: u64,
+    pub draft: String,
+    pub wallpaper: String,
+    pub left: bool,
+    pub v: u64,
+    pub last: Option<Last>,
+    pub has_exp: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Reply {
+    pub id: String,
+    pub from: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Message {
+    pub chat: String,
+    pub id: String,
+    /// Le code de l'auteur, ou `system`.
+    pub from: String,
+    pub at: f64,
+    /// `text`, `image`, `voice`, `file`, `contact`, `system`.
+    pub kind: String,
+    pub text: String,
+    /// Une photo, un vocal ou un fichier : une adresse `data:`.
+    pub data: String,
+    pub name: String,
+    pub mime: String,
+    pub size: f64,
+    pub dur: f64,
+    pub w: u32,
+    pub h: u32,
+    /// Une carte de contact : son code.
+    pub code: String,
+    pub reply: Option<Reply>,
+    pub fwd: bool,
+    /// `pending`, `sent`, `failed` (les accusés sont calculés).
+    pub status: String,
+    pub to: Vec<String>,
+    pub sent_to: Vec<String>,
+    pub delivered_to: Vec<String>,
+    pub read_by: Vec<String>,
+    pub reactions: BTreeMap<String, String>,
+    pub edited: bool,
+    pub deleted: bool,
+    pub starred: bool,
+    pub exp: Option<f64>,
+    pub read_by_me: bool,
+}
+
+impl Message {
+    /// `chat|id` : la clé dans IndexedDB.
+    pub fn key(&self) -> String {
+        format!("{}|{}", self.chat, self.id)
+    }
+
+    /// L'état d'un message envoyé : `pending`, `sent`, `delivered`, `read`, `failed`.
+    pub fn tick(&self) -> &'static str {
+        if self.status == "failed" {
+            return "failed";
+        }
+        if self.to.is_empty() {
+            return "sent";
+        }
+        let all = |list: &[String]| self.to.iter().all(|c| list.contains(c));
+        if all(&self.read_by) {
+            "read"
+        } else if all(&self.delivered_to) {
+            "delivered"
+        } else if all(&self.sent_to) {
+            "sent"
+        } else {
+            "pending"
+        }
+    }
+}
+
+/// Une enveloppe qui attend de partir.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutItem {
+    pub id: String,
+    pub to: String,
+    /// Le `Wire`, en JSON : chiffré au moment de partir.
+    pub payload: String,
+    pub chat: String,
+    pub msg_id: String,
+    pub seq: f64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatusItem {
+    pub owner: String,
+    pub id: String,
+    /// `text` ou `image`.
+    pub kind: String,
+    pub text: String,
+    pub bg: String,
+    pub data: String,
+    pub at: f64,
+    pub seen: bool,
+    pub viewers: BTreeMap<String, f64>,
+}
+
+impl StatusItem {
+    pub fn key(&self) -> String {
+        format!("{}|{}", self.owner, self.id)
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallEntry {
+    pub id: String,
+    pub peer: String,
+    pub video: bool,
+    pub incoming: bool,
+    pub at: f64,
+    pub dur: f64,
+    pub missed: bool,
+}
+
+/// Ce qui décrit un groupe, joint à chaque envoi dans ce groupe.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GroupInfo {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<String>,
+    pub admins: Vec<String>,
+    pub avatar: String,
+    pub v: u64,
+}
+
+/// Le contenu d'un message (ce qui est commun à l'envoi et au stockage).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Content {
+    pub kind: String,
+    pub text: String,
+    pub data: String,
+    pub name: String,
+    pub mime: String,
+    pub size: f64,
+    pub dur: f64,
+    pub w: u32,
+    pub h: u32,
+    pub code: String,
+    pub reply: Option<Reply>,
+    pub fwd: bool,
+}
+
+/// Ce qui voyage, chiffré, d'un appareil à l'autre.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "kebab-case")]
+pub enum Body {
+    Msg {
+        id: String,
+        at: f64,
+        /// Le nom choisi par l'auteur (`~Nom` chez qui ne le connaît pas).
+        #[serde(default)]
+        pn: String,
+        #[serde(flatten)]
+        content: Content,
+    },
+    Receipt {
+        /// `delivered` ou `read`.
+        st: String,
+        ids: Vec<String>,
+    },
+    React {
+        id: String,
+        emoji: String,
+    },
+    Edit {
+        id: String,
+        text: String,
+    },
+    Delete {
+        id: String,
+    },
+    Typing {
+        on: bool,
+    },
+    Profile {
+        #[serde(flatten)]
+        profile: Profile,
+    },
+    Group {
+        op: String,
+        #[serde(default)]
+        note: String,
+    },
+    Timer {
+        secs: u64,
+    },
+    Status {
+        id: String,
+        #[serde(rename = "type")]
+        kind: String,
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        bg: String,
+        #[serde(default)]
+        data: String,
+        at: f64,
+    },
+    StatusSeen {
+        id: String,
+    },
+    StatusDelete {
+        id: String,
+    },
+    Call {
+        op: String,
+        call_id: String,
+        #[serde(default)]
+        video: bool,
+        #[serde(default)]
+        sdp: String,
+        #[serde(default)]
+        cand: Option<serde_json::Value>,
+    },
+}
+
+/// Une enveloppe : le contenu, et la discussion à laquelle il appartient.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Wire {
+    #[serde(flatten)]
+    pub body: Body,
+    /// Le groupe (décrit en entier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grp: Option<GroupInfo>,
+    /// Le groupe (seulement son identifiant : accusés).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub g: Option<String>,
+    /// Messages éphémères : la durée de vie, en secondes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u64>,
+}
+
+impl Wire {
+    pub fn new(body: Body) -> Wire {
+        Wire {
+            body,
+            grp: None,
+            g: None,
+            ttl: None,
+        }
+    }
+
+    /// L'identifiant du groupe, s'il y en a un.
+    pub fn group_id(&self) -> Option<String> {
+        self.grp
+            .as_ref()
+            .map(|g| g.id.clone())
+            .or_else(|| self.g.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_roundtrip() {
+        let w = Wire {
+            body: Body::Msg {
+                id: "a".into(),
+                at: 1.0,
+                pn: "Léa".into(),
+                content: Content {
+                    kind: "text".into(),
+                    text: "Salut".into(),
+                    ..Default::default()
+                },
+            },
+            grp: Some(GroupInfo {
+                id: "g1".into(),
+                name: "Amis".into(),
+                ..Default::default()
+            }),
+            g: None,
+            ttl: Some(86400),
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        assert!(json.contains("\"k\":\"msg\""));
+        let back: Wire = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.group_id().as_deref(), Some("g1"));
+        match back.body {
+            Body::Msg { content, pn, .. } => {
+                assert_eq!(content.text, "Salut");
+                assert_eq!(pn, "Léa");
+            }
+            _ => panic!("msg attendu"),
+        }
+        let r: Wire = serde_json::from_str(r#"{"k":"status-seen","id":"x"}"#).unwrap();
+        assert!(matches!(r.body, Body::StatusSeen { .. }));
+    }
+}

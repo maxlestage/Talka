@@ -1,0 +1,97 @@
+# Publie Talka sur GitHub Pages, en HTTPS : https://<propriétaire>.github.io/<dépôt>/
+# (le site et l'application, exportés par le serveur lui-même :
+# `talka export`). L'application y parle au relais Talka déployé ailleurs
+# (Heroku…).
+#
+# L'adresse du relais vient, dans l'ordre :
+#   1. de la variable TALKA_API_URL (Settings → Secrets and variables → Actions) ;
+#   2. sinon de l'app Heroku (secret HEROKU_API_KEY + variable HEROKU_APP_NAME) ;
+#   3. sinon l'application demande l'adresse du serveur au premier lancement.
+#
+# Côté serveur, la variable TALKA_ALLOWED_ORIGINS doit contenir l'adresse de
+# GitHub Pages (https://maxlestage.github.io par défaut).
+#
+# À faire une fois : Settings → Pages → Build and deployment → Source :
+# GitHub Actions. En attendant, le workflow s'arrête avec une explication.
+
+name: Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: GitHub Pages est-il activé ?
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: xtask
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cargo xtask pages-enabled
+
+  build:
+    name: Construction
+    needs: check
+    if: needs.check.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            xtask
+      - name: Le navigateur, en WebAssembly
+        run: cargo xtask web
+      - id: pages
+        uses: actions/configure-pages@v5
+      - name: Adresse du relais
+        id: api
+        env:
+          TALKA_API_URL: ${{ vars.TALKA_API_URL }}
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ vars.HEROKU_APP_NAME }}
+        run: cargo xtask api-url
+      - name: Export statique
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          TALKA_API_URL: ${{ steps.api.outputs.url }}
+        run: cargo run --release -- export dist
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Publication
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

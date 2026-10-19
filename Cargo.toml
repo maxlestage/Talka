@@ -5,6 +5,13 @@ edition = "2024"
 rust-version = "1.88"
 description = "Talka : une messagerie façon WhatsApp, chiffrée de bout en bout, où un code remplace le numéro de téléphone. Aucune base de données : tout est gardé dans le navigateur. Servie par Paquets."
 publish = false
+build = "build.rs"
+
+# Le navigateur (`client/`, Rust compilé en WebAssembly) vit dans le même
+# espace de travail. Les outils (`cargo xtask`) ont le leur.
+[workspace]
+members = ["client"]
+exclude = ["xtask"]
 
 [[bin]]
 name = "talka"
@@ -28,6 +35,8 @@ p256 = { version = "0.13", features = ["ecdsa"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
+# Les tests chiffrent exactement comme le navigateur : avec le même code Rust.
+talka-web = { path = "client" }
 tokio-tungstenite = "0.26"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -35,4 +44,13 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+strip = true
+
+# Le navigateur : `cargo xtask web`.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
 strip = true

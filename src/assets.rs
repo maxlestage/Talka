@@ -1,46 +1,53 @@
-//! Les fichiers du navigateur (`web/`), rangés dans le binaire : un seul
-//! fichier à déployer, qui marche d'où qu'on le lance.
+//! Les fichiers du navigateur, rangés dans le binaire : un seul fichier à
+//! déployer, qui marche d'où qu'on le lance.
+//!
+//! - le navigateur, en Rust compilé en WebAssembly (`client/`, voir
+//!   `cargo xtask web`), et la colle générée par wasm-bindgen pour le charger ;
+//! - les styles, le logo et les icônes (`web/`).
 //!
 //! Ils sont servis sous `/s/<version>/…`, où la version est l'empreinte de
-//! tous les fichiers : une mise à jour change toutes les adresses, et les
-//! modules JavaScript, qui s'importent les uns les autres par des chemins
-//! relatifs, restent ensemble dans la même version. Le navigateur peut donc
-//! les garder un an.
+//! tous les fichiers : une mise à jour change toutes les adresses, et le
+//! module et son binaire restent ensemble dans la même version. Le
+//! navigateur peut donc les garder un an.
 
 use std::sync::OnceLock;
 
 use paquets::vitesse::{Request, Response};
 use sha2::{Digest, Sha256};
 
-macro_rules! files {
-    ($($path:literal),* $(,)?) => {
-        &[$(($path, include_bytes!(concat!("../web/", $path)) as &[u8])),*]
-    };
-}
+/// Le module du navigateur et son binaire.
+pub const WASM_JS: &str = "talka_web.js";
+pub const WASM: &str = "talka_web_bg.wasm";
 
-/// `(chemin, contenu)` de chaque fichier de `web/`.
-pub const FILES: &[(&str, &[u8])] = files![
-    "app.css",
-    "site.css",
-    "logo.svg",
-    "app/main.js",
-    "app/db.js",
-    "app/crypto.js",
-    "app/net.js",
-    "app/core.js",
-    "app/ui.js",
-    "app/conv.js",
-    "app/dom.js",
-    "app/media.js",
-    "app/calls.js",
-    "app/emoji.js",
-    "app/sounds.js",
-    "app/lock.js",
-    "site.js",
-    "icons/icon-192.png",
-    "icons/icon-512.png",
-    "icons/icon-maskable-512.png",
-    "icons/apple-touch-icon.png",
+/// `(chemin, contenu)` de chaque fichier servi.
+pub const FILES: &[(&str, &[u8])] = &[
+    (
+        WASM_JS,
+        include_bytes!(concat!(env!("OUT_DIR"), "/talka_web.js")),
+    ),
+    (
+        WASM,
+        include_bytes!(concat!(env!("OUT_DIR"), "/talka_web_bg.wasm")),
+    ),
+    ("app.css", include_bytes!("../web/app.css")),
+    ("site.css", include_bytes!("../web/site.css")),
+    ("logo.svg", include_bytes!("../web/logo.svg")),
+    (
+        "icons/icon-192.png",
+        include_bytes!("../web/icons/icon-192.png"),
+    ),
+    (
+        "icons/icon-512.png",
+        include_bytes!("../web/icons/icon-512.png"),
+    ),
+    (
+        "icons/icon-maskable-512.png",
+        include_bytes!("../web/icons/icon-maskable-512.png"),
+    ),
+    (
+        "icons/apple-touch-icon.png",
+        include_bytes!("../web/icons/apple-touch-icon.png"),
+    ),
 ];
 
 /// L'empreinte de tous les fichiers : 10 caractères hexadécimaux.
@@ -64,19 +71,25 @@ pub fn url(path: &str) -> String {
     format!("/s/{}/{path}", version())
 }
 
-fn content_type(path: &str) -> &'static str {
+pub fn content_type(path: &str) -> &'static str {
     match path.rsplit('.').next() {
         Some("css") => "text/css; charset=utf-8",
         Some("js") => "text/javascript; charset=utf-8",
+        Some("wasm") => "application/wasm",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         _ => "application/octet-stream",
     }
 }
 
-/// Le contenu d'un fichier de `web/`.
+/// Le contenu d'un fichier.
 pub fn get(path: &str) -> Option<&'static [u8]> {
     FILES.iter().find(|(p, _)| *p == path).map(|(_, b)| *b)
+}
+
+/// Le navigateur a-t-il été compilé (`cargo xtask web`) ?
+pub fn has_client() -> bool {
+    get(WASM).is_some_and(|b| !b.is_empty())
 }
 
 /// `GET /s/:version/*` : une ancienne version reçoit les fichiers actuels.

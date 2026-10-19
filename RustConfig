@@ -1,3 +1,21 @@
-# Lu par le buildpack Heroku emk/rust avant la compilation.
+# Lu par le buildpack Heroku emk/rust (https://github.com/emk/heroku-buildpack-rust)
+# avant la compilation. Le buildpack ne lance qu'un `cargo build --release` ;
+# Talka a besoin d'une étape avant : le navigateur compilé en WebAssembly
+# (client/pkg, rangé dans le binaire). Ce fichier est « sourcé » par le script
+# du buildpack : la fonction `cargo` ci-dessous remplace la commande pour son
+# `cargo build`, compile le navigateur, puis le serveur.
+
 VERSION=stable
 RUST_CARGO_BUILD_FLAGS="--release --bin talka"
+
+cargo() {
+    if [ "${1:-}" != "build" ]; then
+        command cargo "$@"
+        return
+    fi
+    echo "-----> Navigateur (WebAssembly)"
+    rustup target add wasm32-unknown-unknown
+    command cargo xtask web
+    echo "-----> Serveur"
+    command cargo "$@"
+}
