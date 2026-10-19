@@ -12,7 +12,7 @@ struct CallScreen: View {
     var body: some View {
         let engine = call.engine
         ZStack {
-            Color(red: 11 / 255, green: 20 / 255, blue: 26 / 255).ignoresSafeArea()
+            Color(red: 0.0431, green: 0.0784, blue: 0.102).ignoresSafeArea()
             if let remote = call.remoteVideo, call.video {
                 VideoView(track: remote, mirror: false).ignoresSafeArea()
             }

@@ -26,13 +26,13 @@ struct TalkaApp: App {
 }
 
 extension Color {
-    static let talkaGreen = Color(red: 0, green: 168 / 255, blue: 132 / 255)
-    static let talkaDark = Color(red: 0, green: 128 / 255, blue: 105 / 255)
-    static let talkaAccent = Color(red: 37 / 255, green: 211 / 255, blue: 102 / 255)
-    static let tickBlue = Color(red: 83 / 255, green: 189 / 255, blue: 235 / 255)
-    static let bubbleOut = Color(light: .init(red: 217 / 255, green: 253 / 255, blue: 211 / 255), dark: .init(red: 0, green: 92 / 255, blue: 75 / 255))
-    static let bubbleIn = Color(light: .white, dark: .init(red: 32 / 255, green: 44 / 255, blue: 51 / 255))
-    static let chatBackground = Color(light: .init(red: 239 / 255, green: 234 / 255, blue: 226 / 255), dark: .init(red: 11 / 255, green: 20 / 255, blue: 26 / 255))
+    static let talkaGreen = Color(red: 0, green: 0.6588, blue: 0.5176)
+    static let talkaDark = Color(red: 0, green: 0.502, blue: 0.4118)
+    static let talkaAccent = Color(red: 0.1451, green: 0.8275, blue: 0.4)
+    static let tickBlue = Color(red: 0.3255, green: 0.7412, blue: 0.9216)
+    static let bubbleOut = Color(light: .init(red: 0.851, green: 0.9922, blue: 0.8275, alpha: 1), dark: .init(red: 0, green: 0.3608, blue: 0.2941, alpha: 1))
+    static let bubbleIn = Color(light: .white, dark: .init(red: 0.1255, green: 0.1725, blue: 0.2, alpha: 1))
+    static let chatBackground = Color(light: .init(red: 0.9373, green: 0.9176, blue: 0.8863, alpha: 1), dark: .init(red: 0.0431, green: 0.0784, blue: 0.102, alpha: 1))
 
     init(light: UIColor, dark: UIColor) {
         self.init(UIColor { $0.userInterfaceStyle == .dark ? dark : light })
