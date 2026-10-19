@@ -147,7 +147,7 @@ pub fn deploy() -> Result<(), String> {
     let (Some(_), Some(app)) = (env("HEROKU_API_KEY"), app_name()) else {
         warning(
             "Heroku non configuré",
-            "Ajoutez le secret HEROKU_API_KEY et la variable HEROKU_APP_NAME (Settings → Secrets and variables → Actions) pour mettre l'relais Talka en ligne.",
+            "Ajoutez le secret HEROKU_API_KEY (Settings → Secrets and variables → Actions) pour mettre le relais Talka en ligne.",
         );
         append(
             "GITHUB_STEP_SUMMARY",
