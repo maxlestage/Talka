@@ -8,6 +8,8 @@ base de données**. Tout reste dans le navigateur.
 - `/` : le site de présentation
 - `/app` : l'application (installable sur iPhone, Android et ordinateur)
 - `/confidentialite` : ce que Talka garde, et ce qu'il ne garde pas
+- [`ios/`](ios/) : l'application **iPhone et iPad** (Swift, SwiftUI), qui
+  discute avec le navigateur : même code, même chiffrement, mêmes groupes
 
 Servi par [Paquets](https://github.com/maxlestage/Paquets) 📦, comme
 [Alley](https://github.com/maxlestage/Alley), et **100 % Rust** 🦀 : le
@@ -87,6 +89,7 @@ importer sur un autre appareil ou après avoir effacé les données du site.
 | [`src/export.rs`](src/export.rs) | `talka export` : la version statique pour GitHub Pages |
 | [`client/`](client/) | le navigateur, en Rust → WebAssembly : `crypto` (codes, ECDH, AES-GCM, PBKDF2), `store` (IndexedDB), `net` (relais), `core` (logique), `ui` et `conv` (interface), `calls` (WebRTC), `lock`, `media`, `sounds`, `emoji`, `site` |
 | [`xtask/`](xtask/) | `cargo xtask web` : compile `client/` et génère la colle wasm-bindgen (sans outil à installer) |
+| [`ios/`](ios/) | l'application iOS : `TalkaKit` (le même protocole en Swift, recoupé avec le navigateur par des vecteurs de test) et l'interface SwiftUI ; TestFlight depuis GitHub Actions ([`ios/README.md`](ios/README.md)) |
 
 ## Lancer
 
