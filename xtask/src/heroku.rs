@@ -125,6 +125,11 @@ pub fn heroku(method: &str, path: &str, body: Option<Value>) -> Result<(u16, Val
             .header("Authorization", &auth)
             .header("Accept", accept)
             .send_json(body.unwrap_or(json!({}))),
+        "PUT" => agent
+            .put(&url)
+            .header("Authorization", &auth)
+            .header("Accept", accept)
+            .send_json(body.unwrap_or(json!({}))),
         _ => agent
             .post(&url)
             .header("Authorization", &auth)
@@ -270,7 +275,7 @@ pub fn deploy() -> Result<(), String> {
     let url = info["web_url"].as_str().unwrap_or_default();
     append(
         "GITHUB_STEP_SUMMARY",
-        &format!("### 🚀 relais Talka en ligne : [{url}]({url})"),
+        &format!("### 🚀 Relais Talka en ligne : [{url}]({url})"),
     );
     println!("En ligne : {url}");
     // Le site GitHub Pages doit connaître l'adresse du relais : on le republie.
