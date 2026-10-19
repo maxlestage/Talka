@@ -2,13 +2,35 @@
   "name": "Talka",
   "description": "Une messagerie façon WhatsApp où un code remplace le numéro de téléphone. Chiffrée de bout en bout, sans base de données : tout reste dans le navigateur. Servie par Paquets.",
   "repository": "https://github.com/maxlestage/Talka",
-  "keywords": ["chat", "messaging", "e2ee", "rust", "paquets", "webrtc", "pwa"],
+  "keywords": [
+    "chat",
+    "messaging",
+    "e2ee",
+    "rust",
+    "paquets",
+    "webrtc",
+    "pwa"
+  ],
   "stack": "heroku-24",
-  "buildpacks": [{ "url": "emk/rust" }],
-  "formation": { "web": { "quantity": 1, "size": "basic" } },
+  "buildpacks": [
+    {
+      "url": "emk/rust"
+    }
+  ],
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
   "env": {
     "TALKA_ICE_SERVERS": {
       "description": "Facultatif : des serveurs TURN pour les appels sur les réseaux qui bloquent le pair-à-pair (JSON RTCIceServer[]).",
+      "required": false
+    },
+    "TALKA_ALLOWED_ORIGINS": {
+      "description": "Les sites autorisés à utiliser ce relais depuis un autre domaine (la version GitHub Pages), séparés par des virgules.",
+      "value": "https://maxlestage.github.io",
       "required": false
     }
   },

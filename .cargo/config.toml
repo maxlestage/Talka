@@ -1,0 +1,3 @@
+# `cargo xtask web` : compile le navigateur (client/) en WebAssembly.
+[alias]
+xtask = "run --quiet --manifest-path xtask/Cargo.toml --"

@@ -1,0 +1,135 @@
+[package]
+name = "talka-web"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Le navigateur de Talka, en Rust compilé en WebAssembly : codes, chiffrement, IndexedDB, discussions, appels WebRTC, site"
+publish = false
+
+# Une seule crate pour les deux côtés : compilée en WebAssembly, c'est tout le
+# code du navigateur ; compilée normalement, ses modules `code` et `crypto`
+# servent aux tests du serveur (exactement le même chiffrement).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Le QR code de votre code, dessiné dans le navigateur.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+  "AudioBuffer",
+  "AudioContext",
+  "AudioContextState",
+  "AudioDestinationNode",
+  "AudioNode",
+  "AudioParam",
+  "BaseAudioContext",
+  "Blob",
+  "BlobEvent",
+  "BlobPropertyBag",
+  "CanvasRenderingContext2d",
+  "Clipboard",
+  "CloseEvent",
+  "CssStyleDeclaration",
+  "Document",
+  "DomRect",
+  "DomStringMap",
+  "DomTokenList",
+  "Element",
+  "Event",
+  "EventTarget",
+  "File",
+  "FileList",
+  "FileReader",
+  "GainNode",
+  "History",
+  "HtmlAnchorElement",
+  "HtmlAudioElement",
+  "HtmlButtonElement",
+  "HtmlCanvasElement",
+  "HtmlCollection",
+  "HtmlElement",
+  "HtmlImageElement",
+  "HtmlInputElement",
+  "HtmlMediaElement",
+  "HtmlSelectElement",
+  "HtmlTextAreaElement",
+  "HtmlVideoElement",
+  "DomStringList",
+  "IdbCursorDirection",
+  "IdbCursorWithValue",
+  "IdbDatabase",
+  "IdbFactory",
+  "IdbIndex",
+  "IdbIndexParameters",
+  "IdbKeyRange",
+  "IdbObjectStore",
+  "IdbObjectStoreParameters",
+  "IdbOpenDbRequest",
+  "IdbRequest",
+  "IdbTransaction",
+  "IdbTransactionMode",
+  "IdbVersionChangeEvent",
+  "IntersectionObserver",
+  "IntersectionObserverEntry",
+  "IntersectionObserverInit",
+  "KeyboardEvent",
+  "Location",
+  "MediaDevices",
+  "MediaQueryList",
+  "MediaRecorder",
+  "MediaRecorderOptions",
+  "MediaStream",
+  "MediaStreamConstraints",
+  "MediaStreamTrack",
+  "MessageEvent",
+  "MouseEvent",
+  "Navigator",
+  "Node",
+  "NodeList",
+  "Notification",
+  "NotificationOptions",
+  "NotificationPermission",
+  "OscillatorNode",
+  "OscillatorType",
+  "Performance",
+  "PointerEvent",
+  "RequestInit",
+  "RequestCache",
+  "Response",
+  "RtcConfiguration",
+  "RtcIceCandidate",
+  "RtcIceCandidateInit",
+  "RtcPeerConnection",
+  "RtcPeerConnectionIceEvent",
+  "RtcPeerConnectionState",
+  "RtcRtpSender",
+  "RtcSessionDescription",
+  "RtcSdpType",
+  "RtcSessionDescription",
+  "RtcSessionDescriptionInit",
+  "RtcTrackEvent",
+  "ScrollBehavior",
+  "ScrollToOptions",
+  "Storage",
+  "StorageManager",
+  "Url",
+  "VisibilityState",
+  "WebSocket",
+  "Window",
+] }

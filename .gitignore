@@ -1,2 +1,5 @@
 /target
 *.db
+/client/pkg
+/xtask/target
+/dist

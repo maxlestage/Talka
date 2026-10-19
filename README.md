@@ -10,7 +10,10 @@ base de données**. Tout reste dans le navigateur.
 - `/confidentialite` : ce que Talka garde, et ce qu'il ne garde pas
 
 Servi par [Paquets](https://github.com/maxlestage/Paquets) 📦, comme
-[Alley](https://github.com/maxlestage/Alley).
+[Alley](https://github.com/maxlestage/Alley), et **100 % Rust** 🦀 : le
+serveur, et tout le navigateur compilé en WebAssembly ([`client/`](client/)).
+Pas une ligne de JavaScript écrite à la main : le seul JavaScript livré est
+la colle que génère wasm-bindgen pour charger le module.
 
 ## Le système de code
 
@@ -18,8 +21,9 @@ Servi par [Paquets](https://github.com/maxlestage/Paquets) 📦, comme
 une pour signer (ECDSA), une pour chiffrer (ECDH). **Le code Talka est
 l'empreinte de ces deux clés** : 50 bits de `SHA-256(signature ‖ chiffrement)`,
 écrits en 10 caractères sans ambiguïté (`K7Q2M-X9PRT` : ni `0`, `1`, `I` ni
-`O`). Voir [`src/code.rs`](src/code.rs) et [`web/app/crypto.js`](web/app/crypto.js),
-qui font le même calcul (vérifié par un vecteur de test).
+`O`). Voir [`src/code.rs`](src/code.rs) et [`client/src/crypto.rs`](client/src/crypto.rs),
+qui font le même calcul (vérifié par un vecteur de test et par un test qui fait
+signer le navigateur et vérifier le serveur).
 
 Conséquences :
 
@@ -39,7 +43,7 @@ Conséquences :
 
 | Où | Quoi |
 |---|---|
-| **Le navigateur** (IndexedDB, [`web/app/db.js`](web/app/db.js)) | identité et clés, profil, contacts, discussions, messages, photos, vocaux, statuts, historique des appels, réglages |
+| **Le navigateur** (IndexedDB, [`client/src/store.rs`](client/src/store.rs)) | identité et clés, profil, contacts, discussions, messages, photos, vocaux, statuts, historique des appels, réglages |
 | **Le relais** (mémoire vive, [`src/relay.rs`](src/relay.rs)) | les clés publiques des codes connectés, l'heure de dernière connexion, et les messages chiffrés qui attendent un destinataire hors ligne (30 jours au plus, effacés dès que le destinataire confirme les avoir rangés) |
 
 Le relais ne peut lire aucun message. Chaque message est chiffré pour chaque
@@ -75,18 +79,22 @@ importer sur un autre appareil ou après avoir effacé les données du site.
 
 | Fichier | Rôle |
 |---|---|
-| [`src/lib.rs`](src/lib.rs) | l'`App` Paquets : routes, bouclier (Securite), CSP élargie pour la WebSocket et les médias, PWA |
+| [`src/lib.rs`](src/lib.rs) | l'`App` Paquets : routes, bouclier (Securite, CORS pour GitHub Pages), CSP élargie pour le relais et les médias, PWA |
 | [`src/relay.rs`](src/relay.rs) | le relais WebSocket (`/ws`) et son protocole |
 | [`src/code.rs`](src/code.rs) | le code Talka et la vérification des signatures |
 | [`src/site.rs`](src/site.rs) | le site, rendu par le serveur avec Active (SEO, Open Graph) |
-| [`src/assets.rs`](src/assets.rs) | `web/` rangé dans le binaire, servi sous `/s/<empreinte>/` (cache d'un an) |
-| [`web/app/`](web/app) | l'application : `core.js` (logique), `net.js` (relais), `crypto.js`, `db.js`, `ui.js` et `conv.js` (interface), `calls.js` (WebRTC), `lock.js`, `media.js` |
+| [`src/assets.rs`](src/assets.rs) | le navigateur compilé et `web/` (styles, icônes) rangés dans le binaire, servis sous `/s/<empreinte>/` |
+| [`src/export.rs`](src/export.rs) | `talka export` : la version statique pour GitHub Pages |
+| [`client/`](client/) | le navigateur, en Rust → WebAssembly : `crypto` (codes, ECDH, AES-GCM, PBKDF2), `store` (IndexedDB), `net` (relais), `core` (logique), `ui` et `conv` (interface), `calls` (WebRTC), `lock`, `media`, `sounds`, `emoji`, `site` |
+| [`xtask/`](xtask/) | `cargo xtask web` : compile `client/` et génère la colle wasm-bindgen (sans outil à installer) |
 
 ## Lancer
 
 ```sh
+rustup target add wasm32-unknown-unknown
+cargo xtask web      # le navigateur → client/pkg/ (rangé dans le binaire)
 cargo run            # http://localhost:3000
-cargo test           # le code, le relais en vraie WebSocket, les pages
+cargo test --workspace
 ```
 
 Ouvrez `/app` dans deux navigateurs (ou une fenêtre privée), échangez vos
@@ -94,9 +102,23 @@ codes, et discutez.
 
 ## Déployer
 
-- **Heroku** : `app.json`, `Procfile` et `RustConfig` (buildpack `emk/rust`).
-  Une seule instance (`web: 1`) : le relais vit en mémoire.
+- **Heroku** : `app.json`, `Procfile` et `RustConfig` (buildpack `emk/rust`,
+  qui compile d'abord le navigateur en WebAssembly). Une seule instance
+  (`web: 1`) : le relais vit en mémoire.
 - **Docker** : `docker build -t talka . && docker run -p 8080:8080 talka`.
+- **GitHub Pages** ([`.github/workflows/pages.yml`](.github/workflows/pages.yml)) :
+  à chaque fusion dans `master`, le site et l'application sont exportés
+  (`talka export`) sous `https://<propriétaire>.github.io/Talka/`. Il faut un
+  relais Talka en ligne (Heroku…) : son adresse vient de la variable
+  `TALKA_API_URL`, ou de l'app Heroku (`HEROKU_API_KEY` + `HEROKU_APP_NAME`),
+  sinon l'application la demande au premier lancement. Côté serveur,
+  `TALKA_ALLOWED_ORIGINS` (par défaut `https://maxlestage.github.io`) autorise
+  la page à l'utiliser. À faire une fois : *Settings → Pages → Source :
+  GitHub Actions*.
 
-Les appels ont besoin d'HTTPS (caméra et micro) : c'est le cas sur Heroku ; en
-local, `localhost` suffit.
+  ```sh
+  BASE_PATH=/Talka TALKA_API_URL=https://talka.herokuapp.com cargo run -- export dist
+  ```
+
+Les appels ont besoin d'HTTPS (caméra et micro) : c'est le cas sur Heroku et
+GitHub Pages ; en local, `localhost` suffit.

@@ -1,0 +1,1552 @@
+//! Le cœur de Talka : contacts, discussions, messages, groupes, statuts.
+//! Tout est rangé dans IndexedDB (`store`) ; le relais ne voit que des
+//! enveloppes chiffrées (`crypto`, `net`).
+//!
+//! Un message part en autant d'enveloppes que de destinataires (une seule
+//! dans une discussion à deux) : chacune est chiffrée pour son destinataire,
+//! au moment de partir. En attendant, elle est gardée dans `outbox` : un
+//! message écrit hors ligne part tout seul au retour du réseau.
+
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
+
+use serde_json::Value;
+
+use crate::crypto::{self, Identity};
+use crate::dom::{self, now, spawn};
+use crate::model::*;
+use crate::net::{self, Ack, State};
+use crate::store;
+
+pub const DAY: f64 = 86_400_000.0;
+
+/// Ce qui change, pour l'interface (des valeurs de passage : la taille des
+/// variantes importe peu).
+#[allow(clippy::large_enum_variant)]
+pub enum Ev {
+    Chats,
+    Contacts(String),
+    Messages(String),
+    Presence(String),
+    Typing(String),
+    Net,
+    Statuses,
+    Calls,
+    Profile,
+    Settings,
+    Incoming {
+        chat: Chat,
+        message: Message,
+        active: bool,
+    },
+    Reaction {
+        chat: Chat,
+        from: String,
+        emoji: String,
+    },
+    CallSignal {
+        from: String,
+        body: Body,
+        live: bool,
+    },
+}
+
+fn emit(e: Ev) {
+    crate::ui::event(e);
+}
+
+#[derive(Default)]
+struct St {
+    me: Option<Identity>,
+    profile: Profile,
+    settings: Settings,
+    contacts: HashMap<String, Contact>,
+    chats: HashMap<String, Chat>,
+    presence: HashMap<String, (bool, Option<f64>)>,
+    typing: HashMap<String, HashMap<String, i32>>,
+    active: Option<String>,
+}
+
+thread_local! {
+    static ST: RefCell<St> = RefCell::new(St::default());
+    static FLUSHING: Cell<bool> = const { Cell::new(false) };
+    static FLUSH_AGAIN: Cell<bool> = const { Cell::new(false) };
+    static SEQ: Cell<u32> = const { Cell::new(0) };
+    static TYPING_SENT: Cell<f64> = const { Cell::new(0.0) };
+    static RECEIPTS: RefCell<HashMap<(String, String, String), HashSet<String>>> = RefCell::new(HashMap::new());
+    static RECEIPT_TIMER: Cell<i32> = const { Cell::new(0) };
+}
+
+fn with<T>(f: impl FnOnce(&mut St) -> T) -> T {
+    ST.with(|s| f(&mut s.borrow_mut()))
+}
+
+// ----- Lecture de l'état -------------------------------------------------------
+
+pub fn me() -> Identity {
+    with(|s| s.me.clone()).expect("identité")
+}
+
+pub fn my_code() -> String {
+    with(|s| s.me.as_ref().map(|m| m.code.clone()).unwrap_or_default())
+}
+
+pub fn profile() -> Profile {
+    with(|s| s.profile.clone())
+}
+
+pub fn settings() -> Settings {
+    with(|s| s.settings.clone())
+}
+
+pub fn contact(code: &str) -> Option<Contact> {
+    with(|s| s.contacts.get(code).cloned())
+}
+
+pub fn contacts() -> Vec<Contact> {
+    with(|s| s.contacts.values().cloned().collect())
+}
+
+pub fn chat(id: &str) -> Option<Chat> {
+    with(|s| s.chats.get(id).cloned())
+}
+
+pub fn chats() -> Vec<Chat> {
+    with(|s| s.chats.values().cloned().collect())
+}
+
+pub fn presence(code: &str) -> Option<(bool, Option<f64>)> {
+    with(|s| s.presence.get(code).copied())
+}
+
+pub fn typing_in(chat: &str) -> Vec<String> {
+    with(|s| {
+        s.typing
+            .get(chat)
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    })
+}
+
+pub fn active_chat() -> Option<String> {
+    with(|s| s.active.clone())
+}
+
+pub fn set_active(chat: Option<String>) {
+    with(|s| s.active = chat);
+}
+
+pub fn is_group(id: &str) -> bool {
+    id.starts_with("g:")
+}
+
+pub fn blocked(code: &str) -> bool {
+    contact(code).is_some_and(|c| c.blocked)
+}
+
+pub fn display_name(code: &str) -> String {
+    if code == my_code() {
+        return "Vous".into();
+    }
+    match contact(code) {
+        Some(c) if !c.name.is_empty() => c.name,
+        Some(c) if !c.profile_name.is_empty() => format!("~{}", c.profile_name),
+        _ => crypto::pretty(code),
+    }
+}
+
+pub fn avatar_of(code: &str) -> String {
+    if code == my_code() {
+        return profile().avatar;
+    }
+    contact(code).map(|c| c.avatar).unwrap_or_default()
+}
+
+pub fn chat_title(chat: &Chat) -> String {
+    if chat.group {
+        if chat.name.is_empty() {
+            "Groupe".into()
+        } else {
+            chat.name.clone()
+        }
+    } else {
+        display_name(&chat.id)
+    }
+}
+
+pub fn recipients_of(chat: &Chat) -> Vec<String> {
+    if chat.group {
+        let me = my_code();
+        chat.members.iter().filter(|c| **c != me).cloned().collect()
+    } else {
+        vec![chat.id.clone()]
+    }
+}
+
+// ----- Démarrage ---------------------------------------------------------------
+
+pub async fn has_account() -> bool {
+    store::read::<Identity>("kv", "identity")
+        .await
+        .is_some_and(|i| i.is_valid())
+}
+
+pub async fn create_account(name: &str, avatar: String) {
+    let identity = Identity::create(now());
+    store::write("kv", "identity", &identity).await;
+    let profile = Profile {
+        name: name.trim().chars().take(40).collect(),
+        about: "Disponible sur Talka".into(),
+        avatar,
+        v: 1,
+    };
+    store::write("kv", "profile", &profile).await;
+    store::persist().await;
+}
+
+pub async fn start() {
+    let identity: Identity = store::read("kv", "identity").await.expect("identité");
+    let profile: Profile = store::read("kv", "profile").await.unwrap_or_default();
+    let settings: Settings = store::read("kv", "settings").await.unwrap_or_default();
+    let contacts: Vec<Contact> = store::all("contacts").await;
+    let chats: Vec<Chat> = store::all("chats").await;
+    let hidden = settings.hide_online;
+    with(|s| {
+        s.me = Some(identity.clone());
+        s.profile = profile;
+        s.settings = settings;
+        s.contacts = contacts.into_iter().map(|c| (c.code.clone(), c)).collect();
+        s.chats = chats.into_iter().map(|c| (c.id.clone(), c)).collect();
+    });
+    net::start(identity, hidden);
+    sweep().await;
+    dom::interval(60_000, || spawn(sweep()));
+}
+
+/// Le relais annonce un changement d'état.
+pub fn on_net(state: State) {
+    emit(Ev::Net);
+    if state == State::Online {
+        watch_contacts();
+        spawn(flush());
+        spawn(refresh_missing_keys());
+    }
+}
+
+fn watch_contacts() {
+    let mut codes: HashSet<String> = with(|s| s.contacts.keys().cloned().collect());
+    for c in chats() {
+        if c.group {
+            codes.extend(c.members.iter().cloned());
+        } else {
+            codes.insert(c.id.clone());
+        }
+    }
+    codes.remove(&my_code());
+    net::watch(&codes.into_iter().collect::<Vec<_>>());
+}
+
+pub fn on_presence(msg: &Value) {
+    let code = msg["code"].as_str().unwrap_or("").to_owned();
+    let online = msg["online"].as_bool().unwrap_or(false);
+    let seen = msg["seen"].as_f64();
+    with(|s| s.presence.insert(code.clone(), (online, seen)));
+    emit(Ev::Presence(code));
+}
+
+/// Les messages éphémères échus et les statuts de plus de 24 heures.
+async fn sweep() {
+    let t = now();
+    for chat in chats() {
+        if chat.timer == 0 && !chat.has_exp {
+            continue;
+        }
+        let mut changed = false;
+        for m in store::messages_of(&chat.id, usize::MAX).await {
+            if m.exp.is_some_and(|e| e < t) {
+                store::remove("messages", &m.key()).await;
+                changed = true;
+            }
+        }
+        if changed {
+            refresh_last(&chat.id).await;
+            emit(Ev::Messages(chat.id.clone()));
+        }
+    }
+    for s in store::all::<StatusItem>("statuses").await {
+        if s.at + DAY < t {
+            store::remove("statuses", &s.key()).await;
+        }
+    }
+    emit(Ev::Statuses);
+}
+
+pub async fn save_settings(f: impl FnOnce(&mut Settings)) {
+    let before = settings();
+    let next = with(|s| {
+        f(&mut s.settings);
+        s.settings.clone()
+    });
+    store::write("kv", "settings", &next).await;
+    if before.hide_online != next.hide_online {
+        net::set_hidden(next.hide_online);
+    }
+    emit(Ev::Settings);
+}
+
+pub async fn save_profile(f: impl FnOnce(&mut Profile)) {
+    let p = with(|s| {
+        f(&mut s.profile);
+        s.profile.v += 1;
+        s.profile.clone()
+    });
+    store::write("kv", "profile", &p).await;
+    emit(Ev::Profile);
+    for c in contacts() {
+        if c.saved && !c.blocked {
+            enqueue(&c.code, Wire::new(profile_body()), None, None, false).await;
+        }
+    }
+    spawn(flush());
+}
+
+fn profile_body() -> Body {
+    Body::Profile { profile: profile() }
+}
+
+// ----- Contacts --------------------------------------------------------------
+
+// La mémoire d'abord, IndexedDB ensuite : une lecture faite pendant
+// l'écriture voit déjà la nouvelle valeur.
+async fn save_contact(c: Contact) {
+    let code = c.code.clone();
+    with(|s| s.contacts.insert(code.clone(), c.clone()));
+    store::write("contacts", &code, &c).await;
+    emit(Ev::Contacts(code));
+}
+
+/// Les clés d'un code, vérifiées : le code doit être leur empreinte.
+async fn keys_for(code: &str) -> Option<Contact> {
+    if let Some(c) = contact(code).filter(|c| !c.sign.is_empty() && !c.dh.is_empty()) {
+        return Some(c);
+    }
+    let found = net::lookup(code).await?;
+    let (sign, dh) = (
+        found["sign"].as_str()?.to_owned(),
+        found["dh"].as_str()?.to_owned(),
+    );
+    if !crypto::verify_keys(code, &sign, &dh) {
+        return None;
+    }
+    // Relu après l'attente : un nom donné entre-temps n'est pas écrasé.
+    let mut c = contact(code).unwrap_or_else(|| Contact {
+        code: code.to_owned(),
+        added_at: now(),
+        ..Default::default()
+    });
+    c.sign = sign;
+    c.dh = dh;
+    save_contact(c.clone()).await;
+    Some(c)
+}
+
+async fn refresh_missing_keys() {
+    for c in contacts() {
+        if c.sign.is_empty() && keys_for(&c.code).await.is_some() {
+            spawn(flush());
+        }
+    }
+}
+
+/// Ajoute un contact par son code ; `true` s'il est joignable tout de suite.
+pub async fn add_contact(code: &str, name: &str) -> Result<bool, String> {
+    if code == my_code() {
+        return Err("C'est votre propre code 🙂".into());
+    }
+    let mut c = contact(code).unwrap_or_else(|| Contact {
+        code: code.to_owned(),
+        added_at: now(),
+        ..Default::default()
+    });
+    c.saved = true;
+    let name: String = name.trim().chars().take(40).collect();
+    if !name.is_empty() {
+        c.name = name;
+    }
+    save_contact(c).await;
+    net::watch(&[code.to_owned()]);
+    let reachable = keys_for(code).await.is_some();
+    enqueue(code, Wire::new(profile_body()), None, None, false).await;
+    spawn(flush());
+    Ok(reachable)
+}
+
+pub async fn update_contact(code: &str, f: impl FnOnce(&mut Contact)) {
+    if let Some(mut c) = contact(code) {
+        f(&mut c);
+        save_contact(c).await;
+        emit(Ev::Chats);
+    }
+}
+
+pub async fn set_blocked(code: &str, blocked: bool) {
+    let mut c = contact(code).unwrap_or_else(|| Contact {
+        code: code.to_owned(),
+        added_at: now(),
+        ..Default::default()
+    });
+    c.blocked = blocked;
+    save_contact(c).await;
+    emit(Ev::Chats);
+}
+
+// ----- Discussions -----------------------------------------------------------
+
+async fn save_chat(chat: Chat) {
+    with(|s| s.chats.insert(chat.id.clone(), chat.clone()));
+    store::write("chats", &chat.id, &chat).await;
+    emit(Ev::Chats);
+}
+
+pub async fn ensure_direct_chat(code: &str) -> Chat {
+    if let Some(c) = chat(code) {
+        return c;
+    }
+    let c = Chat {
+        id: code.to_owned(),
+        created_at: now(),
+        last_at: now(),
+        ..Default::default()
+    };
+    save_chat(c.clone()).await;
+    net::watch(&[code.to_owned()]);
+    c
+}
+
+pub async fn update_chat(id: &str, f: impl FnOnce(&mut Chat)) {
+    if let Some(mut c) = chat(id) {
+        f(&mut c);
+        save_chat(c).await;
+    }
+}
+
+pub async fn delete_chat(id: &str) {
+    store::delete_messages_of(id).await;
+    store::remove("chats", id).await;
+    with(|s| s.chats.remove(id));
+    emit(Ev::Chats);
+}
+
+pub async fn clear_chat(id: &str) {
+    store::delete_messages_of(id).await;
+    update_chat(id, |c| {
+        c.last = None;
+        c.unread = 0;
+    })
+    .await;
+    emit(Ev::Messages(id.to_owned()));
+}
+
+pub fn preview(m: &Message) -> String {
+    if m.deleted {
+        return "🚫 Message supprimé".into();
+    }
+    match m.kind.as_str() {
+        "image" => format!("📷 {}", if m.text.is_empty() { "Photo" } else { &m.text }),
+        "voice" => format!("🎙️ Message vocal ({})", dom::fmt_dur(m.dur)),
+        "file" => format!(
+            "📄 {}",
+            if m.name.is_empty() {
+                "Fichier"
+            } else {
+                &m.name
+            }
+        ),
+        "contact" => format!(
+            "👤 {}",
+            if m.name.is_empty() {
+                "Contact"
+            } else {
+                &m.name
+            }
+        ),
+        _ => m.text.clone(),
+    }
+}
+
+fn last_of(m: &Message) -> Last {
+    Last {
+        id: m.id.clone(),
+        from: m.from.clone(),
+        text: preview(m),
+        at: m.at,
+        kind: m.kind.clone(),
+    }
+}
+
+async fn refresh_last(chat_id: &str) {
+    let last = store::messages_of(chat_id, 1).await.pop();
+    update_chat(chat_id, |c| c.last = last.as_ref().map(last_of)).await;
+}
+
+async fn store_message(m: &Message, bump: bool) {
+    store::write_message(m).await;
+    if bump && let Some(mut c) = chat(&m.chat) {
+        c.last = Some(last_of(m));
+        c.last_at = c.last_at.max(m.at);
+        if c.archived && m.from != my_code() && !c.muted {
+            c.archived = false;
+        }
+        if m.exp.is_some() {
+            c.has_exp = true;
+        }
+        save_chat(c).await;
+    }
+    emit(Ev::Messages(m.chat.clone()));
+}
+
+async fn get_message(chat_id: &str, id: &str) -> Option<Message> {
+    store::read("messages", &format!("{chat_id}|{id}")).await
+}
+
+pub async fn messages(chat_id: &str, limit: usize) -> Vec<Message> {
+    store::messages_of(chat_id, limit).await
+}
+
+// ----- Envoi ----------------------------------------------------------------
+
+/// Une enveloppe à envoyer à `to` : gardée jusqu'à ce que le relais confirme.
+/// `live` : seulement si le destinataire est en ligne, sans garde.
+async fn enqueue(to: &str, wire: Wire, chat: Option<&str>, msg_id: Option<&str>, live: bool) {
+    let Ok(payload) = serde_json::to_string(&wire) else {
+        return;
+    };
+    let seq = SEQ.with(|s| {
+        s.set(s.get().wrapping_add(1));
+        s.get()
+    });
+    let item = OutItem {
+        id: format!(
+            "{}:{to}",
+            msg_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| crypto::random_id(10))
+        ),
+        to: to.to_owned(),
+        payload,
+        chat: chat.unwrap_or_default().to_owned(),
+        msg_id: msg_id.unwrap_or_default().to_owned(),
+        seq: now() * 1000.0 + (seq % 1000) as f64,
+    };
+    if live {
+        let _ = send_now(&item, true).await;
+        return;
+    }
+    store::write("outbox", &item.id, &item).await;
+    spawn(flush());
+}
+
+async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
+    let peer = keys_for(&item.to).await.ok_or("unknown")?;
+    let body = crypto::seal(&me(), &peer.code, &peer.dh, &item.payload).ok_or("crypto")?;
+    match net::send(&item.id, &item.to, &body, live).await {
+        Ack::Ok => Ok(()),
+        Ack::Err(e) => Err(e),
+    }
+}
+
+/// Envoie ce qui attend dans la boîte d'envoi.
+pub async fn flush() {
+    if net::state() != State::Online {
+        return;
+    }
+    if FLUSHING.with(|f| f.replace(true)) {
+        FLUSH_AGAIN.with(|f| f.set(true));
+        return;
+    }
+    loop {
+        FLUSH_AGAIN.with(|f| f.set(false));
+        let mut items: Vec<OutItem> = store::all("outbox").await;
+        items.sort_by(|a, b| a.seq.total_cmp(&b.seq));
+        let mut stop = false;
+        for item in items {
+            if net::state() != State::Online {
+                stop = true;
+                break;
+            }
+            match send_now(&item, false).await {
+                Ok(()) => {
+                    store::remove("outbox", &item.id).await;
+                    if !item.msg_id.is_empty() {
+                        mark_sent(&item.chat, &item.msg_id, &item.to).await;
+                    }
+                }
+                Err(e) if e == "size" || e == "code" => {
+                    store::remove("outbox", &item.id).await;
+                    if !item.msg_id.is_empty() {
+                        mark_failed(&item.chat, &item.msg_id).await;
+                    }
+                }
+                // Sans réseau : on reprendra. « unknown » : le destinataire
+                // n'a pas rouvert Talka depuis le redémarrage du relais.
+                Err(e) if e == "offline" || e == "timeout" => {
+                    stop = true;
+                    break;
+                }
+                Err(_) => {}
+            }
+        }
+        if stop || !FLUSH_AGAIN.with(Cell::get) {
+            break;
+        }
+    }
+    FLUSHING.with(|f| f.set(false));
+}
+
+async fn mark_sent(chat_id: &str, msg_id: &str, to: &str) {
+    if let Some(mut m) = get_message(chat_id, msg_id).await {
+        if !m.sent_to.iter().any(|c| c == to) {
+            m.sent_to.push(to.to_owned());
+        }
+        if m.tick() != "pending" && m.status == "pending" {
+            m.status = "sent".into();
+        }
+        store::write_message(&m).await;
+        emit(Ev::Messages(chat_id.to_owned()));
+    }
+}
+
+async fn mark_failed(chat_id: &str, msg_id: &str) {
+    if let Some(mut m) = get_message(chat_id, msg_id).await {
+        m.status = "failed".into();
+        store::write_message(&m).await;
+        emit(Ev::Messages(chat_id.to_owned()));
+    }
+}
+
+fn group_info(chat: &Chat) -> GroupInfo {
+    GroupInfo {
+        id: chat.id.trim_start_matches("g:").to_owned(),
+        name: chat.name.clone(),
+        members: chat.members.clone(),
+        admins: chat.admins.clone(),
+        avatar: chat.avatar.clone(),
+        v: chat.v.max(1),
+    }
+}
+
+/// Ce qui accompagne chaque envoi dans une discussion : le groupe, la durée
+/// de vie des messages éphémères.
+fn envelope(chat: &Chat, body: Body) -> Wire {
+    let mut w = Wire::new(body);
+    if chat.group {
+        w.grp = Some(group_info(chat));
+    }
+    if chat.timer > 0 {
+        w.ttl = Some(chat.timer);
+    }
+    w
+}
+
+/// Envoie un message dans une discussion.
+pub async fn send_message(chat_id: &str, content: Content) -> Option<Message> {
+    let c = chat(chat_id)?;
+    let id = crypto::random_id(12);
+    let at = net::server_now();
+    let to: Vec<String> = recipients_of(&c)
+        .into_iter()
+        .filter(|x| !blocked(x))
+        .collect();
+    let mut m = Message {
+        chat: chat_id.to_owned(),
+        id: id.clone(),
+        from: my_code(),
+        at,
+        status: if to.is_empty() {
+            "sent".into()
+        } else {
+            "pending".into()
+        },
+        to: to.clone(),
+        kind: content.kind.clone(),
+        text: content.text.clone(),
+        data: content.data.clone(),
+        name: content.name.clone(),
+        mime: content.mime.clone(),
+        size: content.size,
+        dur: content.dur,
+        w: content.w,
+        h: content.h,
+        code: content.code.clone(),
+        reply: content.reply.clone(),
+        fwd: content.fwd,
+        ..Default::default()
+    };
+    if c.timer > 0 {
+        m.exp = Some(at + c.timer as f64 * 1000.0);
+    }
+    store_message(&m, true).await;
+    // Le nom choisi voyage avec le message : un membre de groupe qui ne vous
+    // connaît pas voit « ~Alice » plutôt qu'un code.
+    let wire = envelope(
+        &c,
+        Body::Msg {
+            id: id.clone(),
+            at,
+            pn: profile().name,
+            content,
+        },
+    );
+    for code in &to {
+        enqueue(code, wire.clone(), Some(chat_id), Some(&id), false).await;
+    }
+    if chat(chat_id).is_some_and(|c| !c.draft.is_empty()) {
+        update_chat(chat_id, |c| c.draft.clear()).await;
+    }
+    Some(m)
+}
+
+/// Une action sur la discussion (réaction, modification…), pour tous ses membres.
+async fn broadcast(c: &Chat, body: Body, live: bool) {
+    let wire = envelope(c, body);
+    for code in recipients_of(c) {
+        if !blocked(&code) {
+            enqueue(&code, wire.clone(), None, None, live).await;
+        }
+    }
+}
+
+pub async fn react(chat_id: &str, msg_id: &str, emoji: &str) {
+    let (Some(c), Some(mut m)) = (chat(chat_id), get_message(chat_id, msg_id).await) else {
+        return;
+    };
+    let me = my_code();
+    let emoji = if m.reactions.get(&me).map(String::as_str) == Some(emoji) {
+        ""
+    } else {
+        emoji
+    };
+    if emoji.is_empty() {
+        m.reactions.remove(&me);
+    } else {
+        m.reactions.insert(me, emoji.to_owned());
+    }
+    store::write_message(&m).await;
+    emit(Ev::Messages(chat_id.to_owned()));
+    broadcast(
+        &c,
+        Body::React {
+            id: msg_id.to_owned(),
+            emoji: emoji.to_owned(),
+        },
+        false,
+    )
+    .await;
+}
+
+pub async fn edit_message(chat_id: &str, msg_id: &str, text: &str) {
+    let (Some(c), Some(mut m)) = (chat(chat_id), get_message(chat_id, msg_id).await) else {
+        return;
+    };
+    if m.from != my_code() {
+        return;
+    }
+    m.text = text.to_owned();
+    m.edited = true;
+    store::write_message(&m).await;
+    refresh_last(chat_id).await;
+    emit(Ev::Messages(chat_id.to_owned()));
+    broadcast(
+        &c,
+        Body::Edit {
+            id: msg_id.to_owned(),
+            text: text.to_owned(),
+        },
+        false,
+    )
+    .await;
+}
+
+pub async fn delete_message(chat_id: &str, msg_id: &str, for_everyone: bool) {
+    let (Some(c), Some(mut m)) = (chat(chat_id), get_message(chat_id, msg_id).await) else {
+        return;
+    };
+    if for_everyone && m.from == my_code() {
+        m.deleted = true;
+        m.text.clear();
+        m.data.clear();
+        m.reactions.clear();
+        store::write_message(&m).await;
+        broadcast(
+            &c,
+            Body::Delete {
+                id: msg_id.to_owned(),
+            },
+            false,
+        )
+        .await;
+    } else {
+        store::remove("messages", &m.key()).await;
+    }
+    refresh_last(chat_id).await;
+    emit(Ev::Messages(chat_id.to_owned()));
+}
+
+pub async fn toggle_star(chat_id: &str, msg_id: &str) {
+    if let Some(mut m) = get_message(chat_id, msg_id).await {
+        m.starred = !m.starred;
+        store::write_message(&m).await;
+        emit(Ev::Messages(chat_id.to_owned()));
+    }
+}
+
+pub async fn starred() -> Vec<Message> {
+    let mut list: Vec<Message> = store::all::<Message>("messages")
+        .await
+        .into_iter()
+        .filter(|m| m.starred)
+        .collect();
+    list.sort_by(|a, b| b.at.total_cmp(&a.at));
+    list
+}
+
+pub async fn forward(m: &Message, chat_ids: &[String]) {
+    let content = Content {
+        kind: m.kind.clone(),
+        text: m.text.clone(),
+        data: m.data.clone(),
+        name: m.name.clone(),
+        mime: m.mime.clone(),
+        size: m.size,
+        dur: m.dur,
+        w: m.w,
+        h: m.h,
+        code: m.code.clone(),
+        reply: None,
+        fwd: true,
+    };
+    for id in chat_ids {
+        send_message(id, content.clone()).await;
+    }
+}
+
+pub fn typing(chat_id: &str, on: bool) {
+    let Some(c) = chat(chat_id) else { return };
+    if net::state() != State::Online {
+        return;
+    }
+    let t = now();
+    if on && t - TYPING_SENT.with(Cell::get) < 2500.0 {
+        return;
+    }
+    TYPING_SENT.with(|s| s.set(if on { t } else { 0.0 }));
+    spawn(async move { broadcast(&c, Body::Typing { on }, true).await });
+}
+
+pub async fn set_timer(chat_id: &str, secs: u64) {
+    update_chat(chat_id, |c| c.timer = secs).await;
+    system_message(chat_id, &timer_text(&my_code(), secs), now()).await;
+    if let Some(c) = chat(chat_id) {
+        broadcast(&c, Body::Timer { secs }, false).await;
+    }
+}
+
+fn timer_text(code: &str, secs: u64) -> String {
+    let who = if code == my_code() {
+        "Vous avez".to_owned()
+    } else {
+        format!("{} a", display_name(code))
+    };
+    if secs == 0 {
+        return format!("⏳ {who} désactivé les messages éphémères.");
+    }
+    let label = if secs >= 90 * 86400 {
+        "90 jours"
+    } else if secs >= 7 * 86400 {
+        "7 jours"
+    } else {
+        "24 heures"
+    };
+    format!("⏳ {who} activé les messages éphémères : {label}.")
+}
+
+async fn system_message(chat_id: &str, text: &str, at: f64) {
+    let m = Message {
+        chat: chat_id.to_owned(),
+        id: crypto::random_id(12),
+        from: "system".into(),
+        at,
+        kind: "system".into(),
+        text: text.to_owned(),
+        ..Default::default()
+    };
+    store_message(&m, true).await;
+}
+
+// ----- Groupes ---------------------------------------------------------------
+
+pub async fn create_group(name: &str, members: Vec<String>, avatar: String) -> Chat {
+    let me = my_code();
+    let mut all = vec![me.clone()];
+    all.extend(members);
+    let c = Chat {
+        id: format!("g:{}", crypto::random_id(12)),
+        group: true,
+        name: name.trim().chars().take(60).collect(),
+        avatar,
+        members: all,
+        admins: vec![me.clone()],
+        created_by: me,
+        created_at: now(),
+        last_at: now(),
+        v: 1,
+        ..Default::default()
+    };
+    save_chat(c.clone()).await;
+    system_message(
+        &c.id,
+        &format!("Vous avez créé le groupe « {} ».", c.name),
+        now(),
+    )
+    .await;
+    broadcast(
+        &c,
+        Body::Group {
+            op: "create".into(),
+            note: String::new(),
+        },
+        false,
+    )
+    .await;
+    c
+}
+
+pub async fn update_group(chat_id: &str, f: impl FnOnce(&mut Chat), note: &str) {
+    let Some(before) = chat(chat_id) else { return };
+    let mut next = before.clone();
+    f(&mut next);
+    next.v = before.v.max(1) + 1;
+    save_chat(next.clone()).await;
+    if !note.is_empty() {
+        system_message(chat_id, note, now()).await;
+    }
+    broadcast(
+        &next,
+        Body::Group {
+            op: "update".into(),
+            note: note.to_owned(),
+        },
+        false,
+    )
+    .await;
+    // Les membres retirés l'apprennent aussi.
+    let me = my_code();
+    for code in before
+        .members
+        .iter()
+        .filter(|c| !next.members.contains(c) && **c != me)
+    {
+        let mut w = Wire::new(Body::Group {
+            op: "update".into(),
+            note: note.to_owned(),
+        });
+        w.grp = Some(group_info(&next));
+        enqueue(code, w, None, None, false).await;
+    }
+}
+
+pub async fn leave_group(chat_id: &str) {
+    let Some(mut c) = chat(chat_id) else { return };
+    let me = my_code();
+    c.members.retain(|x| *x != me);
+    c.admins.retain(|x| *x != me);
+    if c.admins.is_empty()
+        && let Some(first) = c.members.first()
+    {
+        c.admins = vec![first.clone()];
+    }
+    c.v = c.v.max(1) + 1;
+    c.left = true;
+    for code in c.members.clone() {
+        let mut w = Wire::new(Body::Group {
+            op: "leave".into(),
+            note: String::new(),
+        });
+        w.grp = Some(group_info(&c));
+        enqueue(&code, w, None, None, false).await;
+    }
+    save_chat(c).await;
+    system_message(chat_id, "Vous avez quitté le groupe.", now()).await;
+}
+
+// ----- Réception -------------------------------------------------------------
+
+fn queue_receipt(to: &str, chat_id: &str, ids: &[String], st: &str) {
+    RECEIPTS.with(|r| {
+        r.borrow_mut()
+            .entry((to.to_owned(), st.to_owned(), chat_id.to_owned()))
+            .or_default()
+            .extend(ids.iter().cloned())
+    });
+    dom::clear_timer(RECEIPT_TIMER.with(Cell::get));
+    let t = dom::timer(400, || {
+        let batch: Vec<_> = RECEIPTS.with(|r| r.borrow_mut().drain().collect());
+        spawn(async move {
+            for ((code, st, chat), ids) in batch {
+                let mut w = Wire::new(Body::Receipt {
+                    st,
+                    ids: ids.into_iter().collect(),
+                });
+                if is_group(&chat) {
+                    w.g = Some(chat.trim_start_matches("g:").to_owned());
+                }
+                enqueue(&code, w, None, None, false).await;
+            }
+        });
+    });
+    RECEIPT_TIMER.with(|c| c.set(t));
+}
+
+/// Marque une discussion comme lue (accusés de lecture bleus).
+pub async fn mark_read(chat_id: &str) {
+    let Some(c) = chat(chat_id) else { return };
+    let me = my_code();
+    let mut by_sender: HashMap<String, Vec<String>> = HashMap::new();
+    for mut m in store::messages_of(chat_id, 300).await {
+        if m.from != me && m.from != "system" && !m.read_by_me {
+            m.read_by_me = true;
+            store::write_message(&m).await;
+            by_sender
+                .entry(m.from.clone())
+                .or_default()
+                .push(m.id.clone());
+        }
+    }
+    if settings().read_receipts {
+        for (code, ids) in by_sender {
+            queue_receipt(&code, chat_id, &ids, "read");
+        }
+    }
+    if c.unread > 0 || c.marked_unread {
+        update_chat(chat_id, |c| {
+            c.unread = 0;
+            c.marked_unread = false;
+        })
+        .await;
+    }
+}
+
+/// Une enveloppe arrive du relais.
+pub fn on_envelope(env: Value) {
+    spawn(async move {
+        let n = env["n"].as_u64();
+        receive(&env).await;
+        if let Some(n) = n {
+            net::got(&[n]);
+        }
+    });
+}
+
+async fn receive(env: &Value) {
+    let from = env["from"].as_str().unwrap_or("").to_owned();
+    if from.is_empty() || blocked(&from) {
+        return;
+    }
+    let Some(peer) = keys_for(&from).await else {
+        return;
+    };
+    let Some(plain) = crypto::open(
+        &me(),
+        &peer.code,
+        &peer.dh,
+        env["body"].as_str().unwrap_or(""),
+    ) else {
+        return; // pas pour nous, ou abîmé
+    };
+    let Ok(wire) = serde_json::from_str::<Wire>(&plain) else {
+        return;
+    };
+    let ts = env["ts"].as_f64().unwrap_or_else(now);
+    handle(&from, wire, ts, env["live"].as_bool().unwrap_or(false)).await;
+}
+
+async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> Option<Chat> {
+    let id = format!("g:{}", grp.id);
+    let me = my_code();
+    match chat(&id) {
+        None => {
+            if !grp.members.contains(&me) {
+                return None;
+            }
+            let c = Chat {
+                id: id.clone(),
+                group: true,
+                name: grp.name.clone(),
+                avatar: grp.avatar.clone(),
+                members: grp.members.clone(),
+                admins: grp.admins.clone(),
+                created_by: from.to_owned(),
+                created_at: now(),
+                last_at: now(),
+                v: grp.v,
+                ..Default::default()
+            };
+            save_chat(c.clone()).await;
+            system_message(
+                &id,
+                &format!(
+                    "{} vous a ajouté au groupe « {} ».",
+                    display_name(from),
+                    grp.name
+                ),
+                at,
+            )
+            .await;
+            net::watch(
+                &grp.members
+                    .iter()
+                    .filter(|c| **c != me)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            Some(c)
+        }
+        Some(mut c) if grp.v > c.v => {
+            let was_in = c.members.contains(&me);
+            c.name = grp.name.clone();
+            c.avatar = grp.avatar.clone();
+            c.members = grp.members.clone();
+            c.admins = grp.admins.clone();
+            c.v = grp.v;
+            if grp.members.contains(&me) {
+                c.left = false;
+            } else if was_in {
+                c.left = true;
+            }
+            save_chat(c.clone()).await;
+            Some(c)
+        }
+        other => other,
+    }
+}
+
+async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
+    let me = my_code();
+    match &wire.body {
+        Body::Profile { profile } => {
+            let mut c = contact(from).unwrap_or_else(|| Contact {
+                code: from.to_owned(),
+                added_at: now(),
+                ..Default::default()
+            });
+            if profile.v >= c.profile_v {
+                c.profile_name = profile.name.chars().take(40).collect();
+                c.about = profile.about.chars().take(140).collect();
+                c.avatar = if profile.avatar.len() <= 60_000 {
+                    profile.avatar.clone()
+                } else {
+                    String::new()
+                };
+                c.profile_v = profile.v;
+                save_contact(c).await;
+                emit(Ev::Chats);
+            }
+            return;
+        }
+        Body::Typing { on } => {
+            let chat_id = match wire.group_id() {
+                Some(g) => format!("g:{g}"),
+                None => from.to_owned(),
+            };
+            if chat(&chat_id).is_none() {
+                return;
+            }
+            let old = with(|s| s.typing.entry(chat_id.clone()).or_default().remove(from));
+            if let Some(t) = old {
+                dom::clear_timer(t);
+            }
+            if *on {
+                let (c, f) = (chat_id.clone(), from.to_owned());
+                let t = dom::timer(6000, move || {
+                    with(|s| s.typing.get_mut(&c).map(|m| m.remove(&f)));
+                    emit(Ev::Typing(c));
+                });
+                with(|s| {
+                    s.typing
+                        .entry(chat_id.clone())
+                        .or_default()
+                        .insert(from.to_owned(), t)
+                });
+            }
+            emit(Ev::Typing(chat_id));
+            return;
+        }
+        Body::Call { .. } => {
+            emit(Ev::CallSignal {
+                from: from.to_owned(),
+                body: wire.body,
+                live,
+            });
+            return;
+        }
+        Body::Status {
+            id,
+            kind,
+            text,
+            bg,
+            data,
+            at,
+        } => {
+            if !contact(from).is_some_and(|c| c.saved) || ts - at > DAY {
+                return;
+            }
+            let st = StatusItem {
+                owner: from.to_owned(),
+                id: id.clone(),
+                kind: kind.clone(),
+                text: text.chars().take(700).collect(),
+                bg: bg.clone(),
+                data: data.clone(),
+                at: *at,
+                ..Default::default()
+            };
+            store::write("statuses", &st.key(), &st).await;
+            emit(Ev::Statuses);
+            return;
+        }
+        Body::StatusSeen { id } => {
+            let key = format!("{me}|{id}");
+            if let Some(mut st) = store::read::<StatusItem>("statuses", &key).await {
+                st.viewers.insert(from.to_owned(), ts);
+                store::write("statuses", &key, &st).await;
+                emit(Ev::Statuses);
+            }
+            return;
+        }
+        Body::StatusDelete { id } => {
+            store::remove("statuses", &format!("{from}|{id}")).await;
+            emit(Ev::Statuses);
+            return;
+        }
+        _ => {}
+    }
+
+    // Le reste appartient à une discussion.
+    let c = match (&wire.grp, &wire.g) {
+        (Some(grp), _) => {
+            // L'annonce « vous a ajouté » se range juste avant le premier message.
+            let at = match &wire.body {
+                Body::Msg { at, .. } => at.min(ts) - 1.0,
+                _ => ts,
+            };
+            group_chat(from, grp, at).await
+        }
+        (None, Some(g)) => chat(&format!("g:{g}")),
+        (None, None) => Some(ensure_direct_chat(from).await),
+    };
+    let Some(mut c) = c else { return };
+    if c.group && !c.members.iter().any(|x| x == from) && !matches!(wire.body, Body::Group { .. }) {
+        return;
+    }
+
+    match wire.body {
+        Body::Msg {
+            id,
+            at,
+            pn,
+            content,
+        } => {
+            if get_message(&c.id, &id).await.is_some() {
+                return; // déjà reçu
+            }
+            let kind =
+                if ["text", "image", "voice", "file", "contact"].contains(&content.kind.as_str()) {
+                    content.kind
+                } else {
+                    "text".into()
+                };
+            let at = at.min(ts + 60_000.0);
+            let mut m = Message {
+                chat: c.id.clone(),
+                id: id.clone(),
+                from: from.to_owned(),
+                at,
+                kind,
+                text: content.text.chars().take(65_536).collect(),
+                data: content.data,
+                name: content.name,
+                mime: content.mime,
+                size: content.size,
+                dur: content.dur,
+                w: content.w,
+                h: content.h,
+                code: content.code,
+                reply: content.reply,
+                fwd: content.fwd,
+                ..Default::default()
+            };
+            if let Some(ttl) = wire.ttl {
+                m.exp = Some(at + ttl as f64 * 1000.0);
+            }
+            if let Some(mut sender) = contact(from)
+                && sender.profile_name.is_empty()
+                && !pn.is_empty()
+            {
+                sender.profile_name = pn.chars().take(40).collect();
+                save_contact(sender).await;
+            }
+            let active = active_chat().as_deref() == Some(c.id.as_str()) && dom::visible();
+            if active {
+                m.read_by_me = true;
+            } else {
+                c.unread += 1;
+                save_chat(c.clone()).await;
+            }
+            store_message(&m, true).await;
+            queue_receipt(from, &c.id, std::slice::from_ref(&id), "delivered");
+            if active && settings().read_receipts {
+                queue_receipt(from, &c.id, &[id], "read");
+            }
+            // Votre profil, pour qui ne l'a pas encore.
+            if let Some(mut sender) = contact(from)
+                && sender.sent_profile_v < profile().v
+            {
+                sender.sent_profile_v = profile().v;
+                save_contact(sender).await;
+                enqueue(from, Wire::new(profile_body()), None, None, false).await;
+            }
+            let removed = with(|s| s.typing.get_mut(&c.id).and_then(|t| t.remove(from)));
+            if let Some(t) = removed {
+                dom::clear_timer(t);
+                emit(Ev::Typing(c.id.clone()));
+            }
+            let c = chat(&c.id).unwrap_or(c);
+            emit(Ev::Incoming {
+                chat: c,
+                message: m,
+                active,
+            });
+        }
+        Body::Receipt { st, ids } => {
+            for id in ids {
+                let Some(mut m) = get_message(&c.id, &id).await else {
+                    continue;
+                };
+                if m.from != me {
+                    continue;
+                }
+                let add = |list: &mut Vec<String>| {
+                    if !list.iter().any(|x| x == from) {
+                        list.push(from.to_owned());
+                    }
+                };
+                add(&mut m.delivered_to);
+                if st == "read" {
+                    add(&mut m.read_by);
+                }
+                store::write_message(&m).await;
+            }
+            emit(Ev::Messages(c.id.clone()));
+        }
+        Body::React { id, emoji } => {
+            let Some(mut m) = get_message(&c.id, &id).await else {
+                return;
+            };
+            if emoji.is_empty() {
+                m.reactions.remove(from);
+            } else {
+                m.reactions
+                    .insert(from.to_owned(), emoji.chars().take(8).collect());
+            }
+            store::write_message(&m).await;
+            emit(Ev::Messages(c.id.clone()));
+            if m.from == me && !emoji.is_empty() {
+                emit(Ev::Reaction {
+                    chat: c,
+                    from: from.to_owned(),
+                    emoji,
+                });
+            }
+        }
+        Body::Edit { id, text } => {
+            let Some(mut m) = get_message(&c.id, &id).await else {
+                return;
+            };
+            if m.from != from || m.deleted {
+                return;
+            }
+            m.text = text.chars().take(65_536).collect();
+            m.edited = true;
+            store::write_message(&m).await;
+            refresh_last(&c.id).await;
+            emit(Ev::Messages(c.id.clone()));
+        }
+        Body::Delete { id } => {
+            let Some(mut m) = get_message(&c.id, &id).await else {
+                return;
+            };
+            if m.from != from {
+                return;
+            }
+            m.deleted = true;
+            m.text.clear();
+            m.data.clear();
+            m.reactions.clear();
+            store::write_message(&m).await;
+            refresh_last(&c.id).await;
+            emit(Ev::Messages(c.id.clone()));
+        }
+        Body::Timer { secs } => {
+            update_chat(&c.id, |c| c.timer = secs).await;
+            system_message(&c.id, &timer_text(from, secs), ts).await;
+        }
+        Body::Group { op, note } => {
+            if op == "leave" {
+                system_message(
+                    &c.id,
+                    &format!("{} a quitté le groupe.", display_name(from)),
+                    ts,
+                )
+                .await;
+            } else if op != "create" && !note.is_empty() {
+                let note = match note.strip_prefix("Vous avez") {
+                    Some(rest) => format!("{} a{rest}", display_name(from)),
+                    None => note,
+                };
+                system_message(&c.id, &note, ts).await;
+            }
+            emit(Ev::Chats);
+        }
+        _ => {}
+    }
+}
+
+// ----- Statuts ---------------------------------------------------------------
+
+pub async fn post_status(kind: &str, text: &str, bg: &str, data: String) {
+    let id = crypto::random_id(10);
+    let at = net::server_now();
+    let st = StatusItem {
+        owner: my_code(),
+        id: id.clone(),
+        kind: kind.to_owned(),
+        text: text.to_owned(),
+        bg: bg.to_owned(),
+        data: data.clone(),
+        at,
+        seen: true,
+        ..Default::default()
+    };
+    store::write("statuses", &st.key(), &st).await;
+    emit(Ev::Statuses);
+    let body = Body::Status {
+        id,
+        kind: kind.to_owned(),
+        text: text.to_owned(),
+        bg: bg.to_owned(),
+        data,
+        at,
+    };
+    for c in contacts() {
+        if c.saved && !c.blocked {
+            enqueue(&c.code, Wire::new(body.clone()), None, None, false).await;
+        }
+    }
+}
+
+pub async fn delete_status(id: &str) {
+    store::remove("statuses", &format!("{}|{id}", my_code())).await;
+    emit(Ev::Statuses);
+    for c in contacts() {
+        if c.saved && !c.blocked {
+            enqueue(
+                &c.code,
+                Wire::new(Body::StatusDelete { id: id.to_owned() }),
+                None,
+                None,
+                false,
+            )
+            .await;
+        }
+    }
+}
+
+pub async fn statuses() -> Vec<StatusItem> {
+    let t = now();
+    let mut list: Vec<StatusItem> = store::all::<StatusItem>("statuses")
+        .await
+        .into_iter()
+        .filter(|s| s.at + DAY > t)
+        .collect();
+    list.sort_by(|a, b| a.at.total_cmp(&b.at));
+    list
+}
+
+pub async fn mark_status_seen(st: &StatusItem) {
+    if st.seen || st.owner == my_code() {
+        return;
+    }
+    let mut s = st.clone();
+    s.seen = true;
+    store::write("statuses", &s.key(), &s).await;
+    emit(Ev::Statuses);
+    if settings().read_receipts {
+        enqueue(
+            &st.owner,
+            Wire::new(Body::StatusSeen { id: st.id.clone() }),
+            None,
+            None,
+            false,
+        )
+        .await;
+    }
+}
+
+// ----- Appels ----------------------------------------------------------------
+
+pub fn send_call_signal(code: &str, body: Body) {
+    let code = code.to_owned();
+    spawn(async move { enqueue(&code, Wire::new(body), None, None, true).await });
+}
+
+pub async fn log_call(entry: CallEntry) {
+    store::write("calls", &entry.id, &entry).await;
+    emit(Ev::Calls);
+}
+
+pub async fn call_log() -> Vec<CallEntry> {
+    let mut list: Vec<CallEntry> = store::all("calls").await;
+    list.sort_by(|a, b| b.at.total_cmp(&a.at));
+    list
+}
+
+pub async fn clear_calls() {
+    store::clear("calls").await;
+    emit(Ev::Calls);
+}
+
+// ----- Sauvegarde ------------------------------------------------------------
+
+pub async fn export_backup(password: &str) -> Option<String> {
+    let data = serde_json::json!({ "app": "talka", "at": now(), "data": store::dump().await });
+    let backup = crypto::encrypt_backup(password, &data.to_string())?;
+    serde_json::to_string(&backup).ok()
+}
+
+pub async fn import_backup(password: &str, file: &str) -> Result<(), String> {
+    let bad = "Ce fichier n'est pas une sauvegarde Talka.";
+    let backup: crypto::Backup = serde_json::from_str(file).map_err(|_| bad.to_owned())?;
+    let plain = crypto::decrypt_backup(password, &backup)?;
+    let data: Value = serde_json::from_str(&plain).map_err(|_| bad.to_owned())?;
+    if data["app"] != "talka" {
+        return Err(bad.into());
+    }
+    store::restore(&data["data"]).await;
+    Ok(())
+}
+
+pub async fn wipe_everything() {
+    net::stop();
+    store::wipe().await;
+    store::local_clear();
+}

@@ -191,7 +191,30 @@ async fn pages_and_api() {
     assert_eq!(client.get("/api/ice").await.status(), 200);
     assert_eq!(client.get("/api/qr/K7Q2MX9PRT").await.status(), 200);
     assert_eq!(client.get("/api/qr/pas-un-code").await.status(), 404);
-    let main = format!("/s/{}/app/main.js", talka::assets::version());
+    let main = format!("/s/{}/talka_web.js", talka::assets::version());
     assert_eq!(client.get(&main).await.status(), 200);
     assert_eq!(client.get("/ws").await.status(), 426);
+}
+
+/// Le navigateur (crate `talka-web`, compilée ici normalement) et le serveur
+/// calculent le même code et s'accordent sur la signature du défi.
+#[test]
+fn browser_and_server_agree() {
+    use talka_web::crypto::{Identity, code_of, unb64};
+    assert_eq!(code_of(&[], &[]), talka::code::derive(&[], &[]));
+    let id = Identity::create(0.0);
+    let (sign, dh) = (unb64(&id.sign).unwrap(), unb64(&id.dh).unwrap());
+    assert_eq!(talka::code::derive(&sign, &dh), id.code);
+    assert!(talka::code::public_key(&id.sign).is_some());
+    let sig = id.sign_challenge("abc");
+    assert!(talka::code::verify(
+        &sign,
+        &talka::code::challenge_message("abc"),
+        &sig
+    ));
+    assert!(!talka::code::verify(
+        &sign,
+        &talka::code::challenge_message("abd"),
+        &sig
+    ));
 }
