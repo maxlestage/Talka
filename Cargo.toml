@@ -1,0 +1,38 @@
+[package]
+name = "talka"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Talka : une messagerie façon WhatsApp, chiffrée de bout en bout, où un code remplace le numéro de téléphone. Aucune base de données : tout est gardé dans le navigateur. Servie par Paquets."
+publish = false
+
+[[bin]]
+name = "talka"
+path = "src/main.rs"
+
+[dependencies]
+# Le framework full-stack : Vitesse (HTTP, WebSocket), Securite (le bouclier),
+# Active (les pages, la PWA). Pas de base de données : `MemoryDb` par défaut,
+# inutilisée.
+paquets = { git = "https://github.com/maxlestage/Paquets", default-features = false }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+getrandom = "0.2"
+# Le serveur vérifie que celui qui se présente avec un code détient bien la
+# clé dont le code est l'empreinte (ECDSA P-256, signée par WebCrypto).
+p256 = { version = "0.13", features = ["ecdsa"] }
+# Le QR code de chaque code Talka, en SVG.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.26"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
