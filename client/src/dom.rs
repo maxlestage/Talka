@@ -737,6 +737,13 @@ pub fn bytes(n: f64) -> String {
 // ----- Toasts, fenêtres, menus ----------------------------------------------
 
 pub fn toast(text: impl AsRef<str>) {
+    // Une ligne ou deux, pas un message entier.
+    let full = text.as_ref();
+    let text = if full.chars().count() > 110 {
+        format!("{}…", full.chars().take(108).collect::<String>().trim_end())
+    } else {
+        full.to_owned()
+    };
     let host = by_id("toasts").unwrap_or_else(|| {
         let el = h("div#toasts").el();
         let _ = document().body().expect("body").append_child(&el);
@@ -1080,6 +1087,40 @@ pub fn menu(items: Vec<Option<Item>>, at: At) -> Element {
         }
         At::Point(x, y) => (*x, *x, *y, *y),
     };
+    set(
+        &el,
+        "__talka_at",
+        js_sys::Array::of4(&left.into(), &right.into(), &top.into(), &bottom.into()),
+    );
+    place_menu(&el);
+    let menu_el = el.clone();
+    let sc = scope.clone();
+    timer(0, move || {
+        scope_into(&sc.clone(), || {
+            let m = menu_el.clone();
+            let sc2 = sc.clone();
+            listen(&document(), "pointerdown", move |e| {
+                let inside = e
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::Node>().ok())
+                    .is_some_and(|n| m.contains(Some(&n)));
+                if !inside {
+                    m.remove();
+                    let sc = sc2.clone();
+                    timer(0, move || drop_scope(&sc));
+                }
+            });
+        });
+    });
+    el
+}
+
+/// Place un menu près de son point d'ancrage, entièrement dans l'écran
+/// (à rappeler si son contenu change).
+pub fn place_menu(el: &Element) {
+    let at = js_sys::Array::from(&get(el, "__talka_at"));
+    let n = |i: u32| at.get(i).as_f64().unwrap_or(8.0);
+    let (left, right, top, bottom) = (n(0), n(1), n(2), n(3));
     let html = el.dyn_ref::<HtmlElement>().expect("menu");
     let (w, hh) = (html.offset_width() as f64, html.offset_height() as f64);
     let (vw, vh) = (
@@ -1102,28 +1143,8 @@ pub fn menu(items: Vec<Option<Item>>, at: At) -> Element {
     if y + hh > vh - 8.0 {
         y = (top - hh - 4.0).max(8.0);
     }
-    set_style(&el, "left", &format!("{}px", x.max(8.0)));
-    set_style(&el, "top", &format!("{y}px"));
-    let menu_el = el.clone();
-    let sc = scope.clone();
-    timer(0, move || {
-        scope_into(&sc.clone(), || {
-            let m = menu_el.clone();
-            let sc2 = sc.clone();
-            listen(&document(), "pointerdown", move |e| {
-                let inside = e
-                    .target()
-                    .and_then(|t| t.dyn_into::<web_sys::Node>().ok())
-                    .is_some_and(|n| m.contains(Some(&n)));
-                if !inside {
-                    m.remove();
-                    let sc = sc2.clone();
-                    timer(0, move || drop_scope(&sc));
-                }
-            });
-        });
-    });
-    el
+    set_style(el, "left", &format!("{}px", x.max(8.0)));
+    set_style(el, "top", &format!("{}px", y.min(vh - hh - 8.0).max(8.0)));
 }
 
 /// Ajoute des écouteurs à une zone existante, sans la vider.

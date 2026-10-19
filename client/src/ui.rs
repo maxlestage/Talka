@@ -28,6 +28,7 @@ struct Ui {
     net: Option<Element>,
     tabs: Option<Element>,
     title: Option<Element>,
+    fab: Option<Element>,
     tab: String,
     filter: String,
     query: String,
@@ -463,6 +464,23 @@ fn render_side() {
             );
         });
         let tabs = tabs.el();
+        // Sur téléphone, l'action principale de l'onglet, sous le pouce.
+        let fab = h("button.fab").attr("type", "button").el();
+        listen(&fab, "click", |e| {
+            e.stop_propagation();
+            match with(|u| u.tab.clone()).as_str() {
+                "status" => new_text_status(),
+                "calls" => spawn(async {
+                    if let Some(code) = pick_contacts("Appeler…", &[], "Appeler")
+                        .await
+                        .and_then(|l| l.into_iter().next())
+                    {
+                        calls::start_call(&code, false).await;
+                    }
+                }),
+                _ => open_new_chat(),
+            }
+        });
         replace(
             &side,
             vec![
@@ -484,6 +502,7 @@ fn render_side() {
                     .el(),
                 net_el.clone(),
                 body.clone(),
+                fab.clone(),
                 tabs.clone(),
             ],
         );
@@ -492,8 +511,10 @@ fn render_side() {
             u.net = Some(net_el);
             u.tabs = Some(tabs);
             u.title = Some(title);
+            u.fab = Some(fab);
         });
     });
+    update_fab();
     render_net();
     spawn(render_side_body());
 }
@@ -519,7 +540,23 @@ fn switch_tab(key: &str) {
             _ => "Talka",
         }));
     }
+    update_fab();
     spawn(render_side_body());
+}
+
+/// Le bouton flottant suit l'onglet : nouvelle discussion, actu, appel.
+fn update_fab() {
+    let Some(fab) = with(|u| u.fab.clone()) else {
+        return;
+    };
+    let (ic, label) = match with(|u| u.tab.clone()).as_str() {
+        "status" => ("edit", "Nouvelle actu"),
+        "calls" => ("phone", "Nouvel appel"),
+        _ => ("plus", "Nouvelle discussion"),
+    };
+    replace(&fab, icon(ic));
+    let _ = fab.set_attribute("aria-label", label);
+    let _ = fab.set_attribute("title", label);
 }
 
 fn render_net() {

@@ -1252,6 +1252,7 @@ fn message_menu(m: &Message, at: At) {
         .el()
     });
     let _ = menu_el.prepend_with_node_1(&quick);
+    place_menu(&menu_el);
 }
 
 fn react_picker(m: &Message) {
