@@ -1,0 +1,56 @@
+# Le projet Xcode de l'application iOS, décrit pour XcodeGen :
+#   brew install xcodegen && cd ios && xcodegen && open Talka.xcodeproj
+#
+# Le serveur intégré à l'application : TALKA_SERVER (vide → l'application
+# le demande au premier lancement). La CI le remplit avec TALKA_API_URL.
+name: Talka
+options:
+  bundleIdPrefix: com.maxlestage
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: fr
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    TALKA_SERVER: ""
+packages:
+  TalkaKit:
+    path: .
+  # WebRTC (Google), compilé pour iOS : les appels audio et vidéo.
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    from: 155.0.0
+targets:
+  Talka:
+    type: application
+    platform: iOS
+    sources:
+      - path: Talka
+    dependencies:
+      - package: TalkaKit
+        product: TalkaKit
+      - package: WebRTC
+        product: WebRTC
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maxlestage.talka
+        PRODUCT_NAME: Talka
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_FILE: Talka/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: YES
+schemes:
+  Talka:
+    build:
+      targets:
+        Talka: all
+    run:
+      config: Debug
+    archive:
+      config: Release

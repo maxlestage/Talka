@@ -1,0 +1,91 @@
+# Compiler, signer et envoyer l'application iOS sur TestFlight, depuis un Mac
+# de GitHub : rien à installer, pas d'ordinateur nécessaire.
+#
+# Il faut un compte Apple Developer et trois secrets GitHub (Settings →
+# Secrets and variables → Actions) : ASC_KEY_ID, ASC_ISSUER_ID et ASC_KEY
+# (le contenu du fichier .p8 d'une clé d'API App Store Connect, rôle
+# Admin). Voir ios/README.md, « Sans ordinateur ».
+name: TestFlight
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    name: iOS → TestFlight
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ios
+    env:
+      # Le serveur Talka intégré à l'application (sinon demandé au lancement).
+      TALKA_SERVER: ${{ vars.TALKA_API_URL }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY: ${{ secrets.ASC_KEY }}
+    steps:
+      - name: Secrets présents ?
+        id: ready
+        working-directory: .
+        run: |
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY" ]; then
+            echo "::notice title=TestFlight pas encore configuré::Ajoutez les secrets ASC_KEY_ID, ASC_ISSUER_ID et ASC_KEY (voir ios/README.md, « Sans ordinateur »)."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.ready.outputs.ok == 'true'
+      - name: Outils (XcodeGen, client App Store Connect)
+        if: steps.ready.outputs.ok == 'true'
+        run: |
+          brew install xcodegen
+          python3 -m venv .venv && .venv/bin/pip -q install pyjwt cryptography
+      - name: App Store Connect — identifiant, équipe, app
+        id: asc
+        if: steps.ready.outputs.ok == 'true'
+        run: .venv/bin/python ci/asc.py prepare
+      - name: Clé d'API pour Xcode
+        if: steps.ready.outputs.ok == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s\n' "$ASC_KEY" | sed 's/\\n/\n/g' > "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+      - name: Archive signée
+        if: steps.ready.outputs.ok == 'true'
+        env:
+          TEAM_ID: ${{ steps.asc.outputs.team_id }}
+        run: |
+          set -o pipefail
+          xcodegen generate
+          xcodebuild -project Talka.xcodeproj -scheme Talka -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Talka.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" TALKA_SERVER="$TALKA_SERVER" \
+            archive | tail -n 60
+      - name: Envoi à App Store Connect (TestFlight)
+        if: steps.ready.outputs.ok == 'true'
+        env:
+          TEAM_ID: ${{ steps.asc.outputs.team_id }}
+        run: |
+          set -o pipefail
+          sed "s/TEAM_ID/$TEAM_ID/" ci/ExportOptions.plist > "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Talka.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" | tail -n 60
+      - name: Testeurs internes (toute l'équipe)
+        if: steps.ready.outputs.ok == 'true'
+        run: .venv/bin/python ci/asc.py testers
+      - name: Nettoyage de la clé
+        if: always()
+        working-directory: .
+        run: rm -rf "$RUNNER_TEMP/keys"

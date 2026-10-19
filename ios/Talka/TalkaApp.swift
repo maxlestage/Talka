@@ -1,0 +1,130 @@
+// Talka pour iPhone et iPad : la messagerie où un code remplace le numéro de
+// téléphone. Le même protocole et le même chiffrement que le navigateur :
+// un iPhone et un ordinateur discutent ensemble, dans les mêmes groupes.
+
+import SwiftUI
+import TalkaKit
+
+@main
+struct TalkaApp: App {
+    @State private var model = AppModel()
+    @Environment(\.scenePhase) private var phase
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environment(model)
+                .tint(.talkaGreen)
+                .preferredColorScheme(model.colorScheme)
+                .onOpenURL { model.open($0) }
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    if let url = activity.webpageURL { model.open(url) }
+                }
+                .onChange(of: phase) { _, phase in model.scene(phase) }
+        }
+    }
+}
+
+extension Color {
+    static let talkaGreen = Color(red: 0, green: 168 / 255, blue: 132 / 255)
+    static let talkaDark = Color(red: 0, green: 128 / 255, blue: 105 / 255)
+    static let talkaAccent = Color(red: 37 / 255, green: 211 / 255, blue: 102 / 255)
+    static let tickBlue = Color(red: 83 / 255, green: 189 / 255, blue: 235 / 255)
+    static let bubbleOut = Color(light: .init(red: 217 / 255, green: 253 / 255, blue: 211 / 255), dark: .init(red: 0, green: 92 / 255, blue: 75 / 255))
+    static let bubbleIn = Color(light: .white, dark: .init(red: 32 / 255, green: 44 / 255, blue: 51 / 255))
+    static let chatBackground = Color(light: .init(red: 239 / 255, green: 234 / 255, blue: 226 / 255), dark: .init(red: 11 / 255, green: 20 / 255, blue: 26 / 255))
+
+    init(light: UIColor, dark: UIColor) {
+        self.init(UIColor { $0.userInterfaceStyle == .dark ? dark : light })
+    }
+}
+
+/// L'accueil, le verrou, ou l'application ; l'appel et les bandeaux par-dessus.
+struct RootView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Group {
+                if model.engine == nil {
+                    WelcomeView()
+                } else {
+                    MainView()
+                }
+            }
+            if let toast = model.toast {
+                ToastView(text: toast.text)
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .task(id: toast.id) {
+                        try? await Task.sleep(for: .seconds(3))
+                        withAnimation { if model.toast == toast { model.toast = nil } }
+                    }
+                    .onTapGesture { withAnimation { model.toast = nil } }
+                    .zIndex(2)
+            }
+            if model.locked {
+                LockView().zIndex(3).transition(.opacity)
+            }
+        }
+        .animation(.spring(duration: 0.3), value: model.toast)
+        .animation(.easeInOut(duration: 0.2), value: model.locked)
+        .fullScreenCover(item: Binding(get: { model.call }, set: { if $0 == nil { model.call = nil } })) { call in
+            CallScreen(call: call)
+        }
+    }
+}
+
+struct ToastView: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.white)
+            .lineLimit(3)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: 520)
+            .background(Color.black.opacity(0.85), in: .rect(cornerRadius: 14))
+            .shadow(radius: 10, y: 4)
+    }
+}
+
+/// Les quatre onglets, comme WhatsApp.
+struct MainView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        TabView(selection: $model.tab) {
+            ChatsTab()
+                .tabItem { Label("Discussions", systemImage: "bubble.left.and.bubble.right.fill") }
+                .badge(model.unreadTotal)
+                .tag(AppModel.Tab.chats)
+            StatusTab()
+                .tabItem { Label("Actus", systemImage: "circle.dashed") }
+                .tag(AppModel.Tab.status)
+            CallsTab()
+                .tabItem { Label("Appels", systemImage: "phone.fill") }
+                .tag(AppModel.Tab.calls)
+            SettingsTab()
+                .tabItem { Label("Réglages", systemImage: "gearshape.fill") }
+                .tag(AppModel.Tab.settings)
+        }
+    }
+}
+
+/// Le logo de Talka.
+struct Logo: View {
+    var size: CGFloat = 80
+
+    var body: some View {
+        Image("Logo")
+            .resizable()
+            .frame(width: size, height: size)
+            .clipShape(.rect(cornerRadius: size * 0.23))
+            .shadow(color: .talkaGreen.opacity(0.35), radius: 12, y: 6)
+            .accessibilityHidden(true)
+    }
+}
