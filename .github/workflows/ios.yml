@@ -13,12 +13,16 @@ on:
 jobs:
   ios:
     name: iOS (TalkaKit et application)
-    runs-on: macos-15
+    runs-on: macos-26
     defaults:
       run:
         working-directory: ios
     steps:
       - uses: actions/checkout@v4
+      # App Store Connect n'accepte que les apps compilées avec le SDK iOS 26 (Xcode 26).
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
       - name: TalkaKit — tests (codes, chiffrement et messages recoupés avec le navigateur)
         run: swift test
       - name: Projet Xcode (XcodeGen)
