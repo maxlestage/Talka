@@ -1,0 +1,54 @@
+# Met le relais Talka en ligne sur Heroku, en HTTPS, sans la CLI Heroku : tout
+# passe par l'API Platform (`cargo xtask heroku`, en Rust), ce qui se
+# configure depuis un téléphone. Heroku compile le serveur avec le buildpack
+# emk/rust (RustConfig : le navigateur en WebAssembly, puis le serveur).
+#
+# À faire une fois (GitHub → Settings → Secrets and variables → Actions) :
+#   - secret   HEROKU_API_KEY   Heroku → Account settings → API Key → Reveal
+#   - variable HEROKU_APP_NAME  facultative : talka-<propriétaire> par défaut
+#                               (l'app est créée si elle n'existe pas)
+#   - variable HEROKU_REGION    facultative : eu (défaut) ou us
+# Sans la clé, le déploiement est sauté (avec un avertissement).
+#
+# L'app est réglée pour accepter la version GitHub Pages
+# (TALKA_ALLOWED_ORIGINS = https://<propriétaire>.github.io), puis le site
+# GitHub Pages est republié avec l'adresse du relais.
+
+name: Heroku
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**.md"
+      - "ios/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: heroku
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Déploiement
+    runs-on: ubuntu-latest
+    env:
+      HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+      HEROKU_REGION: ${{ vars.HEROKU_REGION || 'eu' }}
+      HEROKU_APP_NAME: ${{ vars.HEROKU_APP_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: xtask
+      - name: Construit et publie sur Heroku, puis republie GitHub Pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cargo xtask heroku
