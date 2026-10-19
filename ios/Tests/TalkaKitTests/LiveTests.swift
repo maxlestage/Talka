@@ -26,7 +26,7 @@ final class LiveTests: XCTestCase {
         return e
     }
 
-    func wait(_ what: String, timeout: Double = 10, _ ok: () -> Bool) async throws {
+    func wait(_ what: String, timeout: Double = 10, _ ok: @escaping () -> Bool) async throws {
         let end = Date().addingTimeInterval(timeout)
         while !ok() {
             if Date() > end { XCTFail("trop long : \(what)"); throw XCTSkip(what) }

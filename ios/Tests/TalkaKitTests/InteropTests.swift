@@ -19,7 +19,7 @@ final class InteropTests: XCTestCase {
         e.start()
         defer { e.stop() }
 
-        func wait(_ what: String, _ timeout: Double = 30, _ ok: () -> Bool) async throws {
+        func wait(_ what: String, _ timeout: Double = 30, _ ok: @escaping () -> Bool) async throws {
             let end = Date().addingTimeInterval(timeout)
             while !ok() {
                 guard Date() < end else { XCTFail("trop long : \(what)"); throw XCTSkip(what) }
