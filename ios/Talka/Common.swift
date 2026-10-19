@@ -19,10 +19,10 @@ struct Avatar: View {
     var size: CGFloat = 48
 
     static let colors: [Color] = [
-        .init(red: 229 / 255, green: 66 / 255, blue: 163 / 255), .init(red: 31 / 255, green: 122 / 255, blue: 236 / 255),
-        .init(red: 211 / 255, green: 107 / 255, blue: 0), .init(red: 2 / 255, green: 166 / 255, blue: 152 / 255),
-        .init(red: 127 / 255, green: 102 / 255, blue: 1), .init(red: 196 / 255, green: 83 / 255, blue: 45 / 255),
-        .init(red: 0, green: 128 / 255, blue: 105 / 255), .init(red: 166 / 255, green: 44 / 255, blue: 113 / 255),
+        .init(red: 0.898, green: 0.2588, blue: 0.6392), .init(red: 0.1216, green: 0.4784, blue: 0.9255),
+        .init(red: 0.8275, green: 0.4196, blue: 0), .init(red: 0.0078, green: 0.651, blue: 0.5961),
+        .init(red: 0.498, green: 0.4, blue: 1), .init(red: 0.7686, green: 0.3255, blue: 0.1765),
+        .init(red: 0, green: 0.502, blue: 0.4118), .init(red: 0.651, green: 0.1725, blue: 0.4431),
     ]
 
     static func color(_ id: String) -> Color {
