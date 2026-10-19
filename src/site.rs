@@ -10,7 +10,8 @@ const DESCRIPTION: &str = "Talka, la messagerie où un code remplace votre numé
 discussions, groupes, appels audio et vidéo, vocaux, statuts. Chiffrée de bout en bout, sans \
 compte et sans base de données : tout reste dans votre navigateur.";
 
-/// Ce qui permet de charger le navigateur (Rust compilé en WebAssembly) et
+/// La fenêtre du téléphone (sous l'encoche, clavier qui redimensionne la
+/// page), puis ce qui permet de charger le navigateur (Rust compilé en WebAssembly) et
 /// de lui dire où il est : la page (`site` ou `app`), le chemin du site, le
 /// relais, et si c'est l'export statique (GitHub Pages).
 fn head_tags(site: &Site, page: &str) -> String {
@@ -23,7 +24,7 @@ fn head_tags(site: &Site, page: &str) -> String {
         String::new()
     };
     format!(
-        r##"<link rel="icon" href="{logo}" type="image/svg+xml"/><link rel="apple-touch-icon" href="{touch}"/>{manifest}<meta name="mobile-web-app-capable" content="yes"/><meta name="apple-mobile-web-app-capable" content="yes"/><meta name="apple-mobile-web-app-title" content="Talka"/><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/><meta name="color-scheme" content="light dark"/><meta name="theme-color" content="#008069"/><meta name="talka-page" content="{page}"/><meta name="talka-base" content="{base}"/><meta name="talka-api" content="{api}"/><meta name="talka-static" content="{export}"/><link rel="preload" href="{wasm}" as="fetch" type="application/wasm" crossorigin=""/><script type="module" src="{js}"></script>"##,
+        r##"<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"/><link rel="icon" href="{logo}" type="image/svg+xml"/><link rel="apple-touch-icon" href="{touch}"/>{manifest}<meta name="mobile-web-app-capable" content="yes"/><meta name="apple-mobile-web-app-capable" content="yes"/><meta name="apple-mobile-web-app-title" content="Talka"/><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/><meta name="color-scheme" content="light dark"/><meta name="theme-color" content="#008069"/><meta name="talka-page" content="{page}"/><meta name="talka-base" content="{base}"/><meta name="talka-api" content="{api}"/><meta name="talka-static" content="{export}"/><link rel="preload" href="{wasm}" as="fetch" type="application/wasm" crossorigin=""/><script type="module" src="{js}"></script>"##,
         logo = attr(&site.url("/logo.svg")),
         touch = attr(&site.url("/icons/apple-touch-icon.png")),
         base = attr(&site.base),
