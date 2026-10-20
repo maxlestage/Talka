@@ -1,50 +1,52 @@
-//! La mémoire de Talka : IndexedDB, dans le navigateur. Pas de base de
-//! données ailleurs : ce qui n'est pas ici n'existe pas.
+//! La mémoire de Talka dans le navigateur : Memoire ORM (voir [`crate::rows`])
+//! dont les lignes sont gardées dans IndexedDB. Pas de base de données
+//! ailleurs : ce qui n'est pas ici n'existe pas.
 //!
-//! Chaque magasin range des objets `{ key, json }` (le JSON d'une structure
-//! de `model`) ; les messages ont en plus `chat` et `at`, pour l'index qui
-//! les lit dans l'ordre.
+//! Memoire range ses lignes dans un stockage clé-valeur synchrone
+//! ([`KeyValueStorage`]), comme `localStorage` ; mais `localStorage` ne tient
+//! qu'environ 5 Mo, trop peu pour des photos et des vocaux. [`IdbKv`] lui
+//! donne IndexedDB (des centaines de Mo) : tout est lu une fois à
+//! l'ouverture (l'écran de chargement), chaque écriture va aussitôt dans
+//! cette copie et part vers IndexedDB juste après, dans l'ordre.
 //!
-//! | Magasin | Contenu |
-//! |---|---|
-//! | `kv` | identité, profil, réglages, code de verrouillage |
-//! | `contacts` | `Contact` (clé : le code) |
-//! | `chats` | `Chat` |
-//! | `messages` | `Message` (clé : `chat|id`) |
-//! | `outbox` | `OutItem` : les enveloppes pas encore confirmées par le relais |
-//! | `statuses` | `StatusItem` |
-//! | `calls` | `CallEntry` |
+//! Les données d'avant Memoire (la base IndexedDB `talka-rs`, un magasin par
+//! sorte d'objet) sont reprises une fois, puis cette ancienne base est
+//! supprimée.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-use js_sys::{Array, Object, Promise};
+use js_sys::{Array, Promise};
+use memoire_orm::web::KeyValueStorage;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{
-    IdbCursorWithValue, IdbDatabase, IdbKeyRange, IdbObjectStoreParameters, IdbOpenDbRequest,
-    IdbRequest, IdbTransactionMode,
-};
+use web_sys::{IdbDatabase, IdbOpenDbRequest, IdbRequest, IdbTransactionMode};
 
-use crate::dom::{get, set, window};
+use crate::dom::{get, window};
+use crate::rows::{Rows, STORES};
 
-const NAME: &str = "talka-rs";
-const VERSION: u32 = 1;
-pub const STORES: [&str; 7] = [
-    "kv", "contacts", "chats", "messages", "outbox", "statuses", "calls",
-];
+/// La base IndexedDB où Memoire garde ses lignes (une clé, une valeur).
+const NAME: &str = "talka-memoire";
+const KV: &str = "kv";
+/// La base d'avant Memoire.
+const LEGACY: &str = "talka-rs";
 
 thread_local! {
-    static DB: RefCell<Option<IdbDatabase>> = const { RefCell::new(None) };
+    static ROWS: RefCell<Option<Rows>> = const { RefCell::new(None) };
+    static IDB: RefCell<Option<IdbDatabase>> = const { RefCell::new(None) };
+    static FLUSHING: Cell<bool> = const { Cell::new(false) };
 }
 
-fn db() -> Result<IdbDatabase, JsValue> {
-    DB.with(|d| d.borrow().clone())
-        .ok_or_else(|| JsValue::from_str("base fermée"))
-}
+/// Les écritures pas encore parties vers IndexedDB, dans l'ordre.
+static QUEUE: Mutex<Vec<(String, Option<String>)>> = Mutex::new(Vec::new());
+
+// ----- IndexedDB ---------------------------------------------------------------
 
 /// Attend une requête IndexedDB.
 async fn wait(req: &IdbRequest) -> Result<JsValue, JsValue> {
@@ -63,212 +65,200 @@ async fn wait(req: &IdbRequest) -> Result<JsValue, JsValue> {
     JsFuture::from(promise).await
 }
 
-/// Ouvre la base (et la crée la première fois).
-pub async fn open() -> Result<(), JsValue> {
-    if DB.with(|d| d.borrow().is_some()) {
-        return Ok(());
-    }
+/// Ouvre une base ; `upgrade` la prépare quand elle est nouvelle.
+async fn open_idb(
+    name: &str,
+    upgrade: impl Fn(&IdbDatabase) + 'static,
+) -> Result<IdbDatabase, JsValue> {
     let factory = window()
         .indexed_db()?
         .ok_or_else(|| JsValue::from_str("IndexedDB indisponible"))?;
-    let req: IdbOpenDbRequest = factory.open_with_u32(NAME, VERSION)?;
-    let upgrade_req = req.clone();
-    let upgrade = Closure::<dyn FnMut()>::new(move || {
-        let Ok(result) = upgrade_req.result() else {
-            return;
-        };
-        let db: IdbDatabase = result.unchecked_into();
-        for name in STORES {
-            if db.object_store_names().contains(name) {
-                continue;
-            }
-            let params = IdbObjectStoreParameters::new();
-            params.set_key_path(&JsValue::from_str("key"));
-            if let Ok(store) = db.create_object_store_with_optional_parameters(name, &params)
-                && name == "messages"
-            {
-                let path = Array::of2(&JsValue::from_str("chat"), &JsValue::from_str("at"));
-                let _ = store.create_index_with_str_sequence("chat_at", &path);
-            }
+    let req: IdbOpenDbRequest = factory.open_with_u32(name, 1)?;
+    let up = req.clone();
+    let on_upgrade = Closure::<dyn FnMut()>::new(move || {
+        if let Ok(result) = up.result() {
+            upgrade(&result.unchecked_into());
         }
     });
-    req.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));
+    req.set_onupgradeneeded(Some(on_upgrade.as_ref().unchecked_ref()));
     let result = wait(&req).await;
-    drop(upgrade);
-    let db: IdbDatabase = result?.unchecked_into();
-    DB.with(|d| *d.borrow_mut() = Some(db));
+    drop(on_upgrade);
+    Ok(result?.unchecked_into())
+}
+
+/// Tout le contenu de la base de Memoire, pour la copie en mémoire.
+async fn load_all(db: &IdbDatabase) -> Result<BTreeMap<String, String>, JsValue> {
+    let store = db.transaction_with_str(KV)?.object_store(KV)?;
+    let keys = wait(&store.get_all_keys()?).await?;
+    let values = wait(&store.get_all()?).await?;
+    let (keys, values) = (Array::from(&keys), Array::from(&values));
+    Ok(keys
+        .iter()
+        .zip(values.iter())
+        .filter_map(|(k, v)| Some((k.as_string()?, v.as_string()?)))
+        .collect())
+}
+
+/// Envoie vers IndexedDB les écritures en attente, dans l'ordre (une
+/// transaction par lot ; IndexedDB les applique dans l'ordre de création).
+async fn flush() {
+    if FLUSHING.with(|f| f.replace(true)) {
+        return;
+    }
+    loop {
+        let batch: Vec<(String, Option<String>)> = {
+            let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *q)
+        };
+        if batch.is_empty() {
+            break;
+        }
+        let Some(db) = IDB.with(|d| d.borrow().clone()) else {
+            break;
+        };
+        let Ok(tx) = db.transaction_with_str_and_mode(KV, IdbTransactionMode::Readwrite) else {
+            break;
+        };
+        let Ok(store) = tx.object_store(KV) else {
+            break;
+        };
+        let mut last = None;
+        for (key, value) in batch {
+            let k = JsValue::from_str(&key);
+            last = match value {
+                Some(v) => store.put_with_key(&JsValue::from_str(&v), &k).ok(),
+                None => store.delete(&k).ok(),
+            }
+            .or(last);
+        }
+        if let Some(req) = last {
+            let _ = wait(&req).await;
+        }
+    }
+    FLUSHING.with(|f| f.set(false));
+}
+
+/// Attend que toutes les écritures soient dans IndexedDB.
+async fn flush_now() {
+    loop {
+        flush().await;
+        let empty = QUEUE.lock().map(|q| q.is_empty()).unwrap_or(true);
+        if empty && !FLUSHING.with(Cell::get) {
+            return;
+        }
+        crate::dom::sleep(20).await;
+    }
+}
+
+fn enqueue(key: &str, value: Option<&str>) {
+    if let Ok(mut q) = QUEUE.lock() {
+        q.push((key.to_owned(), value.map(str::to_owned)));
+    }
+    if !FLUSHING.with(Cell::get) {
+        wasm_bindgen_futures::spawn_local(flush());
+    }
+}
+
+/// Le stockage de Memoire : une copie en mémoire, gardée dans IndexedDB.
+#[derive(Clone)]
+struct IdbKv {
+    cache: Arc<Mutex<BTreeMap<String, String>>>,
+}
+
+impl KeyValueStorage for IdbKv {
+    fn scope(&self) -> String {
+        "talka-indexeddb".into()
+    }
+
+    fn get(&self, key: &str) -> memoire_orm::Result<Option<String>> {
+        Ok(self.cache.lock().ok().and_then(|c| c.get(key).cloned()))
+    }
+
+    fn set(&self, key: &str, value: &str) -> memoire_orm::Result<()> {
+        if let Ok(mut c) = self.cache.lock() {
+            c.insert(key.to_owned(), value.to_owned());
+        }
+        enqueue(key, Some(value));
+        Ok(())
+    }
+
+    fn remove(&self, key: &str) -> memoire_orm::Result<()> {
+        if let Ok(mut c) = self.cache.lock() {
+            c.remove(key);
+        }
+        enqueue(key, None);
+        Ok(())
+    }
+
+    fn keys(&self) -> memoire_orm::Result<Vec<String>> {
+        Ok(self
+            .cache
+            .lock()
+            .map(|c| c.keys().cloned().collect())
+            .unwrap_or_default())
+    }
+}
+
+fn rows() -> Option<Rows> {
+    ROWS.with(|r| r.borrow().clone())
+}
+
+/// Ouvre la mémoire : lit IndexedDB, ouvre Memoire, reprend une fois les
+/// données d'avant Memoire.
+pub async fn open() -> Result<(), JsValue> {
+    if rows().is_some() {
+        return Ok(());
+    }
+    let idb = open_idb(NAME, |db| {
+        if !db.object_store_names().contains(KV) {
+            let _ = db.create_object_store(KV);
+        }
+    })
+    .await?;
+    let cache = load_all(&idb).await?;
+    IDB.with(|d| *d.borrow_mut() = Some(idb));
+    let storage = IdbKv {
+        cache: Arc::new(Mutex::new(cache)),
+    };
+    let db = Rows::open(storage)
+        .await
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    if db.count().await == 0
+        && let Some(old) = legacy_dump().await
+    {
+        db.restore(&old).await;
+        flush_now().await;
+        if let Ok(Some(factory)) = window().indexed_db() {
+            let _ = factory.delete_database(LEGACY);
+        }
+    }
+    ROWS.with(|r| *r.borrow_mut() = Some(db));
     Ok(())
 }
 
-fn object_store(name: &str, write: bool) -> Result<web_sys::IdbObjectStore, JsValue> {
-    let mode = if write {
-        IdbTransactionMode::Readwrite
-    } else {
-        IdbTransactionMode::Readonly
-    };
-    db()?
-        .transaction_with_str_and_mode(name, mode)?
-        .object_store(name)
-}
-
-fn record(key: &str, json: &str) -> Object {
-    let o = Object::new();
-    set(&o, "key", key);
-    set(&o, "json", json);
-    o
-}
-
-fn parse<T: DeserializeOwned>(v: &JsValue) -> Option<T> {
-    serde_json::from_str(&get(v, "json").as_string()?).ok()
-}
-
-pub async fn get_raw(store: &str, key: &str) -> Option<String> {
-    let req = object_store(store, false)
-        .ok()?
-        .get(&JsValue::from_str(key))
-        .ok()?;
-    let v = wait(&req).await.ok()?;
-    if v.is_undefined() || v.is_null() {
+/// Le contenu de la base d'avant Memoire (`None` : il n'y en a pas).
+async fn legacy_dump() -> Option<Value> {
+    let fresh = Rc::new(Cell::new(false));
+    let f = fresh.clone();
+    // Ouvrir une base qui n'existe pas la crée, vide : on le voit au
+    // passage par `upgrade`, et on l'efface aussitôt.
+    let db = open_idb(LEGACY, move |_| f.set(true)).await.ok()?;
+    if fresh.get() || db.object_store_names().length() == 0 {
+        db.close();
+        if let Ok(Some(factory)) = window().indexed_db() {
+            let _ = factory.delete_database(LEGACY);
+        }
         return None;
     }
-    get(&v, "json").as_string()
-}
-
-pub async fn read<T: DeserializeOwned>(store: &str, key: &str) -> Option<T> {
-    serde_json::from_str(&get_raw(store, key).await?).ok()
-}
-
-pub async fn write<T: Serialize>(store: &str, key: &str, value: &T) {
-    let Ok(json) = serde_json::to_string(value) else {
-        return;
-    };
-    put_record(store, record(key, &json)).await;
-}
-
-async fn put_record(store: &str, rec: Object) {
-    if let Ok(s) = object_store(store, true)
-        && let Ok(req) = s.put(&rec)
-    {
-        let _ = wait(&req).await;
-    }
-}
-
-/// Un message : rangé avec `chat` et `at`, pour l'index.
-pub async fn write_message(m: &crate::model::Message) {
-    let Ok(json) = serde_json::to_string(m) else {
-        return;
-    };
-    let rec = record(&m.key(), &json);
-    set(&rec, "chat", m.chat.as_str());
-    set(&rec, "at", m.at);
-    put_record("messages", rec).await;
-}
-
-pub async fn remove(store: &str, key: &str) {
-    if let Ok(s) = object_store(store, true)
-        && let Ok(req) = s.delete(&JsValue::from_str(key))
-    {
-        let _ = wait(&req).await;
-    }
-}
-
-pub async fn all<T: DeserializeOwned>(store: &str) -> Vec<T> {
-    let Ok(s) = object_store(store, false) else {
-        return Vec::new();
-    };
-    let Ok(req) = s.get_all() else {
-        return Vec::new();
-    };
-    let Ok(v) = wait(&req).await else {
-        return Vec::new();
-    };
-    Array::from(&v).iter().filter_map(|r| parse(&r)).collect()
-}
-
-pub async fn clear(store: &str) {
-    if let Ok(s) = object_store(store, true)
-        && let Ok(req) = s.clear()
-    {
-        let _ = wait(&req).await;
-    }
-}
-
-/// Parcourt les messages d'une discussion avec un curseur, du plus récent au
-/// plus ancien : au plus `limit`, ou tous en les effaçant (`delete`).
-async fn cursor(chat: &str, limit: usize, delete: bool) -> Vec<JsValue> {
-    let Ok(s) = object_store("messages", delete) else {
-        return Vec::new();
-    };
-    let Ok(index) = s.index("chat_at") else {
-        return Vec::new();
-    };
-    let lower = Array::of2(&JsValue::from_str(chat), &JsValue::from_f64(f64::MIN));
-    let upper = Array::of2(&JsValue::from_str(chat), &JsValue::from_f64(f64::MAX));
-    let Ok(range) = IdbKeyRange::bound(&lower, &upper) else {
-        return Vec::new();
-    };
-    let Ok(req) =
-        index.open_cursor_with_range_and_direction(&range, web_sys::IdbCursorDirection::Prev)
-    else {
-        return Vec::new();
-    };
-    let found = std::rc::Rc::new(RefCell::new(Vec::new()));
-    let f = found.clone();
-    let r = req.clone();
-    let mut resolve_slot: Option<js_sys::Function> = None;
-    let promise = Promise::new(&mut |resolve, _| resolve_slot = Some(resolve));
-    let resolve = resolve_slot.expect("promesse");
-    let step = Closure::<dyn FnMut()>::new(move || {
-        let c = r
-            .result()
-            .ok()
-            .filter(|v| !v.is_null() && !v.is_undefined());
-        match c {
-            Some(c) if f.borrow().len() < limit => {
-                let c: IdbCursorWithValue = c.unchecked_into();
-                if let Ok(v) = c.value() {
-                    f.borrow_mut().push(v);
-                }
-                if delete {
-                    let _ = c.delete();
-                }
-                let _ = c.continue_();
-            }
-            _ => {
-                let _ = resolve.call0(&JsValue::NULL);
-            }
-        }
-    });
-    req.set_onsuccess(Some(step.as_ref().unchecked_ref()));
-    let _ = JsFuture::from(promise).await;
-    drop(step);
-    found.take()
-}
-
-/// Les messages d'une discussion, du plus ancien au plus récent ; `limit`
-/// garde les derniers.
-pub async fn messages_of(chat: &str, limit: usize) -> Vec<crate::model::Message> {
-    let mut out: Vec<crate::model::Message> = cursor(chat, limit, false)
-        .await
-        .iter()
-        .filter_map(parse)
-        .collect();
-    out.reverse();
-    out
-}
-
-pub async fn delete_messages_of(chat: &str) {
-    cursor(chat, usize::MAX, true).await;
-}
-
-/// Tout, pour la sauvegarde : `{ magasin: [[clé, json], …] }`.
-pub async fn dump() -> Value {
     let mut out = serde_json::Map::new();
     for name in STORES {
-        let Ok(s) = object_store(name, false) else {
+        let Ok(store) = db
+            .transaction_with_str(name)
+            .and_then(|t| t.object_store(name))
+        else {
             continue;
         };
-        let Ok(req) = s.get_all() else { continue };
+        let Ok(req) = store.get_all() else { continue };
         let rows: Vec<Value> = match wait(&req).await {
             Ok(v) => Array::from(&v)
                 .iter()
@@ -295,29 +285,93 @@ pub async fn dump() -> Value {
         };
         out.insert(name.to_owned(), Value::Array(rows));
     }
-    Value::Object(out)
+    db.close();
+    Some(Value::Object(out))
+}
+
+// ----- Ce que le reste de Talka utilise ------------------------------------------
+
+pub async fn get_raw(store: &str, key: &str) -> Option<String> {
+    rows()?.get(store, key).await
+}
+
+pub async fn read<T: DeserializeOwned>(store: &str, key: &str) -> Option<T> {
+    serde_json::from_str(&get_raw(store, key).await?).ok()
+}
+
+pub async fn write<T: Serialize>(store: &str, key: &str, value: &T) {
+    let (Some(db), Ok(json)) = (rows(), serde_json::to_string(value)) else {
+        return;
+    };
+    db.put(store, key, json, "", 0.0).await;
+}
+
+/// Un message : rangé avec sa discussion et son heure, pour la requête
+/// indexée qui les lit dans l'ordre.
+pub async fn write_message(m: &crate::model::Message) {
+    let (Some(db), Ok(json)) = (rows(), serde_json::to_string(m)) else {
+        return;
+    };
+    db.put("messages", &m.key(), json, &m.chat, m.at).await;
+}
+
+pub async fn remove(store: &str, key: &str) {
+    if let Some(db) = rows() {
+        db.remove(store, key).await;
+    }
+}
+
+pub async fn all<T: DeserializeOwned>(store: &str) -> Vec<T> {
+    let Some(db) = rows() else { return Vec::new() };
+    db.all(store)
+        .await
+        .iter()
+        .filter_map(|j| serde_json::from_str(j).ok())
+        .collect()
+}
+
+pub async fn clear(store: &str) {
+    if let Some(db) = rows() {
+        db.clear(store).await;
+    }
+}
+
+/// Les messages d'une discussion, du plus ancien au plus récent ; `limit`
+/// garde les derniers.
+pub async fn messages_of(chat: &str, limit: usize) -> Vec<crate::model::Message> {
+    let Some(db) = rows() else { return Vec::new() };
+    db.messages_of(chat, limit)
+        .await
+        .iter()
+        .filter_map(|j| serde_json::from_str(j).ok())
+        .collect()
+}
+
+pub async fn delete_messages_of(chat: &str) {
+    if let Some(db) = rows() {
+        db.delete_messages_of(chat).await;
+    }
+}
+
+/// Tout, pour la sauvegarde : `{ magasin: [[clé, json], …] }`.
+pub async fn dump() -> Value {
+    match rows() {
+        Some(db) => db.dump().await,
+        None => Value::Object(serde_json::Map::new()),
+    }
 }
 
 pub async fn restore(data: &Value) {
-    for name in STORES {
-        clear(name).await;
-        for row in data[name].as_array().into_iter().flatten() {
-            let (Some(key), Some(json)) = (row[0].as_str(), row[1].as_str()) else {
-                continue;
-            };
-            let rec = record(key, json);
-            if name == "messages" {
-                set(&rec, "chat", row[2].as_str().unwrap_or_default());
-                set(&rec, "at", row[3].as_f64().unwrap_or(0.0));
-            }
-            put_record(name, rec).await;
-        }
+    if let Some(db) = rows() {
+        db.restore(data).await;
+        flush_now().await;
     }
 }
 
 pub async fn wipe() {
-    for name in STORES {
-        clear(name).await;
+    if let Some(db) = rows() {
+        db.wipe().await;
+        flush_now().await;
     }
 }
 

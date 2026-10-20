@@ -66,6 +66,9 @@ struct RootView: View {
             if model.locked {
                 LockView().zIndex(3).transition(.opacity)
             }
+            if let step = model.loading {
+                LoadingView(step: step).zIndex(4).transition(.opacity)
+            }
         }
         .animation(.spring(duration: 0.3), value: model.toast)
         .animation(.easeInOut(duration: 0.2), value: model.locked)
@@ -126,5 +129,51 @@ struct Logo: View {
             .clipShape(.rect(cornerRadius: size * 0.23))
             .shadow(color: .talkaGreen.opacity(0.35), radius: 12, y: 6)
             .accessibilityHidden(true)
+    }
+}
+
+/// L'écran de chargement : le logo qui respire, une barre qui avance,
+/// l'étape en cours (comme le navigateur).
+struct LoadingView: View {
+    let step: String
+    @State private var breathe = false
+    @State private var slide = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            Color("LaunchBackground").ignoresSafeArea()
+            VStack(spacing: 14) {
+                Logo(size: 88)
+                    .scaleEffect(breathe ? 0.94 : 1)
+                    .opacity(breathe ? 0.85 : 1)
+                Text("Talka").font(.title.bold())
+                Capsule()
+                    .fill(Color(.systemGray5))
+                    .frame(width: 180, height: 4)
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(Color(red: 0.055, green: 0.42, blue: 0.39))
+                            .frame(width: 72, height: 4)
+                            .offset(x: slide ? 180 : -72)
+                    }
+                    .clipShape(.capsule)
+                    .padding(.top, 4)
+                Text(step).font(.callout)
+                Text("Vos messages restent sur cet appareil, chiffrés de bout en bout.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 260)
+            }
+            .padding()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Chargement de Talka. \(step)")
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { breathe = true }
+            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) { slide = true }
+        }
     }
 }
