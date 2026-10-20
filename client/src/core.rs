@@ -447,9 +447,16 @@ pub async fn clear_chat(id: &str) {
     emit(Ev::Messages(id.to_owned()));
 }
 
+/// Une capsule temporelle s'ouvre au plus tard dans dix ans.
+pub const CAPSULE_MAX_MS: f64 = 10.0 * 366.0 * DAY;
+
 pub fn preview(m: &Message) -> String {
     if m.deleted {
         return "🚫 Message supprimé".into();
+    }
+    // Ni l'aperçu de la liste, ni la notification ne trahissent une capsule.
+    if m.is_capsule() {
+        return "⏳ Capsule temporelle".into();
     }
     match m.kind.as_str() {
         "image" => format!("📷 {}", if m.text.is_empty() { "Photo" } else { &m.text }),
@@ -715,6 +722,7 @@ pub async fn send_message(chat_id: &str, content: Content) -> Option<Message> {
         code: content.code.clone(),
         reply: content.reply.clone(),
         fwd: content.fwd,
+        open_at: content.open_at,
         ..Default::default()
     };
     if c.timer > 0 {
@@ -878,6 +886,7 @@ pub async fn forward(m: &Message, chat_ids: &[String]) {
         code: m.code.clone(),
         reply: None,
         fwd: true,
+        open_at: 0.0,
     };
     for id in chat_ids {
         send_message(id, content.clone()).await;
@@ -1337,6 +1346,12 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 code: content.code,
                 reply: content.reply,
                 fwd: content.fwd,
+                // Une capsule s'ouvre au plus tard dans dix ans.
+                open_at: if content.open_at > at {
+                    content.open_at.min(at + CAPSULE_MAX_MS)
+                } else {
+                    0.0
+                },
                 ..Default::default()
             };
             if let Some(ttl) = wire.ttl {
