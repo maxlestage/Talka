@@ -33,10 +33,21 @@ struct ChatsTab: View {
             if let e = model.engine {
                 List {
                     if e.netState != .online {
-                        Label(e.netState == .connecting ? "Connexion…" : "Hors ligne : les messages partiront au retour du réseau.",
-                              systemImage: "wifi.slash")
+                        // Le serveur est nommé : une adresse mal saisie se voit et se corrige.
+                        Button { model.tab = .settings } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(e.netState == .connecting ? "Connexion…" : "Hors ligne : les messages partiront au retour du réseau.")
+                                    Text("Serveur : \(e.relay.server.host ?? e.relay.server.absoluteString) · Réglages")
+                                        .font(.caption2)
+                                }
+                            } icon: {
+                                Image(systemName: "wifi.slash")
+                            }
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        }
+                        .accessibilityHint("Ouvre les réglages pour vérifier le serveur")
                     }
                     Picker("Filtre", selection: $filter) {
                         ForEach(Filter.allCases, id: \.self) { Text($0.rawValue) }
