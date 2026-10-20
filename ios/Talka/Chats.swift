@@ -4,6 +4,7 @@
 import AVFoundation
 import PhotosUI
 import SwiftUI
+import UserNotifications
 import TalkaKit
 
 struct ChatsTab: View {
@@ -116,6 +117,15 @@ struct ChatsTab: View {
                             Button { sheet = .myCode } label: { Label("Mon code", systemImage: "qrcode") }
                             Button { sheet = .group } label: { Label("Nouveau groupe", systemImage: "person.3") }
                             Button { sheet = .starred } label: { Label("Messages importants", systemImage: "star") }
+                            if let e = model.engine, e.chats.values.contains(where: { $0.unread > 0 || $0.markedUnread }) {
+                                Button {
+                                    let n = e.markAllRead()
+                                    UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
+                                    model.show(n > 1 ? "\(n) discussions marquées comme lues" : "Discussion marquée comme lue")
+                                } label: {
+                                    Label("Tout marquer comme lu", systemImage: "checkmark.message")
+                                }
+                            }
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
