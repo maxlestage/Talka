@@ -20,6 +20,7 @@ let package = Package(
             name: "TalkaKit",
             dependencies: [
                 .target(name: "LinuxShims", condition: .when(platforms: [.linux])),
+                .target(name: "CSQLite", condition: .when(platforms: [.linux])),
                 .product(
                     name: "Crypto", package: "swift-crypto",
                     condition: .when(platforms: [.linux])),
@@ -27,6 +28,9 @@ let package = Package(
         // Sous Linux seulement (les tests) : un symbole que la bibliothèque
         // Observation réclame sans le fournir. Rien de tout cela sur iPhone.
         .target(name: "LinuxShims"),
+        // SQLite : fourni par iOS (module SQLite3) ; sous Linux, la
+        // bibliothèque du système (libsqlite3).
+        .systemLibrary(name: "CSQLite", providers: [.apt(["libsqlite3-dev"])]),
         .testTarget(
             name: "TalkaKitTests", dependencies: ["TalkaKit"], resources: [.copy("vectors.json")]),
     ]
