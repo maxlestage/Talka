@@ -23,15 +23,25 @@ struct ConversationView: View {
     @State private var showInfo = false
     @State private var recorder = VoiceRecorder()
     @State private var loaded = false
+    /// La recherche dans la discussion (nil : fermée).
+    @State private var search: String?
     @FocusState private var focused: Bool
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         if let e = model.engine, let chat = e.chat(chatId) {
             let _ = e.revisions[chatId]
             // Les messages éphémères expirés disparaissent tout de suite, comme dans le navigateur.
             let now = nowMs()
-            let messages = e.messages(chatId).filter { m in m.exp.map { $0 > now } ?? true }
+            let query = (search ?? "").trimmingCharacters(in: .whitespaces)
+            let messages = e.messages(chatId).filter { (m: Message) -> Bool in
+                if let exp = m.exp, exp <= now { return false }
+                return query.isEmpty || Self.matches(m, query)
+            }
             VStack(spacing: 0) {
+                if search != nil {
+                    searchBar(found: messages.count, active: !query.isEmpty)
+                }
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 2) {
@@ -93,6 +103,15 @@ struct ConversationView: View {
                     }
                     .foregroundStyle(.primary)
                     .accessibilityLabel("Infos de \(e.title(chat))")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        withAnimation { search = search == nil ? "" : nil }
+                        searchFocused = search != nil
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel(search == nil ? "Rechercher dans la discussion" : "Fermer la recherche")
                 }
                 if !chat.group, !e.blocked(chatId) {
                     ToolbarItemGroup(placement: .topBarTrailing) {
@@ -163,6 +182,42 @@ struct ConversationView: View {
         } else {
             ContentUnavailableView("Discussion introuvable", systemImage: "bubble.left")
         }
+    }
+
+    // MARK: Recherche
+
+    /// Comme le navigateur : le texte et le nom (fichier, contact), sans
+    /// tenir compte des majuscules ni des accents.
+    static func matches(_ m: Message, _ query: String) -> Bool {
+        guard m.kind != "system", !m.deleted else { return false }
+        return "\(m.text) \(m.name)".range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    func searchBar(found: Int, active: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Rechercher dans la discussion…", text: Binding(get: { search ?? "" }, set: { search = $0 }))
+                .focused($searchFocused)
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+                .accessibilityLabel("Rechercher dans la discussion")
+            if active {
+                Text(found == 0 ? "Aucun résultat" : found == 1 ? "1 message" : "\(found) messages")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+            Button {
+                withAnimation { search = nil }
+            } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .accessibilityLabel("Fermer la recherche")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     // MARK: En-tête
