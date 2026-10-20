@@ -324,3 +324,34 @@ extension View {
         padding(16).background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 12))
     }
 }
+
+// MARK: Appareil photo
+
+/// Prendre une photo avec l'appareil (la galerie passe par PhotosPicker).
+struct CameraPicker: UIViewControllerRepresentable {
+    let done: (UIImage?) -> Void
+
+    static var available: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
+
+    func makeCoordinator() -> Coordinator { Coordinator(done: done) }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let c = UIImagePickerController()
+        c.sourceType = .camera
+        c.delegate = context.coordinator
+        return c
+    }
+
+    func updateUIViewController(_ c: UIImagePickerController, context: Context) {}
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let done: (UIImage?) -> Void
+        init(done: @escaping (UIImage?) -> Void) { self.done = done }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            done(info[.originalImage] as? UIImage)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { done(nil) }
+    }
+}

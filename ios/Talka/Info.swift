@@ -212,6 +212,11 @@ struct GroupInfoView: View {
                     .listRowBackground(Color.clear)
                 }
                 if admin {
+                    Section {
+                        PhotosPicker(selection: $photo, matching: .images) {
+                            Label("Photo du groupe (galerie)", systemImage: "photo.on.rectangle")
+                        }
+                    }
                     Section("Nom du groupe") {
                         TextField("Nom du groupe", text: $name)
                             .onSubmit { rename(e, chat) }
@@ -289,8 +294,10 @@ struct GroupInfoView: View {
             .onAppear { name = chat.name }
             .onDisappear { if admin { rename(e, chat) } }
             .onChange(of: photo) { _, item in
+                guard let item else { return }
+                photo = nil // la même photo pourra être rechoisie
                 Task {
-                    guard let data = try? await item?.loadTransferable(type: Data.self), let ui = UIImage(data: data),
+                    guard let data = try? await item.loadTransferable(type: Data.self), let ui = UIImage(data: data),
                           let url = ui.avatarDataURL()
                     else { return }
                     e.updateGroup(chatId, note: "Vous avez changé la photo du groupe.") { $0.avatar = url }
