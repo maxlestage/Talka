@@ -340,7 +340,44 @@ pub fn wallpaper_dialog(chat: Option<Chat>) {
     modal(
         title,
         move |m| {
+            let (m2, chat2) = (m.clone(), chat.clone());
+            let photo = h("button.wall-swatch.wall-add")
+                .attr("type", "button")
+                .attr("aria-label", "Ma photo (galerie)")
+                .child(icon("image"))
+                .child(h("span").text("Ma photo"))
+                .click(move || {
+                    let (m, chat) = (m2.clone(), chat2.clone());
+                    spawn(async move {
+                        let Some(f) = media::pick_file("image/*", None).await else {
+                            return;
+                        };
+                        match media::compress_image(&f, 1280.0, 0.78).await {
+                            Some((data, _, _)) => {
+                                save_wallpaper(chat, data).await;
+                                m.close();
+                            }
+                            None => toast("Cette image ne peut pas être lue."),
+                        }
+                    })
+                });
+            let (m3, chat3) = (m.clone(), chat.clone());
+            let default = chat.as_ref().map(|_| {
+                h("button.wall-swatch.wall-add")
+                    .attr("type", "button")
+                    .attr("aria-label", "Par défaut")
+                    .child(h("span").text("Par défaut"))
+                    .click(move || {
+                        let (m, chat) = (m3.clone(), chat3.clone());
+                        spawn(async move {
+                            save_wallpaper(chat, String::new()).await;
+                            m.close();
+                        })
+                    })
+            });
             h("div.wall-grid")
+                .child(photo)
+                .child(default)
                 .children(WALLPAPERS.iter().map(|w| {
                     let (m, chat, w) = (m.clone(), chat.clone(), *w);
                     h("button.wall-swatch")
@@ -350,14 +387,8 @@ pub fn wallpaper_dialog(chat: Option<Chat>) {
                         .click(move || {
                             let (m, chat) = (m.clone(), chat.clone());
                             spawn(async move {
-                                match chat {
-                                    Some(c) => {
-                                        core::update_chat(&c.id, |x| x.wallpaper = w.into()).await
-                                    }
-                                    None => core::save_settings(|s| s.wallpaper = w.into()).await,
-                                }
+                                save_wallpaper(chat, w.into()).await;
                                 m.close();
-                                apply_wallpaper();
                             })
                         })
                 }))
@@ -377,10 +408,27 @@ fn apply_wallpaper() {
     } else {
         chat.wallpaper
     };
+    // Une photo choisie dans la galerie : une adresse `data:` (gardée sur
+    // l'appareil, jamais envoyée).
+    if w.starts_with("data:image/") {
+        list.set_class_name("messages wall-photo");
+        set_style(&list, "background-image", &format!("url(\"{w}\")"));
+        return;
+    }
+    set_style(&list, "background-image", "");
     list.set_class_name(&format!(
         "messages wall-{}",
         if w.is_empty() { "doodle" } else { &w }
     ));
+}
+
+/// Enregistre un fond d'écran : celui d'une discussion, ou de toutes.
+async fn save_wallpaper(chat: Option<Chat>, w: String) {
+    match chat {
+        Some(c) => core::update_chat(&c.id, |x| x.wallpaper = w).await,
+        None => core::save_settings(|s| s.wallpaper = w).await,
+    }
+    apply_wallpaper();
 }
 
 // ----- Ouvrir, fermer ----------------------------------------------------------
