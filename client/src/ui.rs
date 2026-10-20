@@ -1765,6 +1765,15 @@ async fn contact_info(code: &str) {
         None
     };
     let safety = safety_number(&core::my_code(), code);
+    let protection = match core::protection(code).await {
+        crate::v3::Protection::Ratchet { pq: true } => {
+            "🔐 Session à double cliquet (post-quantique)"
+        }
+        crate::v3::Protection::Ratchet { pq: false } => "🔐 Session à double cliquet (classique)",
+        crate::v3::Protection::Legacy => {
+            "Ancien chiffrement (le contact n'a pas encore la mise à jour)"
+        }
+    };
     let code = code.to_owned();
     modal(
         "Infos du contact",
@@ -1908,6 +1917,7 @@ async fn contact_info(code: &str) {
                     h("div.info-section")
                         .child(h("h3").child(icon("shield")).text(" Chiffrement"))
                         .child(h("p.muted.small").text("Les messages et appels sont chiffrés de bout en bout. Comparez ce numéro de sécurité avec celui affiché chez votre contact : s'il est identique, personne ne s'est glissé entre vous."))
+                        .child(h("p.small").text(protection))
                         .child(h("p.safety").text(&safety)),
                 )
                 .child(actions)

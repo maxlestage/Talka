@@ -76,6 +76,12 @@ pub fn challenge_message(nonce: &str) -> Vec<u8> {
     format!("talka-auth:{nonce}").into_bytes()
 }
 
+/// Ce que signe l'appareil pour publier son paquet de clés v3 (comme
+/// `talka_web::v3::bundle_message`) : il est ainsi lié à son code.
+pub fn bundle_message(bundle: &[u8]) -> Vec<u8> {
+    [b"talka-v3-paquet:".as_slice(), bundle].concat()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

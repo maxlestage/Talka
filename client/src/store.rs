@@ -9,6 +9,12 @@
 //! l'ouverture (l'écran de chargement), chaque écriture va aussitôt dans
 //! cette copie et part vers IndexedDB juste après, dans l'ordre.
 //!
+//! Un [`Batch`] retient ces envois le temps d'un traitement : tout ce qui
+//! est écrit pendant ce temps part dans **une seule** transaction IndexedDB
+//! (tout ou rien). C'est ainsi qu'un message reçu en v3 est rangé avec
+//! l'état de session qui l'a déchiffré ; et rien ne part vers le relais
+//! (`got`, un envoi chiffré) avant que cet état soit écrit ([`committed`]).
+//!
 //! Les données d'avant Memoire (la base IndexedDB `talka-rs`, un magasin par
 //! sorte d'objet) sont reprises une fois, puis cette ancienne base est
 //! supprimée.
@@ -26,7 +32,7 @@ use serde_json::Value;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{IdbDatabase, IdbOpenDbRequest, IdbRequest, IdbTransactionMode};
+use web_sys::{IdbDatabase, IdbOpenDbRequest, IdbRequest, IdbTransaction, IdbTransactionMode};
 
 use crate::dom::{get, window};
 use crate::rows::{Rows, STORES};
@@ -43,6 +49,8 @@ thread_local! {
     static FLUSHING: Cell<bool> = const { Cell::new(false) };
     /// Un autre onglet a pris la main : plus aucune écriture d'ici.
     static RELEASED: Cell<bool> = const { Cell::new(false) };
+    /// Les [`Batch`] ouverts : tant qu'il y en a, rien ne part vers IndexedDB.
+    static HOLD: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Les écritures pas encore parties vers IndexedDB, dans l'ordre.
@@ -65,6 +73,19 @@ async fn wait(req: &IdbRequest) -> Result<JsValue, JsValue> {
         r.set_onerror(Some(err.unchecked_ref()));
     });
     JsFuture::from(promise).await
+}
+
+/// Une promesse tenue quand la transaction est terminée (ou abandonnée).
+fn done(tx: &IdbTransaction) -> Promise {
+    let t = tx.clone();
+    Promise::new(&mut |resolve, _| {
+        let end = Closure::once_into_js(move || {
+            let _ = resolve.call0(&JsValue::NULL);
+        });
+        // L'une ou l'autre, une seule fois (une erreur finit en abandon).
+        t.set_oncomplete(Some(end.unchecked_ref()));
+        t.set_onabort(Some(end.unchecked_ref()));
+    })
 }
 
 /// Ouvre une base ; `upgrade` la prépare quand elle est nouvelle.
@@ -108,6 +129,10 @@ async fn flush() {
         return;
     }
     loop {
+        // Un lot est en cours : il partira entier, à sa fin.
+        if HOLD.with(Cell::get) > 0 {
+            break;
+        }
         let batch: Vec<(String, Option<String>)> = {
             let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *q)
@@ -124,18 +149,17 @@ async fn flush() {
         let Ok(store) = tx.object_store(KV) else {
             break;
         };
-        let mut last = None;
+        let done = done(&tx);
         for (key, value) in batch {
             let k = JsValue::from_str(&key);
-            last = match value {
-                Some(v) => store.put_with_key(&JsValue::from_str(&v), &k).ok(),
-                None => store.delete(&k).ok(),
-            }
-            .or(last);
+            let _ = match value {
+                Some(v) => store.put_with_key(&JsValue::from_str(&v), &k).map(drop),
+                None => store.delete(&k).map(drop),
+            };
         }
-        if let Some(req) = last {
-            let _ = wait(&req).await;
-        }
+        // Écrit pour de bon : la transaction est terminée (pas seulement
+        // sa dernière requête).
+        let _ = JsFuture::from(done).await;
     }
     FLUSHING.with(|f| f.set(false));
 }
@@ -159,9 +183,37 @@ fn enqueue(key: &str, value: Option<&str>) {
     if let Ok(mut q) = QUEUE.lock() {
         q.push((key.to_owned(), value.map(str::to_owned)));
     }
-    if !FLUSHING.with(Cell::get) {
+    if !FLUSHING.with(Cell::get) && HOLD.with(Cell::get) == 0 {
         wasm_bindgen_futures::spawn_local(flush());
     }
+}
+
+/// Un lot d'écritures : tout ce qui est écrit tant qu'il vit part vers
+/// IndexedDB dans la même transaction, à sa fin. Ne jamais attendre
+/// [`committed`] pendant qu'un lot est ouvert.
+pub struct Batch(());
+
+pub fn batch() -> Batch {
+    HOLD.with(|h| h.set(h.get() + 1));
+    Batch(())
+}
+
+impl Drop for Batch {
+    fn drop(&mut self) {
+        let left = HOLD.with(|h| {
+            h.set(h.get().saturating_sub(1));
+            h.get()
+        });
+        let waiting = QUEUE.lock().map(|q| !q.is_empty()).unwrap_or(false);
+        if left == 0 && waiting && !FLUSHING.with(Cell::get) {
+            wasm_bindgen_futures::spawn_local(flush());
+        }
+    }
+}
+
+/// Attend que tout ce qui a été écrit jusqu'ici soit dans IndexedDB.
+pub async fn committed() {
+    flush_now().await;
 }
 
 /// Le stockage de Memoire : une copie en mémoire, gardée dans IndexedDB.
