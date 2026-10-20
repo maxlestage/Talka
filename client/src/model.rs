@@ -192,6 +192,10 @@ pub struct OutItem {
     pub chat: String,
     pub msg_id: String,
     pub seq: f64,
+    /// Le démarrage du relais qui a accepté ce message (`ready.boot`) : il
+    /// est gardé jusqu'à l'accusé de réception du destinataire, et renvoyé
+    /// si le relais a redémarré entre-temps. Vide : pas encore parti.
+    pub boot: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -537,6 +537,7 @@ async fn enqueue(to: &str, wire: Wire, chat: Option<&str>, msg_id: Option<&str>,
         chat: chat.unwrap_or_default().to_owned(),
         msg_id: msg_id.unwrap_or_default().to_owned(),
         seq: now() * 1000.0 + (seq % 1000) as f64,
+        boot: String::new(),
     };
     if live {
         let _ = send_now(&item, true).await;
@@ -569,14 +570,32 @@ pub async fn flush() {
         let mut items: Vec<OutItem> = store::all("outbox").await;
         items.sort_by(|a, b| a.seq.total_cmp(&b.seq));
         let mut stop = false;
-        for item in items {
+        let boot = net::boot();
+        for mut item in items {
             if net::state() != State::Online {
                 stop = true;
                 break;
             }
+            // Déjà accepté par le relais : on attend l'accusé de réception,
+            // sauf si le relais a redémarré depuis (sa boîte aux lettres,
+            // en mémoire, est perdue) : alors on renvoie.
+            if !item.boot.is_empty() {
+                if !still_unconfirmed(&item).await {
+                    store::remove("outbox", &item.id).await;
+                    continue;
+                }
+                if item.boot == boot || boot.is_empty() {
+                    continue;
+                }
+            }
             match send_now(&item, false).await {
                 Ok(()) => {
-                    store::remove("outbox", &item.id).await;
+                    if !item.msg_id.is_empty() && !boot.is_empty() {
+                        item.boot = boot.clone();
+                        store::write("outbox", &item.id, &item).await;
+                    } else {
+                        store::remove("outbox", &item.id).await;
+                    }
                     if !item.msg_id.is_empty() {
                         mark_sent(&item.chat, &item.msg_id, &item.to).await;
                     }
@@ -604,6 +623,19 @@ pub async fn flush() {
         }
     }
     FLUSHING.with(|f| f.set(false));
+}
+
+/// Un message accepté par le relais attend-il encore l'accusé de réception
+/// de ce destinataire ? Au-delà de 30 jours (la durée des boîtes aux
+/// lettres), on n'insiste plus.
+async fn still_unconfirmed(item: &OutItem) -> bool {
+    get_message(&item.chat, &item.msg_id)
+        .await
+        .is_some_and(|m| {
+            !m.deleted
+                && !m.delivered_to.iter().any(|c| c == &item.to)
+                && now() - m.at < 30.0 * 24.0 * 3600.0 * 1000.0
+        })
 }
 
 async fn mark_sent(chat_id: &str, msg_id: &str, to: &str) {
@@ -1367,6 +1399,8 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                     add(&mut m.read_by);
                 }
                 store::write_message(&m).await;
+                // Bien arrivé : plus besoin de le garder pour un renvoi.
+                store::remove("outbox", &format!("{id}:{from}")).await;
             }
             emit(Ev::Messages(c.id.clone()));
         }

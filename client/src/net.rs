@@ -38,6 +38,7 @@ thread_local! {
     static RETRY: Cell<u32> = const { Cell::new(0) };
     static TIMER: Cell<i32> = const { Cell::new(0) };
     static SKEW: Cell<f64> = const { Cell::new(0.0) };
+    static BOOT: RefCell<String> = const { RefCell::new(String::new()) };
     static STOPPED: Cell<bool> = const { Cell::new(false) };
     static PENDING: RefCell<HashMap<String, Sender<Ack>>> = RefCell::new(HashMap::new());
     static LOOKUPS: RefCell<HashMap<String, Vec<Sender<Value>>>> = RefCell::new(HashMap::new());
@@ -47,6 +48,11 @@ thread_local! {
 
 pub fn state() -> State {
     STATE.with(Cell::get)
+}
+
+/// L'identifiant du démarrage du relais connecté (vide : relais ancien).
+pub fn boot() -> String {
+    BOOT.with(|b| b.borrow().clone())
 }
 
 /// L'heure du relais (les horodatages des messages).
@@ -213,6 +219,8 @@ fn on_text(text: &str) {
         }
         "ready" => {
             RETRY.with(|r| r.set(0));
+            let boot = msg["boot"].as_str().unwrap_or("").to_owned();
+            BOOT.with(|b| *b.borrow_mut() = boot);
             set_state(State::Online);
             let watched: Vec<String> = WATCHED.with(|w| w.borrow().iter().cloned().collect());
             if !watched.is_empty() {
