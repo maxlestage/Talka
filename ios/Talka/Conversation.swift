@@ -293,8 +293,24 @@ struct ConversationView: View {
         return "touchez pour les infos"
     }
 
-    func wallpaper(_ e: Engine, _ chat: Chat) -> Color {
-        switch chat.wallpaper.isEmpty ? e.settings.wallpaper : chat.wallpaper {
+    /// Le fond : une photo de la galerie (couvre la zone, avec un léger
+    /// voile pour garder les bulles lisibles), sinon une couleur.
+    @ViewBuilder func wallpaper(_ e: Engine, _ chat: Chat) -> some View {
+        let w = chat.wallpaper.isEmpty ? e.settings.wallpaper : chat.wallpaper
+        if w.hasPrefix("data:"), let image = WallpaperCache.image(w) {
+            Color.chatBackground
+                .overlay {
+                    Image(uiImage: image).resizable().scaledToFill()
+                }
+                .overlay(Color.black.opacity(0.08))
+                .clipped()
+        } else {
+            wallpaperColor(w)
+        }
+    }
+
+    func wallpaperColor(_ w: String) -> Color {
+        switch w {
         case "plain": Color(.systemGroupedBackground)
         case "mint": Color(light: .init(red: 0.85, green: 0.95, blue: 0.9, alpha: 1), dark: .init(red: 0.05, green: 0.16, blue: 0.13, alpha: 1))
         case "sky": Color(light: .init(red: 0.86, green: 0.92, blue: 0.98, alpha: 1), dark: .init(red: 0.06, green: 0.11, blue: 0.18, alpha: 1))
@@ -819,5 +835,19 @@ struct MessageInfoSheet: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("OK") { dismiss() } } }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// Les photos de fond décodées une fois (la discussion se redessine souvent).
+@MainActor
+enum WallpaperCache {
+    private static var cache: (key: Int, image: UIImage)?
+
+    static func image(_ dataURL: String) -> UIImage? {
+        let key = dataURL.hashValue
+        if let c = cache, c.key == key { return c.image }
+        guard let image = UIImage.fromDataURL(dataURL) else { return nil }
+        cache = (key, image)
+        return image
     }
 }
