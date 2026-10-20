@@ -33,6 +33,7 @@ Les notifications sont locales : l'iPhone, qui a déchiffré le message, se pré
 | `Tests/TalkaKitTests/` | les tests. `vectors.json` est produit par le code Rust du navigateur (`cargo run -p talka-web --example vectors`) : TalkaKit doit retrouver les mêmes codes et ouvrir les mêmes messages |
 | `Talka/` | l'application SwiftUI : écrans, appels, messages vocaux, verrou, icône ; `WatchBridge.swift` : le lien avec la montre |
 | `TalkaWatch/` | l'app Apple Watch, livrée avec celle de l'iPhone : les discussions récentes, répondre (dictée, réponses rapides, emoji), réagir, marquer comme lu. La montre n'a pas de clés : elle passe par l'iPhone (WatchConnectivity, `Sources/TalkaKit/WatchLink.swift`) ; loin de lui, elle affiche le dernier résumé reçu et ses réponses partent à son retour |
+| `TalkaWidgets/` | les widgets, le même code pour l'iPhone (écran d'accueil : « Non lus », « Discussions » ; écran verrouillé) et la montre (complications). L'app leur écrit le nombre de non-lus et les discussions récentes dans un groupe de trousseau commun (`Shared.entitlements`, `Sources/TalkaKit/WidgetData.swift`) ; avec un code de verrouillage, ils n'affichent que le nombre |
 | `project.yml` | le projet Xcode, pour [XcodeGen](https://github.com/yonaskolb/XcodeGen) |
 | `ci/` | l'envoi sur TestFlight depuis GitHub Actions (`asc.py` : App Store Connect ; `ExportOptions.plist`) |
 | `interop.mjs` | un navigateur (Playwright) et un iPhone (TalkaKit) dans la même conversation |

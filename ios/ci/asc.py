@@ -2,6 +2,7 @@
 
     python asc.py prepare   # l'identifiant de l'app, l'équipe, l'app existe-t-elle ?
     python asc.py testers   # le groupe de testeurs internes (toute l'équipe)
+    python asc.py builds N  # attend le traitement de la version N par Apple, et liste les dernières
 
 La clé d'API vient de l'environnement : ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY
 (le contenu du fichier .p8). Rien n'est affiché de la clé.
@@ -91,6 +92,9 @@ def prepare():
     # L'app de la montre, livrée avec celle de l'iPhone (Xcode l'enregistre
     # aussi de lui-même à l'envoi ; ici, c'est fait d'avance).
     bundle(BUNDLE_ID + ".watchkitapp", APP_NAME + " Watch", soft=True)
+    # Les widgets (iPhone et montre).
+    bundle(BUNDLE_ID + ".widgets", APP_NAME + " Widgets", soft=True)
+    bundle(BUNDLE_ID + ".watchkitapp.widgets", APP_NAME + " Watch Widgets", soft=True)
     a = app()
     if not a:
         # Ce que la clé voit : une app créée avec un autre identifiant, par exemple.
@@ -158,5 +162,36 @@ def testers():
     print("Testeurs internes prêts : la version arrivera dans l'app TestFlight une fois traitée par Apple.")
 
 
+def builds():
+    """Attend qu'Apple ait traité la version envoyée (VALID ou refusée), puis
+    liste les dernières versions. Une version refusée n'arrive jamais dans
+    TestFlight : Apple envoie la raison par e-mail, on la signale ici."""
+    a = app()
+    if not a:
+        raise SystemExit("App introuvable dans App Store Connect.")
+    wanted = sys.argv[2] if len(sys.argv) > 2 else ""
+    state = None
+    for _ in range(40):
+        found = call("GET", "/builds", query={"filter[app]": a["id"], "sort": "-uploadedDate", "limit": 10})["data"]
+        mine = [b for b in found if b["attributes"]["version"] == wanted]
+        state = mine[0]["attributes"]["processingState"] if mine else None
+        if state in ("VALID", "FAILED", "INVALID"):
+            break
+        print(f"Version {wanted} : {state or 'pas encore visible'}… (Apple la traite)")
+        time.sleep(30)
+    print("Dernières versions :")
+    for b in found[:6]:
+        at = b["attributes"]
+        print(f"  - {at['version']} : {at['processingState']} (envoyée le {at.get('uploadedDate', '?')[:16]})")
+    if state in ("FAILED", "INVALID"):
+        print(f"::error title=Version {wanted} refusée par Apple::Apple a refusé la version {wanted} ({state}). "
+              "La raison est dans l'e-mail d'App Store Connect.")
+        sys.exit(1)
+    if state != "VALID":
+        print(f"::warning::La version {wanted} n'est pas encore traitée ({state}) ; elle arrivera plus tard.")
+    else:
+        print(f"Version {wanted} traitée : elle arrive dans l'app TestFlight.")
+
+
 if __name__ == "__main__":
-    {"prepare": prepare, "testers": testers}[sys.argv[1]]()
+    {"prepare": prepare, "testers": testers, "builds": builds}[sys.argv[1]]()
