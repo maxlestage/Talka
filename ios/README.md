@@ -17,6 +17,7 @@ L'application iOS de Talka, en Swift et SwiftUI (iOS 17 et plus). Elle parle le 
   - **photos** (réduites, sans métadonnées), **documents** (3 Mo), **contacts**, **messages vocaux** (AAC, lus aussi par le navigateur ; ceux de Chrome ou Firefox sont lus par WebKit) ;
   - messages éphémères (24 h, 7 jours, 90 jours), fond d'écran, brouillons.
   - un œuf de Pâques : un message avec 🥦 ou « brocoli » fait pleuvoir des brocolis, comme dans le navigateur (sauf avec *Réduire les animations*).
+- **Brocolis 🥦** : les clés de l'app Brocolis (Réglages → Clés Brocolis), et par discussion « Chiffrer avec Brocolis 🥦 » : le texte part aussi en jetons `[[BROCOLIS:…]]`, ouverts à l'arrivée avec vos clés (`Sources/TalkaKit/Brocolis.swift`, le même format que le navigateur et que l'app Brocolis).
 - **Infos** : nom local du contact, **numéro de sécurité** (le même sur les deux appareils), blocage ; membres et admins d'un groupe, photo, nom, ajout et retrait.
 - **Actus** : texte sur fond de couleur ou photo, 24 heures, avec qui les a vues.
 - **Appels audio et vidéo** (WebRTC, de pair à pair, DTLS-SRTP) : l'offre, la réponse et les candidats passent chiffrés, comme les messages. Un iPhone appelle un ordinateur.

@@ -150,6 +150,8 @@ func temporaryFile(_ data: Data, name: String) -> URL {
 
 /// Liens cliquables, *gras*, _italique_, ~barré~, `code` : comme le navigateur.
 func richText(_ text: String) -> AttributedString {
+    // Un jeton Brocolis qu'aucune clé n'ouvre : « 🔒🥦 », pas un pavé de base64.
+    let text = Brocolis.masked(text)
     var out = AttributedString()
     let chars = Array(text)
     var plain = ""
