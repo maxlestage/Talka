@@ -530,6 +530,7 @@ struct MessageRow: View {
     let onOpen: () -> Void
     let onScrollTo: (String) -> Void
     @State private var drag: CGFloat = 0
+    @State private var showReactions = false
 
     var body: some View {
         let e = engine
@@ -565,6 +566,12 @@ struct MessageRow: View {
                         .overlay(Capsule().stroke(Color(.separator), lineWidth: 0.5))
                         .padding(.horizontal, 8)
                         .accessibilityLabel("Réactions : \(m.reactions.values.joined(separator: " "))")
+                        .accessibilityHint("Voir qui a réagi")
+                        .onTapGesture { showReactions = true }
+                        .sheet(isPresented: $showReactions) {
+                            ReactionsSheet(engine: e, message: m)
+                                .presentationDetents([.medium, .large])
+                        }
                     }
                 }
                 .padding(.bottom, m.reactions.isEmpty ? 0 : 6)
@@ -849,5 +856,49 @@ enum WallpaperCache {
         guard let image = UIImage.fromDataURL(dataURL) else { return nil }
         cache = (key, image)
         return image
+    }
+}
+
+/// Qui a réagi à un message, avec quoi ; sa propre réaction se retire d'un
+/// toucher (comme dans le navigateur).
+struct ReactionsSheet: View {
+    let engine: Engine
+    let message: Message
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let e = engine
+        let me = e.me.code
+        let list = message.reactions.sorted { a, b in
+            a.key == me ? true : b.key == me ? false : e.displayName(a.key) < e.displayName(b.key)
+        }
+        NavigationStack {
+            List(list, id: \.key) { code, emoji in
+                let mine = code == me
+                Button {
+                    guard mine else { return }
+                    e.react(message.chat, message.id, emoji)
+                    dismiss()
+                } label: {
+                    HStack(spacing: 12) {
+                        e.avatar(code, size: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(mine ? "Vous" : e.displayName(code)).foregroundStyle(.primary)
+                            if mine {
+                                Text("Touchez pour retirer").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Text(emoji).font(.title2)
+                    }
+                }
+                .disabled(!mine)
+            }
+            .navigationTitle("Réactions")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("OK") { dismiss() } }
+            }
+        }
     }
 }
