@@ -645,8 +645,17 @@ struct VoiceBubble: View {
                 }
             }
             Text(formatDuration(message.dur)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Button { player.nextSpeed() } label: {
+                Text(player.speedLabel)
+                    .font(.caption.bold().monospacedDigit())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.08), in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Vitesse de lecture : \(player.speedLabel)")
         }
-        .frame(minWidth: 200)
+        .frame(minWidth: 220)
         .onDisappear { player.stop() }
     }
 }
