@@ -81,6 +81,18 @@ final class WatchTests: XCTestCase {
         XCTAssertEqual(WatchLink.decode(WatchAction.self, data)?.kind, .refresh)
     }
 
+    func testMarkAllRead() async {
+        let e = phone()
+        for (code, n) in [("WGSEAJNSZJ", 2), ("K7Q2MX9PRT", 0), ("AAAAAAAAAA", 5)] {
+            _ = e.ensureDirectChat(code)
+            e.updateChat(code) { $0.unread = n }
+        }
+        e.updateChat("K7Q2MX9PRT") { $0.markedUnread = true; $0.archived = true }
+        XCTAssertEqual(e.markAllRead(), 3)
+        XCTAssertTrue(e.chats.values.allSatisfy { $0.unread == 0 && !$0.markedUnread })
+        XCTAssertEqual(e.markAllRead(), 0)
+    }
+
     func testInitialsAndColors() async {
         XCTAssertEqual(watchInitials("Léa Martin"), "LM")
         XCTAssertEqual(watchInitials("~Léa"), "L")
