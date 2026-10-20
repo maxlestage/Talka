@@ -80,14 +80,17 @@ Nouveau format par défaut, **v2 avec Argon2id** :
     données associées  = les octets 0–34 (en-tête et paramètres compris)
 
 À l'import, refuser m < 19 456, t < 2, ou m > 1 048 576 (un jeton piégé ne
-doit pas épuiser la mémoire).
+doit pas épuiser la mémoire), et aussi t > 16, p = 0 et m < 8p (un jeton
+piégé ne doit pas non plus tourner des heures ; voir §7.1).
 
 ### 3.3 Remplissage (padding)
 
 La longueur d'un message ne doit pas se lire sur le jeton. Avant
 chiffrement : texte UTF-8 ‖ `0x80` ‖ des `0x00` jusqu'au **multiple de 160
-octets** suivant (comme Signal). Au déchiffrement : retirer les `0x00` de fin
-puis le `0x80` ; absent → refusé. S'applique à v3 (§4) ; v1/v2 restent tels
+octets** suivant (comme Signal) : longueur totale = (⌊n / 160⌋ + 1) × 160,
+donc 159 octets → 160, 160 → 320. Au déchiffrement : refuser une longueur qui
+n'est pas un multiple non nul de 160, retirer les `0x00` de fin puis le
+`0x80` ; absent → refusé (§7.2). S'applique à v3 (§4) ; v1/v2 restent tels
 quels pour rester lisibles par les anciennes versions.
 
 ### 3.4 L'écran et le presse-papiers
@@ -145,7 +148,13 @@ L'initiateur A, qui connaît le paquet de B, tire une clé éphémère EK et :
     SK = HKDF-SHA256(sel = 32 × 0x00,
                      ikm = 32 × 0xFF ‖ DH1 ‖ DH2 ‖ DH3 ‖ SS,
                      info = "Brocolis_v3_X25519_MLKEM768_SHA-256", 32)
-    AD = IK_A ‖ IK_B
+    AD = IK_A ‖ IK_B          (les clés X25519 d'identité, 32 + 32 octets)
+
+Puis le Double Ratchet (§4.3) part comme chez Signal : la clé de cliquet
+initiale de B est sa SPK ; A tire une clé de cliquet neuve et calcule
+`(RK, CKs) = KDF_RK(SK, X25519(cliquet_A, SPK_B))`. Toute clé publique X25519
+reçue doit être canonique (bit 255 nul, u < 2²⁵⁵ − 19) et tout DH nul est
+refusé (§7.3).
 
 Si l'un des appareils ne sait pas faire ML-KEM (iPhone avant iOS 26), le
 drapeau `pq = 0` retire `SS` et l'info devient `"Brocolis_v3_X25519_SHA-256"`.
@@ -155,7 +164,9 @@ L'appli l'affiche (« session non post-quantique »).
 pré-partagé, `SK = HKDF(sel = 32 × 0x00, ikm = clé, info =
 "Brocolis_v3_PSK_SHA-256", 32)`, et le ratchet Diffie-Hellman ajoute la
 confidentialité persistante dès le premier aller-retour. Une telle session
-vaut ce que vaut la clé partagée tant que personne n'a répondu.
+vaut ce que vaut la clé partagée tant que personne n'a répondu. La clé de
+cliquet initiale du répondeur, l'AD et le premier message sont précisés au
+§7.4 (mode `0x02`).
 
 ### 4.3 Double Ratchet
 
@@ -182,8 +193,12 @@ sa clé : il est ignoré.
 
     octet 0 : type — 0x01 premier message (établit la session), 0x02 message
     octets  : identifiant de session (8) = SHA-256(AD)[0..8]
-    type 0x01 : IK_A (32) ‖ EK_A (32) ‖ pq (1) ‖ [CT (1 088) si pq] ‖ id SPK (4) ‖ id PQPK (4)
+    type 0x01 : IK_A (32) ‖ EK_A (32) ‖ mode (1) ‖ [CT (1 088) si mode = 1] ‖ id SPK (4) ‖ id PQPK (4)
     puis    : en-tête (40) ‖ chiffré
+    mode    : 0x00 X25519 seul (id PQPK = 0), 0x01 X25519 + ML-KEM-768,
+              0x02 clé partagée (IK_A, id SPK, id PQPK nuls ; §7.4)
+    chiffré : 160·k + 16 octets, k ≥ 1 ; toute autre longueur est refusée
+    type 0x03 : comme 0x02, données associées AD ‖ en-tête ‖ 0x03 (§7.6)
 
 L'initiateur envoie des messages de type 0x01 tant qu'il n'a pas reçu de
 réponse (comme les « prekey messages » de Signal).
@@ -224,8 +239,154 @@ grands groupes.
 | Brique | Rust (référence) | Swift | Kotlin |
 |---|---|---|---|
 | Jetons v1/v2, clé protégée v1 | `talka-web::jetons` | TalkaKit `Brocolis`, Brocolis `BrocolisCrypto` | `BrocolisCrypto.kt` |
-| Clé protégée v2 (Argon2id), padding | `brocolis-proto` (à venir) | | |
-| v3 (établissement, ratchet, Sender Keys) | `brocolis-proto` | | |
+| Clé protégée v2 (Argon2id), padding | `brocolis-proto` (`proto/`) | | |
+| v3 (établissement, ratchet, Sender Keys) | `brocolis-proto` (`proto/`) | | |
+
+Les vecteurs de référence sont `proto/vectors.json` (regénérés par
+`cargo run --example vectors`, vérifiés indépendamment par
+`proto/scripts/verifier_vecteurs.py` avec OpenSSL).
 
 Toute implémentation passe les vecteurs de la référence Rust **et** les
 vecteurs Wycheproof des primitives. Aucune n'est publiée sans eux.
+
+## 7. Précisions de l'implémentation de référence
+
+Ce que la spécification laissait ouvert, et la façon dont `brocolis-proto` le
+tranche. Chaque point fait partie du contrat : les portages font pareil.
+
+### 7.1 Clé protégée v2
+
+- Argon2id version 0x13, sans secret ni données associées Argon2, sortie
+  32 octets.
+- Bornes à l'import : 19 456 ≤ m ≤ 1 048 576, 2 ≤ t ≤ **16**, p ≥ **1**,
+  m ≥ 8p. Les bornes en gras sont ajoutées : t ≤ 255 avec 1 Gio ferait
+  tourner un jeton piégé pendant des dizaines de minutes ; p = 0 et m < 8p
+  sont refusés par Argon2 lui-même.
+- Export : phrase de 8 caractères au moins (comme la v1). Dans un texte
+  collé, `[[BROCOLIS-CLE:v2:` est cherché avant `v1`.
+- Les vecteurs donnent m = 19 456, t = 2, p = 1 (rapide) **et** le défaut.
+
+### 7.2 Remplissage
+
+Longueur totale (⌊n / 160⌋ + 1) × 160 (au moins un octet de remplissage). Au
+retrait, une longueur qui n'est pas un multiple non nul de 160 est refusée :
+plus strict que le texte d'origine, sans effet sur l'interopérabilité
+(un émetteur conforme produit toujours un multiple).
+
+### 7.3 Paquet de clés (§4.1) et établissement (§4.2)
+
+Format binaire v1 du paquet :
+
+    octet 0      : 0x01 (version)
+    1–32         : IK X25519        33–64 : IK Ed25519
+    65–68        : id SPK (u32 BE)  69–100 : SPK
+    101–164      : Ed25519(IK, "Brocolis_v3_SPK" ‖ IK X25519 ‖ id SPK ‖ SPK)
+    165          : 0x00 sans ML-KEM, 0x01 avec
+    si 0x01 :
+      166–169    : id PQPK (u32 BE, non nul)
+      170–1353   : PQPK (clé d'encapsulation ML-KEM-768)
+      1354–1417  : Ed25519(IK, "Brocolis_v3_PQPK" ‖ IK X25519 ‖ id PQPK ‖ PQPK)
+
+- La spécification dit « l'empreinte porte sur IK » et « signé par IK » :
+  une clé X25519 ne signe pas. Les signatures sont faites par IK Ed25519 et
+  portent IK X25519 (ce qui lie les deux moitiés de l'identité) ; l'empreinte
+  et le numéro de sécurité portent sur **IK X25519 ‖ IK Ed25519** :
+  `SHA-256(IK X25519 ‖ IK Ed25519)[0..8]`, écrit `XXXX-XXXX-XXXX-XXXX`.
+- Vérification Ed25519 **stricte** (RFC 8032 §5.1.7 : S canonique, R et A
+  pas de petit ordre). La PQPK doit être une clé ML-KEM valide (contrôle du
+  module de FIPS 203).
+- Secret ML-KEM gardé sous sa forme FIPS 203 « graine » `d ‖ z` (64 octets).
+  L'aléa d'encapsulation `m` (32 octets) est tiré par l'appelant ; les
+  vecteurs le donnent (CryptoKit n'accepte pas de `m` imposé : un portage
+  vérifie alors par la décapsulation).
+- AD = IK_A ‖ IK_B avec les clés **X25519** d'identité.
+- La clé de cliquet initiale de B est SPK_B ; celle de A est tirée à part
+  (pas EK_A).
+- Toute clé publique X25519 reçue doit être **canonique** (bit 255 nul,
+  u < 2²⁵⁵ − 19), et un DH nul (clé de petit ordre) est refusé. Sans cela,
+  EK_A avec le bit 255 levé donne les mêmes DH : un premier message rejoué
+  ainsi « réécrit » passait la mémoire des clés éphémères (trouvé par les
+  tests d'altération).
+- **Rejeu d'un premier message** : sans clés pré-signées à usage unique
+  (les « one-time prekeys » de Signal), un premier message rejoué rouvrirait
+  la session tant que la SPK vit. Le répondeur garde donc les EK déjà vues
+  (4 096 au plus, 37 jours = la vie d'une SPK) et refuse un premier message
+  dont EK a déjà servi. Ajouter des clés à usage unique (Talka : publiées sur
+  le relais) fermerait ce point pour de bon.
+- Le mode `0x00` (sans ML-KEM) est accepté même si les deux appareils savent
+  faire ML-KEM : un attaquant ne peut pas le forcer (il faudrait le secret
+  d'IK_A), c'est un choix de l'initiateur, que l'appli affiche.
+- Renouvellement : SPK et PQPK neuves chaque semaine, les anciennes gardées
+  30 jours après leur remplacement, puis effacées.
+
+### 7.4 Clé partagée (PSK)
+
+La spécification ne disait ni la clé de cliquet initiale du répondeur, ni
+l'AD, ni le premier message. Choix :
+
+    SK = HKDF(sel = 32 × 0x00, ikm = clé, "Brocolis_v3_PSK_SHA-256", 32)
+    r  = HKDF(sel = 32 × 0x00, ikm = SK, "Brocolis_v3_PSK_Ratchet", 32)   (secret X25519, connu des deux)
+    R  = X25519(r, 9)
+    AD = EK_A ‖ R
+    A : clé de cliquet initiale = EK_A ; (RK, CKs) = KDF_RK(SK, X25519(EK_A, R))
+    B : clé de cliquet initiale = (r, R)
+    premier message : mode 0x02, IK_A = 32 × 0x00, id SPK = id PQPK = 0,
+                      en-tête.DH = EK_A (vérifié)
+
+Le répondeur essaie chacune de ses clés : l'identifiant de session
+(`SHA-256(AD)[0..8]`) dit laquelle. Il garde les EK vues (comme §7.3). Dès
+que B répond (clé de cliquet neuve), quelqu'un qui n'a que la clé partagée ne
+lit plus rien. **Deux personnes seulement** : une clé connue de trois
+personnes ou plus reste en v1/v2 (plusieurs répondeurs se disputeraient la
+même session).
+
+### 7.5 Double Ratchet
+
+- `MAX_SKIP` = 1 000 : un message qui demanderait de sauter plus de 1 000
+  clés d'un coup est refusé, et la session ne garde jamais plus de 1 000 clés
+  sautées (les plus anciennes partent d'abord) ; une clé sautée de plus de
+  30 jours est effacée. L'heure est fournie par l'appelant (secondes Unix).
+- Déchiffrement **transactionnel** : un échec (altération, rejeu, saut trop
+  grand) laisse l'état exactement tel quel.
+- Rejeu reconnu : numéro déjà passé sur la chaîne courante, ou clé de
+  cliquet distante parmi les 16 dernières, ou notre propre clé de cliquet ;
+  l'appli l'ignore sans bruit.
+- Compteurs u32 : une chaîne épuisée (2³² messages) refuse d'envoyer.
+- Un premier message (0x01) de même identifiant de session mais d'une autre
+  EK est une nouvelle session (A a perdu la sienne) : `NouvelleSession`, à
+  accepter comme un premier message.
+- Tailles : texte de 200 Kio au plus, jeton décodé de 256 Kio au plus.
+
+### 7.6 Distribution (type 0x03)
+
+    0x03 ‖ id session (8) ‖ en-tête (40) ‖ chiffré
+    chiffré = AES-256-GCM(clé, nonce, pad(distribution), AD ‖ en-tête ‖ 0x03)
+    distribution (92) = id groupe (16) ‖ id expéditeur (8) ‖ itération (u32 BE)
+                        ‖ clé de chaîne (32) ‖ clé publique Ed25519 (32)
+
+Le `0x03` final authentifie le type : sinon un 0x03 relu comme 0x02
+afficherait la clé de chaîne comme un texte. Pour 0x01/0x02 le type n'est
+pas authentifié (le changer ne sert à rien : 0x01 → 0x02 retire le préambule
+d'un message déjà valide). **Proposition pour une future version** :
+`AD ‖ type ‖ en-tête` pour tous les types. Un 0x03 n'a pas de préambule : un
+initiateur non confirmé l'envoie après un 0x01 ; reçu avant, il donne
+`SessionInconnue` et l'appli le garde pour plus tard.
+
+### 7.7 Groupes (type 0x04)
+
+- id expéditeur = `SHA-256(clé publique Ed25519 de la chaîne)[0..8]` (il
+  change à chaque chaîne neuve) ; id groupe : 16 octets aléatoires.
+- `mk` de l'itération i par `KDF_CK`, puis `ENCRYPT(mk)` du §4.3 (même info
+  `Brocolis_v3_MessageKeys`) ; données associées AES-GCM = les 29 premiers
+  octets (type ‖ id groupe ‖ id expéditeur ‖ itération) ; signature
+  Ed25519 (stricte) de tout ce qui précède, type compris, **vérifiée
+  avant** tout le reste.
+- Mêmes règles que §7.5 : `MAX_SKIP`, 30 jours, rejeu ignoré,
+  transactionnel.
+
+### 7.8 Hygiène
+
+Comparaisons de secrets en temps constant (tags GCM, identifiants dérivés
+d'une clé partagée), secrets effacés (`zeroize`), aucune panique sur une
+entrée hostile, aucune heure ni hasard implicite (passés par l'appelant :
+`wasm32-unknown-unknown` n'a pas d'horloge).

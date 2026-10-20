@@ -377,6 +377,15 @@ pub fn set(obj: &JsValue, key: &str, v: impl Into<JsValue>) {
 }
 
 /// Appelle une méthode par son nom (`navigator.share`, `setAppBadge`…).
+/// Un avertissement dans la console du navigateur (jamais de secret).
+pub fn warn(text: &str) {
+    let _ = call(
+        &get(&window(), "console"),
+        "warn",
+        &[JsValue::from_str(text)],
+    );
+}
+
 pub fn call(obj: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
     let f: Function = get(obj, method).dyn_into()?;
     f.apply(obj, &args.iter().cloned().collect::<Array>())
