@@ -136,6 +136,7 @@ final class CompatTests: XCTestCase {
         XCTAssertNotNil(JSON.decode(StatusItem.self, store["status"]!))
         XCTAssertEqual(JSON.decode(CallEntry.self, store["call"]!)?.dur, 42)
         XCTAssertEqual(JSON.decode(OutItem.self, store["outbox"]!)?.msgId, "m1")
+        XCTAssertEqual(JSON.decode(OutItem.self, store["outbox"]!)?.boot, "B00T")
         XCTAssertEqual(JSON.decode(Settings.self, store["settings"]!), Settings())
         XCTAssertEqual(JSON.decode(Profile.self, store["profile"]!)?.name, "Léa")
         // Et dans l'autre sens : ce que garde l'iPhone se relit à l'identique.

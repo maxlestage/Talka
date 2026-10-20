@@ -169,6 +169,7 @@ fn main() {
         chat: b.code.clone(),
         msg_id: "m1".into(),
         seq: 1.0,
+        boot: "B00T".into(),
     };
 
     let vectors = json!({
