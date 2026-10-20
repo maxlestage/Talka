@@ -979,6 +979,32 @@ label.list-item {
   }
 }
 
+/* L'œuf de Pâques : une pluie de brocolis 🥦. */
+#brocolis {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.brocoli {
+  position: absolute;
+  top: -60px;
+  line-height: 1;
+  animation: brocoli-fall linear forwards;
+  will-change: transform;
+}
+
+@keyframes brocoli-fall {
+  from {
+    transform: translateY(0) rotate(0);
+  }
+  to {
+    transform: translateY(calc(100vh + 120px)) rotate(var(--turn, 360deg));
+  }
+}
+
 /* La pastille « en ligne » : verte et lumineuse, grise hors ligne. */
 .avatar-wrap {
   position: relative;
