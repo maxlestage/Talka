@@ -1,4 +1,5 @@
-// Les infos d'un contact (nom, code, numéro de sécurité, blocage) et d'un
+// Les infos d'un contact (nom, code, numéro de sécurité, protection de la
+// discussion — session à double cliquet ou ancien chiffrement —, blocage) et d'un
 // groupe (membres, admins, photo, nom).
 
 import PhotosUI
@@ -11,6 +12,9 @@ struct ContactInfoView: View {
     let code: String
     @State private var name = ""
     @State private var confirmDelete = false
+    /// La protection de la discussion : session à double cliquet (v3) ou
+    /// ancien chiffrement, comme dans le navigateur.
+    @State private var protection: V3.Protection?
 
     var body: some View {
         if let e = model.engine {
@@ -75,6 +79,13 @@ struct ContactInfoView: View {
                     } label: {
                         Label("Chiffrement", systemImage: "lock.fill")
                     }
+                    // Avant iOS 26 (pas de ML-KEM), les sessions sont
+                    // classiques : `protection` le dit.
+                    if let protection {
+                        Text(protection.label)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 } footer: {
                     Text("Les messages et appels sont chiffrés de bout en bout. Touchez pour vérifier le numéro de sécurité.")
                 }
@@ -92,6 +103,7 @@ struct ContactInfoView: View {
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { name = c?.name ?? "" }
             .onDisappear { save(e) }
+            .task(id: code) { protection = await e.protection(code) }
             .confirmationDialog("Supprimer la discussion ?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Supprimer", role: .destructive) {
                     e.deleteChat(code)

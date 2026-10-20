@@ -1,6 +1,14 @@
 {
   "pins" : [
     {
+      "identity" : "messagerie-",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/maxlestage/Messagerie-",
+      "state" : {
+        "revision" : "002b60136e5951a191f7a5fa2c8692b48044e90b"
+      }
+    },
+    {
       "identity" : "swift-asn1",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-asn1.git",
@@ -14,8 +22,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-crypto.git",
       "state" : {
-        "revision" : "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
-        "version" : "3.15.1"
+        "revision" : "da9d28d69ebe3894b18376c8f2395c2f37b8448f",
+        "version" : "4.5.2"
       }
     }
   ],

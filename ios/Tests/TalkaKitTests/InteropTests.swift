@@ -4,6 +4,7 @@
 
 import Foundation
 import XCTest
+import BrocolisProto
 @testable import TalkaKit
 
 @MainActor
@@ -42,6 +43,11 @@ final class InteropTests: XCTestCase {
         try await wait("lu par le navigateur") { e.store.message(browser, sent.id)?.tick == .read }
         XCTAssertEqual(e.displayName(browser), "Navigateur")
         let reply = try XCTUnwrap(e.messages(browser).first { $0.text == "Bonjour de l'ordinateur 💻" })
+        // Un navigateur à jour : le protocole v3, dans les deux sens (sa
+        // réponse a confirmé une session).
+        let protection = await e.protection(browser)
+        XCTAssertEqual(protection, .ratchet(pq: V3.postQuantum))
+        XCTAssertTrue(e.v3?.peers[browser]?.sessions.contains { $0.isConfirmed } ?? false, "le navigateur répond par v3")
         e.markRead(browser)
         e.react(browser, reply.id, "👍")
         // Un groupe créé sur l'iPhone, où le navigateur écrit.

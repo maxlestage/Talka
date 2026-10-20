@@ -38,6 +38,9 @@
 	<!-- Le groupe de trousseau partagé avec les widgets (Shared.entitlements). -->
 	<key>TalkaKeychainGroup</key>
 	<string>$(AppIdentifierPrefix)com.maxlestage.talka.shared</string>
+	<!-- Le groupe de trousseau de l'application seule (l'appareil v3). -->
+	<key>TalkaPrivateKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>
