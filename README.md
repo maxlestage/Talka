@@ -76,6 +76,8 @@ importer sur un autre appareil ou après avoir effacé les données du site.
 - 🌙 thème clair, sombre ou automatique, fonds d'écran, taille du texte ;
   🔔 notifications et sons (synthétisés, aucun fichier) ; badge d'application
 - 📲 PWA installable (manifeste et service worker de Paquets)
+- 🥦 un œuf de Pâques : un message qui contient 🥦 ou « brocoli » fait
+  pleuvoir des brocolis (sauf si l'appareil demande moins d'animations)
 
 ## Architecture
 
