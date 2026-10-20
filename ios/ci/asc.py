@@ -91,6 +91,9 @@ def prepare():
     # L'app de la montre, livrée avec celle de l'iPhone (Xcode l'enregistre
     # aussi de lui-même à l'envoi ; ici, c'est fait d'avance).
     bundle(BUNDLE_ID + ".watchkitapp", APP_NAME + " Watch", soft=True)
+    # Les widgets (iPhone et montre).
+    bundle(BUNDLE_ID + ".widgets", APP_NAME + " Widgets", soft=True)
+    bundle(BUNDLE_ID + ".watchkitapp.widgets", APP_NAME + " Watch Widgets", soft=True)
     a = app()
     if not a:
         # Ce que la clé voit : une app créée avec un autre identifiant, par exemple.
