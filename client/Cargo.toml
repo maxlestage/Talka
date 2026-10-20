@@ -28,6 +28,10 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # La mémoire de Talka : Memoire ORM (moteur en mémoire, en pur Rust), dont
 # les lignes sont gardées dans IndexedDB (voir `store`).
 memoire-orm = { git = "https://github.com/maxlestage/Memoire", default-features = false, features = ["memory", "web"] }
+# Le protocole v3 (sessions à double cliquet, établissement hybride X25519 +
+# ML-KEM-768) : l'implémentation de référence de Brocolis 🥦, la même que
+# celle de l'app. Voir `v3`.
+brocolis-proto = { git = "https://github.com/maxlestage/Messagerie-", rev = "32c386e3deaed316994f338a182ec2e544bface0" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

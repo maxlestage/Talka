@@ -142,10 +142,16 @@ impl Identity {
 
     /// La signature du défi du relais : `talka-auth:<nonce>`, `r ‖ s` en base64.
     pub fn sign_challenge(&self, nonce: &str) -> String {
+        self.sign(format!("talka-auth:{nonce}").as_bytes())
+    }
+
+    /// Une signature ECDSA P-256 de la clé du code (`r ‖ s` en base64,
+    /// comme WebCrypto) : le défi du relais, le paquet de clés v3.
+    pub fn sign(&self, message: &[u8]) -> String {
         let Some(key) = self.sign_key() else {
             return String::new();
         };
-        let sig: Signature = key.sign(format!("talka-auth:{nonce}").as_bytes());
+        let sig: Signature = key.sign(message);
         b64(&sig.to_bytes())
     }
 }
