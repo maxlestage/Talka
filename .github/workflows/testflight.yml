@@ -113,6 +113,9 @@ jobs:
       - name: Testeurs internes (toute l'équipe)
         if: steps.ready.outputs.ok == 'true'
         run: .venv/bin/python ci/asc.py testers
+      - name: Traitement par Apple (la version arrive-t-elle dans TestFlight ?)
+        if: steps.ready.outputs.ok == 'true'
+        run: .venv/bin/python ci/asc.py builds "${{ github.run_number }}"
       - name: Nettoyage de la clé
         if: always()
         working-directory: .
