@@ -124,6 +124,10 @@ pub struct BrocolisKey {
     pub name: String,
     /// 32 octets en base64.
     pub key: String,
+    /// Remplacée par une clé neuve : elle ouvre encore les anciens messages,
+    /// mais ne chiffre plus rien.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

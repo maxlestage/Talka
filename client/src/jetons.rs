@@ -45,6 +45,22 @@ pub fn find_key(text: &str) -> Option<String> {
         .map(|w| w.trim().to_owned())
 }
 
+/// L'empreinte d'une clé, à comparer de vive voix (`AB12-CD34-EF56-7890`) :
+/// les 8 premiers octets de son SHA-256, comme les empreintes de l'app
+/// Brocolis. Deux appareils qui affichent la même ont la même clé.
+pub fn fingerprint(key_b64: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(key_from_b64(key_b64)?);
+    let hex: String = digest[..8].iter().map(|b| format!("{b:02X}")).collect();
+    Some(
+        hex.as_bytes()
+            .chunks(4)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect::<Vec<_>>()
+            .join("-"),
+    )
+}
+
 /// Une nouvelle clé, en base64.
 pub fn generate_key() -> String {
     b64(&random_bytes(32))
@@ -290,6 +306,16 @@ mod tests {
         let invite = format!("3) Colle CETTE clé :\n\n{k}\n\n(C'est notre clé commune.)");
         assert_eq!(find_key(&invite), Some(k));
         assert_eq!(find_key("pas de clé ici"), None);
+    }
+
+    #[test]
+    fn fingerprints_are_short_and_stable() {
+        let k = b64(&[7u8; 32]);
+        let f = fingerprint(&k).unwrap();
+        assert_eq!(f.len(), 19);
+        assert_eq!(f, fingerprint(&k).unwrap());
+        assert_ne!(f, fingerprint(&b64(&[8u8; 32])).unwrap());
+        assert_eq!(fingerprint("pas une clé"), None);
     }
 
     #[test]
