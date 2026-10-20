@@ -1,6 +1,8 @@
 // La connexion au relais : une WebSocket qui se présente (signature du
 // défi), se reconnecte toute seule, et transporte les enveloppes chiffrées.
-// Le même protocole que le navigateur (`client/src/net.rs`).
+// Le même protocole que le navigateur (`client/src/net.rs`), avec la
+// publication et la demande des paquets de clés v3 (`publish-bundle`,
+// `fetch-bundle`).
 
 import Foundation
 
@@ -39,7 +41,16 @@ public final class Relay {
     var reconnect: Task<Void, Never>?
     var pending: [String: CheckedContinuation<Ack, Never>] = [:]
     var lookups: [String: [CheckedContinuation<[String: Any]?, Never>]] = [:]
+    var bundles: [String: [CheckedContinuation<[String: Any]?, Never>]] = [:]
+    /// Le relais connaît-il les paquets v3 ? (`nil` : pas encore su.)
+    public private(set) var relayV3: Bool?
     var watched = Set<String>()
+    /// Les `ping` envoyés et les `pong` reçus sur cette connexion, et le
+    /// numéro du `ping` qui suit la publication du paquet : si son `pong`
+    /// arrive avant `published`, le relais ne connaît pas v3.
+    var pings = 0
+    var pongs = 0
+    var publishPing: Int?
     /// L'identifiant du démarrage du relais connecté (vide : relais ancien).
     public private(set) var boot = ""
     /// L'heure du relais moins la nôtre.
@@ -112,7 +123,7 @@ public final class Relay {
                 try? await Task.sleep(nanoseconds: 25_000_000_000)
                 guard self.task === t else { return }
                 // Le relais répond `pong` ; une connexion morte échoue ici.
-                self.raw(["t": "ping"])
+                self.sendPing()
             }
         }
     }
@@ -126,6 +137,8 @@ public final class Relay {
         pending.removeAll()
         for (_, list) in lookups { for c in list { c.resume(returning: nil) } }
         lookups.removeAll()
+        for (_, list) in bundles { for c in list { c.resume(returning: nil) } }
+        bundles.removeAll()
         guard !stopped else { return }
         let delay = min(30.0, pow(2, Double(retry))) * Double.random(in: 0.7...1.3)
         retry = min(retry + 1, 5)
@@ -169,6 +182,10 @@ public final class Relay {
         case "ready":
             retry = 0
             boot = msg["boot"] as? String ?? ""
+            relayV3 = nil
+            pings = 0
+            pongs = 0
+            publishPing = nil
             state = .online
             if !watched.isEmpty { raw(["t": "watch", "codes": Array(watched)]) }
         case "ack", "error":
@@ -182,6 +199,24 @@ public final class Relay {
             let code = msg["code"] as? String ?? ""
             let found = (msg["unknown"] as? Bool ?? false) ? nil : msg
             for c in lookups.removeValue(forKey: code) ?? [] { c.resume(returning: found) }
+        case "bundle":
+            let code = msg["code"] as? String ?? ""
+            for c in bundles.removeValue(forKey: code) ?? [] { c.resume(returning: msg) }
+        // La réponse au `ping` qui suit la publication du paquet : si elle
+        // arrive avant `published`, le relais ne connaît pas v3 (les réponses
+        // arrivent dans l'ordre des demandes).
+        case "pong":
+            pongs += 1
+            if relayV3 == nil, let p = publishPing, pongs >= p {
+                relayV3 = false
+                for (_, list) in bundles { for c in list { c.resume(returning: nil) } }
+                bundles.removeAll()
+            }
+        case "published":
+            relayV3 = true
+            if msg["ok"] as? Bool != true {
+                v3Log("v3 : paquet de clés refusé par le relais (\(msg["error"] as? String ?? "?"))")
+            }
         case "presence":
             onPresence?(msg["code"] as? String ?? "", msg["online"] as? Bool ?? false, msg["seen"] as? Double)
         default:
@@ -220,8 +255,49 @@ public final class Relay {
         }
     }
 
+    /// Publie le paquet de clés v3 (base64) et sa signature par la clé du
+    /// code. Le `ping` qui suit dit si le relais connaît v3.
+    @discardableResult
+    public func publishBundle(_ bundle: String, sig: String) -> Bool {
+        guard raw(["t": "publish-bundle", "bundle": bundle, "sig": sig]), sendPing() else { return false }
+        if relayV3 == nil { publishPing = pings }
+        return true
+    }
+
+    @discardableResult
+    func sendPing() -> Bool {
+        guard raw(["t": "ping"]) else { return false }
+        pings += 1
+        return true
+    }
+
+    /// La réponse du relais à la demande du paquet de clés v3 d'un code
+    /// (`"none": true` s'il n'en a pas ; `nil` : pas de réponse, sans réseau
+    /// ou avec un relais d'avant v3). Le paquet est à vérifier :
+    /// `V3.verifyBundle`.
+    public func fetchBundle(_ code: String) async -> [String: Any]? {
+        guard relayV3 != false, raw(["t": "fetch-bundle", "code": code]) else { return nil }
+        return await withCheckedContinuation { c in
+            bundles[code, default: []].append(c)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                guard let self, var list = self.bundles[code], !list.isEmpty else { return }
+                list.removeFirst().resume(returning: nil)
+                self.bundles[code] = list.isEmpty ? nil : list
+            }
+        }
+    }
+
     public func watch(_ codes: [String]) {
         let fresh = codes.filter { watched.insert($0).inserted }
         if !fresh.isEmpty { raw(["t": "watch", "codes": fresh]) }
     }
+}
+
+/// Les avertissements du protocole v3 (journal de développement ; jamais de
+/// secret).
+func v3Log(_ text: String) {
+    #if DEBUG
+    print(text)
+    #endif
 }

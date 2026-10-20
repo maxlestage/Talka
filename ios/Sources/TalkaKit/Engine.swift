@@ -5,9 +5,15 @@
 // Un message part en autant d'enveloppes que de destinataires : chacune est
 // chiffrée pour son destinataire au moment de partir. En attendant, elle est
 // gardée dans `outbox` : un message écrit hors ligne part au retour du réseau.
+//
+// Avec un contact qui a publié son paquet de clés v3 (voir `V3.swift` et
+// `EngineV3.swift`), l'enveloppe porte un jeton de sa session à double
+// cliquet ; l'état de la session est écrit avant que rien ne parte, et avec
+// le message qui l'a fait avancer à la réception.
 
 import Foundation
 import Observation
+import BrocolisProto
 #if canImport(CryptoKit)
 import CryptoKit
 #else
@@ -61,6 +67,13 @@ public final class Engine {
     @ObservationIgnored var receipts: [String: Set<String>] = [:]
     @ObservationIgnored var receiptTask: Task<Void, Never>?
     @ObservationIgnored var sweeper: Task<Void, Never>?
+    /// L'appareil v3 et les sessions (chargées contact par contact).
+    @ObservationIgnored var v3: V3Engine?
+    /// Les paquets v3 demandés au relais : (paquet vérifié ou aucun, heure).
+    @ObservationIgnored var bundleCache: [String: (bundle: KeyBundle?, at: Double)] = [:]
+    /// Les réparations de session v3 récentes (une toutes les cinq minutes
+    /// par contact au plus).
+    @ObservationIgnored var repairs: [String: Double] = [:]
 
     // ----- Le compte -----
 
@@ -92,6 +105,7 @@ public final class Engine {
         relay.onPresence = { [weak self] code, online, seen in
             self?.presence[code] = (online, seen)
         }
+        startV3()
     }
 
     public func start() {
@@ -115,6 +129,7 @@ public final class Engine {
         netState = s
         if s == .online {
             watchContacts()
+            publishV3()
             Task { await flush() }
             Task { await refreshMissingKeys() }
         }
@@ -146,6 +161,11 @@ public final class Engine {
             store.remove("statuses", s.key)
         }
         statusRevision += 1
+        // Les clés pré-signées v3 : renouvelées chaque semaine, puis republiées.
+        if v3?.maintain(now: V3.secs(t)) == true {
+            saveV3()
+            publishV3()
+        }
     }
 
     public func saveSettings(_ f: (inout Settings) -> Void) {
@@ -557,8 +577,23 @@ public final class Engine {
 
     func sendNow(_ item: OutItem, live: Bool) async -> Relay.Ack {
         guard let peer = await keys(for: item.to) else { return .failed("unknown") }
-        guard let body = TalkaCrypto.seal(me, peerCode: peer.code, peerDh: peer.dh, plain: item.payload) else { return .failed("crypto") }
-        return await relay.send(id: item.id, to: item.to, body: body, live: live)
+        loadV3(peer.code)
+        // « écrit… » et les signaux d'appel ne sont remis qu'à un destinataire
+        // en ligne : hors ligne, le relais les jette, et chacun laisserait chez
+        // lui une clé sautée dans la session. Ils gardent alors l'ancien format.
+        let ratchet = !live || presence[peer.code]?.online == true
+        // Sans session, le paquet du contact en ouvre une (s'il en a publié un).
+        var bundle: KeyBundle?
+        if ratchet, let v3, !v3.hasSession(peer.code) { bundle = await bundleFor(peer) }
+        // Chiffré au moment de partir : un nouvel essai chiffre à nouveau (un
+        // autre numéro de message) ; le destinataire range par identifiant.
+        let sealed = (ratchet ? v3?.seal(me, peerCode: peer.code, peerDh: peer.dh, bundle: bundle, plain: item.payload) : nil)
+            ?? TalkaCrypto.seal(me, peerCode: peer.code, peerDh: peer.dh, plain: item.payload).map { V3.Sealed(body: $0, v3: false) }
+        guard let sealed else { return .failed("crypto") }
+        // La session a avancé : rien ne part avant qu'elle soit écrite (une clé
+        // de message ne doit jamais servir deux fois).
+        if sealed.v3 { saveV3() }
+        return await relay.send(id: item.id, to: item.to, body: sealed.body, live: live)
     }
 
     /// Envoie ce qui attend dans la boîte d'envoi.
@@ -863,12 +898,37 @@ public final class Engine {
 
     func receive(_ env: [String: Any]) async {
         let from = env["from"] as? String ?? ""
-        guard !from.isEmpty, !blocked(from), let peer = await keys(for: from),
-              let plain = TalkaCrypto.open(me, peerCode: peer.code, peerDh: peer.dh, body: env["body"] as? String ?? ""),
-              let wire = Wire.parse(plain)
-        else { return }
-        let ts = env["ts"] as? Double ?? nowMs()
-        handle(from, wire, ts: ts, live: env["live"] as? Bool ?? false)
+        guard !from.isEmpty, !blocked(from), let peer = await keys(for: from) else { return }
+        loadV3(from)
+        let body = env["body"] as? String ?? ""
+        var repair = false
+        // Le message, et l'état de session qui l'a ouvert : une seule
+        // transaction SQLite (le relais ne l'oublie qu'après, par `got`).
+        let device: String? = store.transaction {
+            let opened = v3?.open(me, peerCode: peer.code, peerDh: peer.dh, body: body, now: V3.secs(nowMs()))
+                ?? TalkaCrypto.open(me, peerCode: peer.code, peerDh: peer.dh, body: body).map { .legacy($0) }
+                ?? .failed(.envelope)
+            let device = saveV3Sessions()
+            switch opened {
+            case .legacy(let plain), .v3(let plain):
+                if let wire = Wire.parse(plain) {
+                    handle(from, wire, ts: env["ts"] as? Double ?? nowMs(), live: env["live"] as? Bool ?? false)
+                }
+            // Déjà lu (le relais l'a renvoyé), ou pas pour nous.
+            case .replay, .failed(.envelope):
+                break
+            case .failed(.v3(let e)):
+                v3Log("v3 : message de \(from) illisible (\(e))")
+                // Seulement une session perdue : un vieux message rejoué ne
+                // la fait jamais tomber.
+                repair = V3.needsRepair(e)
+            }
+            return device
+        }
+        // L'appareil (sa mémoire des premiers messages) après le message : un
+        // premier message rangé sans elle se relirait comme un doublon.
+        if let device { saveV3Device(device) }
+        if repair { repairV3(from) }
     }
 
     func groupChat(_ from: String, _ grp: GroupInfo, at: Double) -> Chat? {
@@ -1108,6 +1168,17 @@ public final class Engine {
             let kv = (dump["kv"] as? [[Any]] ?? []).filter { ($0.first as? String) != "brocolis" && ($0.first as? String) != "brocolis_sealed" }
             dump["kv"] = kv + [["brocolis", text]]
         }
+        // Les sessions v3 n'y vont pas : restaurées plus tard, en retard sur
+        // celles du contact, elles reprendraient des clés de message déjà
+        // servies. L'appareil v3 y va, comme l'identité (en clair sur iPhone :
+        // il vit dans le trousseau) ; après une restauration, chaque contact
+        // ouvre (ou reçoit) une session neuve.
+        var kv = (dump["kv"] as? [[Any]] ?? []).filter {
+            let key = $0.first as? String ?? ""
+            return !key.hasPrefix(V3.sessionPrefix) && key != V3.deviceKey
+        }
+        if let device = try? loadV3Device() { kv.append([V3.deviceKey, device]) }
+        dump["kv"] = kv
         let payload: [String: Any] = ["app": "talka", "at": nowMs(), "data": dump]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let plain = String(data: data, encoding: .utf8),
@@ -1131,6 +1202,7 @@ public final class Engine {
         store.wipe()
         #if os(iOS)
         BrocolisVault.clear()
+        V3Vault.clear()
         #endif
     }
 }
