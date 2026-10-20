@@ -21,6 +21,8 @@ pub struct Settings {
     pub theme: String,
     pub read_receipts: bool,
     pub hide_online: bool,
+    /// La pastille verte des contacts en ligne (grise hors ligne).
+    pub presence_dot: bool,
     pub notify: bool,
     pub sound: bool,
     pub enter_sends: bool,
@@ -38,6 +40,7 @@ impl Default for Settings {
             theme: "auto".into(),
             read_receipts: true,
             hide_online: false,
+            presence_dot: true,
             notify: false,
             sound: true,
             enter_sends: true,
@@ -419,6 +422,19 @@ mod tests {
         // L'ancienne limite (4 Mo) ne passait pas.
         let old = b64_len(12 + b64_len(4 * 1024 * 1024) + 16);
         assert!(old > MAX_BODY);
+    }
+
+    #[test]
+    fn presence_dot_is_on_by_default_even_in_old_settings() {
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark","hide_online":true}"#).unwrap();
+        assert!(old.presence_dot);
+        assert!(old.hide_online);
+        let off = Settings {
+            presence_dot: false,
+            ..Settings::default()
+        };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(!back.presence_dot);
     }
 
     #[test]

@@ -156,3 +156,19 @@ final class CompatTests: XCTestCase {
         XCTAssertEqual(JSON.decode(Chat.self, json)?.pinMsg, "m1")
     }
 }
+
+/// La pastille « en ligne » : un réglage que le navigateur et l'iPhone
+/// partagent (sauvegardes), activé par défaut, même dans les anciens réglages.
+final class PresenceSettingTests: XCTestCase {
+    func testPresenceDotDefaultsAndRoundTrip() throws {
+        let old = #"{"theme":"dark","hide_online":true}"#
+        let s = try XCTUnwrap(JSON.decode(Settings.self, old))
+        XCTAssertTrue(s.presenceDot)
+        XCTAssertTrue(s.hideOnline)
+        var off = s
+        off.presenceDot = false
+        let json = JSON.encode(off)
+        XCTAssertTrue(json.contains("\"presence_dot\":false"))
+        XCTAssertEqual(JSON.decode(Settings.self, json)?.presenceDot, false)
+    }
+}
