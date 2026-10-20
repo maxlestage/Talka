@@ -1743,7 +1743,9 @@ async fn receive(env: &Value) {
         Opened::Failed(Failure::Envelope) => return, // pas pour nous, ou abîmé
         Opened::Failed(Failure::V3(e)) => {
             dom::warn(&format!("v3 : message de {from} illisible ({e})"));
-            repair_v3(&from);
+            if v3::needs_repair(&e) {
+                repair_v3(&from);
+            }
             return;
         }
     };
