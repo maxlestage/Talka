@@ -366,6 +366,11 @@ impl Wire {
     }
 }
 
+/// La taille maximale d'un document : 3 Mo. Encodé deux fois en base64 (dans
+/// le message, puis une fois chiffré), il fait environ 5,4 Mo, sous la
+/// limite de 6 Mo du relais (`MAX_BODY`). À 4 Mo, l'envoi échouait.
+pub const MAX_FILE: f64 = 3.0 * 1024.0 * 1024.0;
+
 /// Pour chercher sans tenir compte des majuscules ni des accents (« ecole »
 /// trouve « École »), comme l'application iPhone.
 pub fn fold(text: &str) -> String {
@@ -390,6 +395,27 @@ pub fn fold(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La limite du relais (`MAX_BODY` côté serveur).
+    const MAX_BODY: usize = 6 * 1024 * 1024;
+
+    fn b64_len(n: usize) -> usize {
+        n.div_ceil(3) * 4
+    }
+
+    #[test]
+    fn largest_file_fits_in_one_envelope() {
+        let file = MAX_FILE as usize;
+        // Le message : l'adresse `data:` du fichier, et ce qui l'entoure
+        // (nom, type, identifiants, profil…) : 2 Ko suffisent largement.
+        let plain = b64_len(file) + "data:application/octet-stream;base64,".len() + 2048;
+        // Chiffré : iv (12) ‖ texte ‖ tag (16), en base64.
+        let body = b64_len(12 + plain + 16);
+        assert!(body < MAX_BODY, "{body} > {MAX_BODY}");
+        // L'ancienne limite (4 Mo) ne passait pas.
+        let old = b64_len(12 + b64_len(4 * 1024 * 1024) + 16);
+        assert!(old > MAX_BODY);
+    }
 
     #[test]
     fn fold_ignores_case_and_accents() {
