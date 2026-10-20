@@ -37,6 +37,7 @@ final class AppModel {
         locked = store.read("kv", "pin", as: PinHash.self) != nil
         adoptBuiltInServer()
         if Engine.hasAccount(store) { start() }
+        WatchBridge.shared.start(self)
         Task { await finishLoading() }
     }
 
