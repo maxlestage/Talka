@@ -40,6 +40,8 @@ public final class Relay {
     var pending: [String: CheckedContinuation<Ack, Never>] = [:]
     var lookups: [String: [CheckedContinuation<[String: Any]?, Never>]] = [:]
     var watched = Set<String>()
+    /// L'identifiant du démarrage du relais connecté (vide : relais ancien).
+    public private(set) var boot = ""
     /// L'heure du relais moins la nôtre.
     var skew: Double = 0
 
@@ -166,6 +168,7 @@ public final class Relay {
             }
         case "ready":
             retry = 0
+            boot = msg["boot"] as? String ?? ""
             state = .online
             if !watched.isEmpty { raw(["t": "watch", "codes": Array(watched)]) }
         case "ack", "error":
