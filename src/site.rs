@@ -297,7 +297,7 @@ pub fn home(site: &Site) -> Page {
                         .child(feature("👥", "Groupes", "Créez un groupe, nommez-le, ajoutez des membres avec leur code. Chaque message est chiffré pour chacun."))
                         .child(feature("📹", "Appels audio et vidéo", "En direct, d'appareil à appareil (WebRTC), avec micro coupé, caméra et historique des appels."))
                         .child(feature("🎙️", "Messages vocaux", "Maintenez, parlez, envoyez. Lecture avec la durée, comme vous en avez l'habitude."))
-                        .child(feature("📷", "Photos et fichiers", "Photos compressées automatiquement, documents jusqu'à 4 Mo, légendes."))
+                        .child(feature("📷", "Photos et fichiers", "Photos compressées automatiquement, documents jusqu'à 3 Mo, légendes."))
                         .child(feature("⭕", "Statuts", "Un texte coloré ou une photo, visible par vos contacts pendant 24 heures."))
                         .child(feature("😍", "Réactions et emojis", "Réagissez d'un geste, modifiez ou supprimez pour tout le monde, mettez en favori."))
                         .child(feature("⏳", "Messages éphémères", "Choisissez 24 heures, 7 jours ou 90 jours : les messages disparaissent tout seuls."))

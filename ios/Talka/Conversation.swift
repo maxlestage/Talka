@@ -468,7 +468,9 @@ struct ConversationView: View {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url) else { return }
-        guard data.count <= 4 * 1024 * 1024 else { return model.show("Fichier trop lourd (4 Mo au plus).") }
+        // 3 Mo : encodé deux fois en base64 (message, puis chiffré), il tient dans
+        // la limite de 6 Mo du relais, comme dans le navigateur.
+        guard data.count <= 3 * 1024 * 1024 else { return model.show("Fichier trop lourd (3 Mo au plus).") }
         let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
         send(e, Content(kind: "file", data: data.dataURL(mime), name: url.lastPathComponent, mime: mime, size: Double(data.count)))
     }

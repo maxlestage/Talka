@@ -14,7 +14,7 @@ L'application iOS de Talka, en Swift et SwiftUI (iOS 17 et plus). Elle parle le 
   - messages chiffrés de bout en bout, avec *gras*, _italique_, ~barré~, `code` et liens ;
   - ✓ envoyé, ✓✓ distribué, ✓✓ bleus lu ; « écrit… », en ligne, vu à… ;
   - réponses (balayer une bulle vers la droite), réactions 👍 ❤️ 😂 😮 😢 🙏, transfert, messages importants, modification (15 min), suppression pour moi ou pour tout le monde, infos de lecture ;
-  - **photos** (réduites, sans métadonnées), **documents** (4 Mo), **contacts**, **messages vocaux** (AAC, lus aussi par le navigateur ; ceux de Chrome ou Firefox sont lus par WebKit) ;
+  - **photos** (réduites, sans métadonnées), **documents** (3 Mo), **contacts**, **messages vocaux** (AAC, lus aussi par le navigateur ; ceux de Chrome ou Firefox sont lus par WebKit) ;
   - messages éphémères (24 h, 7 jours, 90 jours), fond d'écran, brouillons.
 - **Infos** : nom local du contact, **numéro de sécurité** (le même sur les deux appareils), blocage ; membres et admins d'un groupe, photo, nom, ajout et retrait.
 - **Actus** : texte sur fond de couleur ou photo, 24 heures, avec qui les a vues.

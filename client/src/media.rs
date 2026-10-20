@@ -17,7 +17,7 @@ use web_sys::{
 
 use crate::dom::{Deferred, document, get, h, listen, now, scope_into, unique, window};
 
-pub const MAX_FILE: f64 = 4.0 * 1024.0 * 1024.0;
+pub use crate::model::MAX_FILE;
 
 /// Choisir un fichier (`None` : annulé).
 pub async fn pick_file(accept: &str, capture: Option<&str>) -> Option<File> {

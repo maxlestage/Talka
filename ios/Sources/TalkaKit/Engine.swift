@@ -39,6 +39,8 @@ public final class Engine {
     @ObservationIgnored public var onReaction: ((Chat, String, String) -> Void)?
     /// Un signal d'appel (offre, réponse, candidat…).
     @ObservationIgnored public var onCallSignal: ((String, Body, Bool) -> Void)?
+    /// Le relais a refusé un message trop lourd (il est marqué en échec).
+    @ObservationIgnored public var onTooLarge: (() -> Void)?
 
     @ObservationIgnored public let store: Store
     @ObservationIgnored public let relay: Relay
@@ -352,7 +354,10 @@ public final class Engine {
                     if !item.msgId.isEmpty { markSent(item.chat, item.msgId, item.to) }
                 case .failed(let e) where e == "size" || e == "code":
                     store.remove("outbox", item.id)
-                    if !item.msgId.isEmpty { markFailed(item.chat, item.msgId) }
+                    if !item.msgId.isEmpty {
+                        markFailed(item.chat, item.msgId)
+                        if e == "size" { onTooLarge?() }
+                    }
                 case .failed(let e) where e == "offline" || e == "timeout":
                     return
                 case .failed:
