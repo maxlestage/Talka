@@ -6,6 +6,8 @@
 //!   du navigateur, pour les tests du serveur ;
 //! - [`model`] : ce que garde l'appareil et ce qui voyage, chiffré ;
 //! - [`rows`] : ces données dans Memoire ORM (testé aussi hors du navigateur) ;
+//! - [`v3`] : les sessions à double cliquet (protocole v3, hybride X25519 +
+//!   ML-KEM-768), compilé aussi hors du navigateur ;
 //! - le reste n'existe que dans le navigateur : la mémoire (`store`, Memoire
 //!   gardé dans IndexedDB), le relais (`net`), la logique (`core`), l'interface (`ui`,
 //!   `conv`), les appels WebRTC (`calls`), le site (`site`).
@@ -14,6 +16,7 @@ pub mod crypto;
 pub mod jetons;
 pub mod model;
 pub mod rows;
+pub mod v3;
 
 #[cfg(target_arch = "wasm32")]
 mod brocoli;
