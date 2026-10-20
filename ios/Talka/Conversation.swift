@@ -468,7 +468,9 @@ struct ConversationView: View {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url) else { return }
-        guard data.count <= 4 * 1024 * 1024 else { return model.show("Fichier trop lourd (4 Mo au plus).") }
+        // 3 Mo : encodé deux fois en base64 (message, puis chiffré), il tient dans
+        // la limite de 6 Mo du relais, comme dans le navigateur.
+        guard data.count <= 3 * 1024 * 1024 else { return model.show("Fichier trop lourd (3 Mo au plus).") }
         let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
         send(e, Content(kind: "file", data: data.dataURL(mime), name: url.lastPathComponent, mime: mime, size: Double(data.count)))
     }
@@ -643,8 +645,17 @@ struct VoiceBubble: View {
                 }
             }
             Text(formatDuration(message.dur)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Button { player.nextSpeed() } label: {
+                Text(player.speedLabel)
+                    .font(.caption.bold().monospacedDigit())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.08), in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Vitesse de lecture : \(player.speedLabel)")
         }
-        .frame(minWidth: 200)
+        .frame(minWidth: 220)
         .onDisappear { player.stop() }
     }
 }

@@ -76,6 +76,7 @@ final class AppModel {
             }
         }
         e.onCallSignal = { [weak self] from, body, live in self?.callSignal(from, body, live) }
+        e.onTooLarge = { [weak self] in self?.show("Message trop lourd : il n'a pas pu partir.") }
         engine = e
         e.start()
         Sounds.prepare()
