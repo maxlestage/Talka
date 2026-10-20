@@ -25,13 +25,15 @@ L'application iOS de Talka, en Swift et SwiftUI (iOS 17 et plus). Elle parle le 
 
 Tout reste sur l'iPhone, dans une base SQLite protégée par iOS : le serveur ne fait que passer des messages chiffrés, et les garde au plus 30 jours pour un destinataire hors ligne.
 
+Avec un contact à jour (navigateur ou iPhone), les messages passent par des **sessions à double cliquet** (le protocole v3, le même que le navigateur : hybride X25519 + ML-KEM-768 ; X25519 seul avant iOS 26, dont CryptoKit n'a pas ML-KEM). L'appareil v3 vit dans le trousseau (cet iPhone seulement), les sessions dans la base, écrites avec le message qu'elles ont ouvert et avant tout envoi ; elles ne vont pas dans la sauvegarde (l'appareil, si). Avec un ancien client, l'ancien format, exactement. La fiche du contact dit lequel.
+
 Les notifications sont locales : l'iPhone, qui a déchiffré le message, se prévient lui-même. Rien ne passe par Apple. En contrepartie, iOS coupe la connexion quelques instants après le passage en arrière-plan : les messages arrivent à la réouverture de Talka.
 
 ## Organisation
 
 | Dossier | Rôle |
 |---|---|
-| `Sources/TalkaKit/` | le cœur, sans interface, testé aussi sous Linux : `Crypto.swift` (codes, ECDSA et ECDH P-256, HKDF, AES-256-GCM, PIN, sauvegardes), `Model.swift` (le format des messages, identique au navigateur), `Relay.swift` et `Socket.swift` (le relais), `Store.swift` (SQLite, la même table que le modèle Memoire du navigateur), `Engine.swift` (les discussions, groupes, accusés, actus, appels) |
+| `Sources/TalkaKit/` | le cœur, sans interface, testé aussi sous Linux : `Crypto.swift` (codes, ECDSA et ECDH P-256, HKDF, AES-256-GCM, PIN, sauvegardes), `Model.swift` (le format des messages, identique au navigateur), `Relay.swift` et `Socket.swift` (le relais), `Store.swift` (SQLite, la même table que le modèle Memoire du navigateur), `Engine.swift` (les discussions, groupes, accusés, actus, appels), `V3.swift`, `EngineV3.swift` et `V3Vault.swift` (le protocole v3 : sessions à double cliquet, avec `BrocolisProto`, le portage Swift de la crate du navigateur ; l'appareil v3 dans le trousseau) |
 | `Tests/TalkaKitTests/` | les tests. `vectors.json` est produit par le code Rust du navigateur (`cargo run -p talka-web --example vectors`) : TalkaKit doit retrouver les mêmes codes et ouvrir les mêmes messages |
 | `Talka/` | l'application SwiftUI : écrans, appels, messages vocaux, verrou, icône ; `WatchBridge.swift` : le lien avec la montre |
 | `TalkaWatch/` | l'app Apple Watch, livrée avec celle de l'iPhone : les discussions récentes, répondre (dictée, réponses rapides, emoji), réagir, marquer comme lu. La montre n'a pas de clés : elle passe par l'iPhone (WatchConnectivity, `Sources/TalkaKit/WatchLink.swift`) ; loin de lui, elle affiche le dernier résumé reçu et ses réponses partent à son retour |
@@ -39,6 +41,7 @@ Les notifications sont locales : l'iPhone, qui a déchiffré le message, se pré
 | `project.yml` | le projet Xcode, pour [XcodeGen](https://github.com/yonaskolb/XcodeGen) |
 | `ci/` | l'envoi sur TestFlight depuis GitHub Actions (`asc.py` : App Store Connect ; `ExportOptions.plist`) |
 | `interop.mjs` | un navigateur (Playwright) et un iPhone (TalkaKit) dans la même conversation |
+| `interop-v3.sh` | l'iPhone (TalkaKit) et le code Rust du navigateur (`tests/ios_v3.rs`) en protocole v3, par un vrai relais : paquets, sessions dans les deux sens, désordre, doublon, rejeu, session perdue, ancien client |
 
 ## Le serveur
 
@@ -81,6 +84,7 @@ Choisissez votre équipe dans *Signing & Capabilities*, puis lancez sur un simul
 cd ios && swift test                                          # codes et chiffrement recoupés avec le navigateur
 TALKA_SERVER=http://localhost:3000 swift test                 # + deux iPhones qui discutent sur un vrai serveur
 TALKA_SERVER=http://localhost:3000 node interop.mjs           # + un navigateur et un iPhone ensemble
+./interop-v3.sh                                               # + le protocole v3, iPhone (Swift) et navigateur (Rust), par le relais
 # + le relais redémarre pendant une absence : le message est renvoyé. Le test crée
 #   le fichier TALKA_RESTART_FILE ; à son lanceur de redémarrer le serveur en le voyant.
 TALKA_SERVER=… TALKA_RESTART_FILE=/tmp/talka-restart swift test --filter testResendAfterRelayRestart
