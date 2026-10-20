@@ -110,6 +110,24 @@ pub struct Chat {
     /// Le message épinglé en haut de la discussion (pour soi : il n'est pas
     /// envoyé aux autres). Vide : aucun.
     pub pin_msg: String,
+    /// Les clés Brocolis 🥦 (leurs `id`) qui chiffrent ce qui part dans cette
+    /// discussion, en plus de Talka. Vide : désactivé.
+    pub brocolis: Vec<String>,
+}
+
+/// Une clé de [Brocolis 🥦](crate::jetons), partagée avec ses proches dans
+/// l'app Brocolis.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BrocolisKey {
+    pub id: String,
+    pub name: String,
+    /// 32 octets en base64.
+    pub key: String,
+    /// Remplacée par une clé neuve : elle ouvre encore les anciens messages,
+    /// mais ne chiffre plus rien.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -158,6 +176,9 @@ pub struct Message {
     /// Une capsule temporelle : scellée jusqu'à cette heure (ms ; 0 : non).
     #[serde(skip_serializing_if = "is_zero")]
     pub open_at: f64,
+    /// Arrivé ou parti chiffré par Brocolis 🥦 (et ouvert sur cet appareil).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub bro: bool,
 }
 
 pub(crate) fn is_zero(v: &f64) -> bool {

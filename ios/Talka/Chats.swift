@@ -557,7 +557,7 @@ struct StarredSheet: View {
                                 Spacer()
                                 Text(Dates.list(m.at)).font(.caption).foregroundStyle(.secondary)
                             }
-                            Text(m.kind == "text" ? m.text : Engine.preview(m)).foregroundStyle(.primary).lineLimit(3)
+                            Text(m.kind == "text" ? Brocolis.masked(m.text) : Engine.preview(m)).foregroundStyle(.primary).lineLimit(3)
                         }
                     }
                 }
