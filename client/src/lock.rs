@@ -28,6 +28,11 @@ pub async fn set_pin(pin: Option<&str>) {
     crate::core::protect_brocolis(pin).await;
 }
 
+/// Le code de verrouillage est-il le bon ? (Vrai s'il n'y en a pas.)
+pub async fn check(pin: &str) -> bool {
+    verify(pin).await
+}
+
 async fn verify(pin: &str) -> bool {
     match store::read::<PinHash>("kv", "pin").await {
         Some(stored) => check_pin(pin, &stored),
