@@ -64,18 +64,20 @@ def output(name, value):
     print(f"{name} = {value}")
 
 
-def bundle():
-    """L'identifiant de l'app, enregistré s'il ne l'est pas encore."""
-    found = call("GET", "/bundleIds", query={"filter[identifier]": BUNDLE_ID, "limit": 5})["data"]
-    found = [b for b in found if b["attributes"]["identifier"] == BUNDLE_ID]
+def bundle(identifier=BUNDLE_ID, name=APP_NAME, soft=False):
+    """L'identifiant d'une app, enregistré s'il ne l'est pas encore."""
+    found = call("GET", "/bundleIds", query={"filter[identifier]": identifier, "limit": 5})["data"]
+    found = [b for b in found if b["attributes"]["identifier"] == identifier]
     if found:
         return found[0]
-    print(f"Enregistrement de l'identifiant {BUNDLE_ID}…")
-    return call(
+    print(f"Enregistrement de l'identifiant {identifier}…")
+    created = call(
         "POST",
         "/bundleIds",
-        {"data": {"type": "bundleIds", "attributes": {"identifier": BUNDLE_ID, "name": APP_NAME, "platform": "IOS"}}},
-    )["data"]
+        {"data": {"type": "bundleIds", "attributes": {"identifier": identifier, "name": name, "platform": "IOS"}}},
+        soft=soft,
+    )
+    return created["data"] if created else None
 
 
 def app():
@@ -86,6 +88,9 @@ def app():
 def prepare():
     b = bundle()
     output("team_id", b["attributes"]["seedId"])
+    # L'app de la montre, livrée avec celle de l'iPhone (Xcode l'enregistre
+    # aussi de lui-même à l'envoi ; ici, c'est fait d'avance).
+    bundle(BUNDLE_ID + ".watchkitapp", APP_NAME + " Watch", soft=True)
     a = app()
     if not a:
         # Ce que la clé voit : une app créée avec un autre identifiant, par exemple.
