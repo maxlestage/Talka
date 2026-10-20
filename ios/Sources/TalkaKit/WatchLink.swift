@@ -33,6 +33,9 @@ public struct WatchSnapshot: Codable, Equatable, Sendable {
     /// L'iPhone est-il relié au relais Talka ?
     public var online = false
     public var chats: [WatchChat] = []
+    /// Talka est protégé par un code : les widgets de la montre n'affichent
+    /// que le nombre de non-lus. (Facultatif : absent des premières versions.)
+    public var hidden: Bool?
 
     public init(name: String = "", online: Bool = false, chats: [WatchChat] = []) {
         self.name = name
