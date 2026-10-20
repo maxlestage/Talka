@@ -28,7 +28,9 @@ struct ConversationView: View {
     var body: some View {
         if let e = model.engine, let chat = e.chat(chatId) {
             let _ = e.revisions[chatId]
-            let messages = e.messages(chatId)
+            // Les messages éphémères expirés disparaissent tout de suite, comme dans le navigateur.
+            let now = nowMs()
+            let messages = e.messages(chatId).filter { m in m.exp.map { $0 > now } ?? true }
             VStack(spacing: 0) {
                 ScrollViewReader { proxy in
                     ScrollView {
