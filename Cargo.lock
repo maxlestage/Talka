@@ -640,9 +640,14 @@ source = "git+https://github.com/maxlestage/Memoire#d42619fd37cbe2ea7ae7f803f729
 dependencies = [
  "foldhash",
  "hashbrown",
+ "js-sys",
  "memoire-orm-derive",
  "parking_lot",
+ "serde",
+ "serde_json",
  "thiserror",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -1221,6 +1226,7 @@ dependencies = [
  "hkdf",
  "hmac 0.12.1",
  "js-sys",
+ "memoire-orm",
  "p256",
  "pbkdf2",
  "qrcode",
