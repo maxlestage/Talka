@@ -11,6 +11,7 @@
 //!   `conv`), les appels WebRTC (`calls`), le site (`site`).
 
 pub mod crypto;
+pub mod jetons;
 pub mod model;
 pub mod rows;
 

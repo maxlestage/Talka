@@ -41,6 +41,17 @@ struct SettingsTab: View {
                     } footer: {
                         Text("Sans confirmations de lecture, vous ne voyez pas non plus celles des autres. La pastille « en ligne » : un point vert sur l'avatar des contacts connectés, gris sinon.")
                     }
+                    Section {
+                        NavigationLink {
+                            BrocolisKeysView()
+                        } label: {
+                            LabeledContent("Clés Brocolis 🥦", value: "\(e.brocolisKeys.count)")
+                        }
+                    } header: {
+                        Text("Brocolis 🥦")
+                    } footer: {
+                        Text("Une seconde couche de chiffrement, avec les clés de l'app Brocolis.")
+                    }
                     Section("Verrouillage") {
                         if model.hasPin {
                             if let bio = model.biometryName {

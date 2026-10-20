@@ -8,6 +8,11 @@
 
 import Foundation
 import Observation
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 
 public let dayMs: Double = 86_400_000
 /// Une capsule temporelle s'ouvre au plus tard dans dix ans.
@@ -21,6 +26,8 @@ public final class Engine {
     public private(set) var settings: Settings
     public private(set) var contacts: [String: Contact] = [:]
     public private(set) var chats: [String: Chat] = [:]
+    /// Les clés Brocolis 🥦 de l'appareil.
+    public private(set) var brocolisKeys: [BrocolisKey] = []
     /// code → (en ligne, vu pour la dernière fois).
     public private(set) var presence: [String: (online: Bool, seen: Double?)] = [:]
     /// discussion → codes en train d'écrire.
@@ -75,6 +82,7 @@ public final class Engine {
         me = identity
         profile = store.read("kv", "profile", as: Profile.self) ?? Profile()
         settings = store.read("kv", "settings", as: Settings.self) ?? Settings()
+        brocolisKeys = Self.loadBrocolis(store)
         relay = Relay(identity: identity, server: server)
         for c in store.all("contacts", as: Contact.self) { contacts[c.code] = c }
         for c in store.all("chats", as: Chat.self) { chats[c.id] = c }
@@ -271,6 +279,217 @@ public final class Engine {
         saveChat(c)
     }
 
+    // ----- Brocolis 🥦 -----
+    //
+    // Les clés de l'app Brocolis : dans le trousseau de l'iPhone (voir
+    // `BrocolisVault`), dans la base ailleurs. Une clé se partage par Talka
+    // (bulle « clé partagée ») et se renouvelle, comme dans le navigateur.
+
+    static let sharedKeyFallback = "🥦 Clé Brocolis partagée : mettez Talka à jour pour l'ajouter."
+
+    static func loadBrocolis(_ store: Store) -> [BrocolisKey] {
+        #if os(iOS)
+        // Une sauvegarde restaurée apporte ses clés dans la base : elles
+        // passent au trousseau.
+        if let restored = store.read("kv", "brocolis", as: [BrocolisKey].self) {
+            if BrocolisVault.write(restored) { store.remove("kv", "brocolis") }
+            return restored
+        }
+        return BrocolisVault.read() ?? []
+        #else
+        return store.read("kv", "brocolis", as: [BrocolisKey].self) ?? []
+        #endif
+    }
+
+    func saveBrocolis() {
+        #if os(iOS)
+        if BrocolisVault.write(brocolisKeys) {
+            store.remove("kv", "brocolis")
+            return
+        }
+        #endif
+        store.write("kv", "brocolis", brocolisKeys)
+    }
+
+    /// Les clés qui chiffrent ce qui part dans `c` (celles qui existent encore,
+    /// et pas celles qu'on a renouvelées).
+    public func chatBrocolis(_ c: Chat) -> [BrocolisKey] {
+        brocolisKeys.filter { !$0.retired && c.brocolis.contains($0.id) }
+    }
+
+    var allBrocolisKeys: [SymmetricKey] { brocolisKeys.compactMap { Brocolis.key(base64: $0.key) } }
+
+    func sealText(_ c: Chat, _ text: String) -> String {
+        Brocolis.seal(text, keys: chatBrocolis(c).compactMap { Brocolis.key(base64: $0.key) })
+    }
+
+    /// Scelle le texte et la citation de `content` ; `true` si le texte l'a été.
+    /// Une clé partagée ne se scelle pas : elle voyage dans le chiffrement de Talka.
+    func sealContent(_ c: Chat, _ content: inout Content) -> Bool {
+        guard content.kind != "brokey" else { return false }
+        let sealed = sealText(c, content.text)
+        let bro = sealed != content.text
+        content.text = sealed
+        if var r = content.reply {
+            r.text = sealText(c, r.text)
+            content.reply = r
+        }
+        return bro
+    }
+
+    /// Ouvre les jetons d'un message et de sa citation ; `true` si l'un l'a été.
+    @discardableResult
+    func openMessage(_ m: inout Message) -> Bool {
+        var changed = false
+        if Brocolis.hasToken(m.text) {
+            let o = Brocolis.open(m.text, keys: allBrocolisKeys)
+            if o.opened > 0 { m.text = o.text; m.bro = true; changed = true }
+        }
+        if var r = m.reply, Brocolis.hasToken(r.text) {
+            let o = Brocolis.open(r.text, keys: allBrocolisKeys)
+            if o.opened > 0 { r.text = o.text; m.reply = r; changed = true }
+        }
+        return changed
+    }
+
+    public enum BrocolisError: LocalizedError {
+        case notAKey, forgotten, unknown
+        public var errorDescription: String? {
+            switch self {
+            case .notAKey: "Ce n'est pas une clé Brocolis (32 octets en base64)."
+            case .forgotten: "Cette clé a été oubliée."
+            case .unknown: "Clé introuvable."
+            }
+        }
+    }
+
+    /// Ajoute une clé (collée seule, ou dans l'invitation de l'app Brocolis),
+    /// puis ouvre les messages déjà reçus qu'elle déverrouille. Une clé déjà
+    /// là est renvoyée telle quelle.
+    @discardableResult
+    public func addBrocolisKey(name: String, pasted: String) throws -> BrocolisKey {
+        guard let key = Brocolis.findKey(in: pasted) else { throw BrocolisError.notAKey }
+        if let existing = brocolisKeys.first(where: { $0.key == key }) { return existing }
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let k = BrocolisKey(id: randomId(6), name: trimmed.isEmpty ? "Clé \(brocolisKeys.count + 1)" : String(trimmed.prefix(40)), key: key)
+        brocolisKeys.append(k)
+        saveBrocolis()
+        reopenMessages()
+        return k
+    }
+
+    public func renameBrocolisKey(_ id: String, name: String) {
+        let trimmed = String(name.trimmingCharacters(in: .whitespaces).prefix(40))
+        guard !trimmed.isEmpty, let i = brocolisKeys.firstIndex(where: { $0.id == id }) else { return }
+        brocolisKeys[i].name = trimmed
+        saveBrocolis()
+    }
+
+    /// Oublie une clé : les discussions qu'elle chiffrait n'en ont plus besoin.
+    /// Les messages déjà ouverts le restent.
+    public func removeBrocolisKey(_ id: String) {
+        brocolisKeys.removeAll { $0.id == id }
+        saveBrocolis()
+        for c in chats.values where c.brocolis.contains(id) {
+            updateChat(c.id) { $0.brocolis.removeAll { $0 == id } }
+        }
+    }
+
+    func retire(_ id: String) {
+        guard let i = brocolisKeys.firstIndex(where: { $0.id == id }), !brocolisKeys[i].retired else { return }
+        brocolisKeys[i].retired = true
+        brocolisKeys[i].name += " (ancienne)"
+    }
+
+    /// Renouvelle une clé : une neuve, du même nom, la remplace dans toutes ses
+    /// discussions et y est envoyée par Talka ; l'ancienne garde l'historique
+    /// lisible mais ne chiffre plus rien. Renvoie le nombre de discussions.
+    @discardableResult
+    public func renewBrocolisKey(_ id: String) throws -> Int {
+        guard let old = brocolisKeys.first(where: { $0.id == id }) else { throw BrocolisError.unknown }
+        let fresh = BrocolisKey(id: randomId(6), name: old.name, key: Brocolis.generateKey())
+        retire(id)
+        brocolisKeys.append(fresh)
+        saveBrocolis()
+        let using = chats.values.filter { $0.brocolis.contains(id) }
+        for c in using {
+            updateChat(c.id) { $0.brocolis = $0.brocolis.map { $0 == id ? fresh.id : $0 } }
+            shareBrocolisKey(c.id, keyId: fresh.id, replaces: old)
+        }
+        return using.count
+    }
+
+    /// Envoie une clé dans une discussion, par le chiffrement de bout en bout
+    /// de Talka : plus besoin de la copier-coller ailleurs.
+    ///
+    /// Sur le fil, `data` porte la clé et `code` l'empreinte de celle qu'elle
+    /// remplace (un renouvellement). L'iPhone, lui, ne garde jamais la clé
+    /// dans ses messages une fois qu'elle est dans ses clés : `data` est vidé
+    /// et `code` désigne la clé (son `id`).
+    @discardableResult
+    public func shareBrocolisKey(_ chat: String, keyId: String, replaces: BrocolisKey? = nil) -> Message? {
+        guard let k = brocolisKeys.first(where: { $0.id == keyId }) else { return nil }
+        let content = Content(kind: "brokey", text: Self.sharedKeyFallback, data: k.key, name: k.name,
+                              code: replaces.flatMap { Brocolis.fingerprint($0.key) } ?? "")
+        guard var m = send(chat, content) else { return nil }
+        forgetSharedKey(&m, k.id)
+        return m
+    }
+
+    func forgetSharedKey(_ m: inout Message, _ keyId: String) {
+        m.data = ""
+        m.code = keyId
+        store.writeMessage(m)
+        bump(m.chat)
+    }
+
+    /// La clé d'une bulle « clé partagée », si elle est dans vos clés.
+    public func sharedKey(of m: Message) -> BrocolisKey? {
+        brocolisKeys.first { m.data.isEmpty ? $0.id == m.code : $0.key == m.data }
+    }
+
+    /// Ajoute une clé reçue dans une discussion et l'y active ; si elle en
+    /// renouvelle une, l'ancienne n'y chiffre plus (elle garde l'historique).
+    @discardableResult
+    public func acceptBrocolisKey(_ m: Message) throws -> BrocolisKey {
+        if m.data.isEmpty {
+            guard let k = sharedKey(of: m) else { throw BrocolisError.forgotten }
+            return k
+        }
+        let k = try addBrocolisKey(name: m.name, pasted: m.data)
+        let old = m.code.isEmpty ? nil : brocolisKeys.first { $0.id != k.id && Brocolis.fingerprint($0.key) == m.code }
+        if let old {
+            retire(old.id)
+            saveBrocolis()
+        }
+        if let c = chats[m.chat] {
+            var ids = c.brocolis.filter { $0 != old?.id }
+            if !ids.contains(k.id) { ids.append(k.id) }
+            setChatBrocolis(m.chat, ids)
+        }
+        if var stored = store.message(m.chat, m.id) { forgetSharedKey(&stored, k.id) }
+        return k
+    }
+
+    /// Les clés qui chiffrent ce qui part dans une discussion (vide : aucune).
+    public func setChatBrocolis(_ chat: String, _ ids: [String]) {
+        updateChat(chat) { $0.brocolis = ids }
+        bump(chat)
+    }
+
+    /// Les messages gardés avec des jetons qu'une nouvelle clé peut ouvrir.
+    func reopenMessages() {
+        var touched = Set<String>()
+        for var m in store.allMessages() where openMessage(&m) {
+            store.writeMessage(m)
+            touched.insert(m.chat)
+        }
+        for chat in touched {
+            refreshLast(chat)
+            bump(chat)
+        }
+    }
+
     public func deleteChat(_ id: String) {
         store.deleteMessages(of: id)
         store.remove("chats", id)
@@ -289,11 +508,12 @@ public final class Engine {
         // Ni l'aperçu de la liste, ni la notification ne trahissent une capsule.
         if m.isCapsule { return "⏳ Capsule temporelle" }
         switch m.kind {
-        case "image": return "📷 \(m.text.isEmpty ? "Photo" : m.text)"
+        case "image": return "📷 \(m.text.isEmpty ? "Photo" : Brocolis.masked(m.text))"
         case "voice": return "🎙️ Message vocal (\(formatDuration(m.dur)))"
         case "file": return "📄 \(m.name.isEmpty ? "Fichier" : m.name)"
         case "contact": return "👤 \(m.name.isEmpty ? "Contact" : m.name)"
-        default: return m.text
+        case "brokey": return "🥦 Clé Brocolis « \(m.name) »"
+        default: return Brocolis.masked(m.text)
         }
     }
 
@@ -433,10 +653,15 @@ public final class Engine {
         m.status = to.isEmpty ? "sent" : "pending"
         m.to = to
         if c.timer > 0 { m.exp = at + Double(c.timer) * 1000 }
+        // Brocolis 🥦 : le texte part scellé ; l'appareil garde le clair.
+        var sealed = content
+        m.bro = sealContent(c, &sealed)
+        // Un jeton collé (clavier Brocolis) s'affiche ouvert, s'il est pour vous.
+        openMessage(&m)
         storeMessage(m)
         // Le nom choisi voyage avec le message : un membre de groupe qui ne
         // vous connaît pas voit « ~Nom » plutôt qu'un code.
-        let wire = envelope(c, .msg(id: id, at: at, pn: profile.name, content: content))
+        let wire = envelope(c, .msg(id: id, at: at, pn: profile.name, content: sealed))
         for code in to { enqueue(code, wire, chat: chatId, msgId: id) }
         if !(chats[chatId]?.draft.isEmpty ?? true) { updateChat(chatId) { $0.draft = "" } }
         return m
@@ -460,10 +685,12 @@ public final class Engine {
         guard let c = chats[chat], var m = store.message(chat, id), m.from == me.code else { return }
         m.text = text
         m.edited = true
+        let sealed = sealText(c, text)
+        m.bro = sealed != text
         store.writeMessage(m)
         refreshLast(chat)
         bump(chat)
-        broadcast(c, .edit(id: id, text: text))
+        broadcast(c, .edit(id: id, text: sealed))
     }
 
     public func delete(_ chat: String, _ id: String, forEveryone: Bool) {
@@ -741,15 +968,17 @@ public final class Engine {
         switch wire.body {
         case let .msg(id, at, pn, content):
             guard store.message(c.id, id) == nil else { return } // déjà reçu
-            let kinds = ["text", "image", "voice", "file", "contact"]
+            let kinds = ["text", "image", "voice", "file", "contact", "brokey"]
             var safe = content
-            if !kinds.contains(safe.kind) { safe.kind = "text" }
+            // Une clé Brocolis partagée n'en est une que si elle est valide.
+            if !kinds.contains(safe.kind) || (safe.kind == "brokey" && Brocolis.key(base64: safe.data) == nil) { safe.kind = "text" }
             safe.text = String(safe.text.prefix(65_536))
             // Une capsule s'ouvre au plus tard dans dix ans.
             let mAt = min(at, ts + 60_000)
             if let open = safe.openAt { safe.openAt = open > mAt ? min(open, mAt + capsuleMaxMs) : nil }
             var m = Message(chat: c.id, id: id, from: from, at: mAt, content: safe)
             if let ttl = wire.ttl { m.exp = m.at + Double(ttl) * 1000 }
+            openMessage(&m)
             if var sender = contacts[from], sender.profileName.isEmpty, !pn.isEmpty {
                 sender.profileName = String(pn.prefix(40))
                 saveContact(sender)
@@ -785,7 +1014,9 @@ public final class Engine {
             if m.from == me.code, !emoji.isEmpty { onReaction?(c, from, emoji) }
         case let .edit(id, text):
             guard var m = store.message(c.id, id), m.from == from, !m.deleted else { return }
-            m.text = String(text.prefix(65_536))
+            let opened = Brocolis.open(String(text.prefix(65_536)), keys: allBrocolisKeys)
+            m.text = opened.text
+            m.bro = opened.opened > 0
             m.edited = true
             store.writeMessage(m)
             refreshLast(c.id)
@@ -870,7 +1101,14 @@ public final class Engine {
 
     /// Le fichier de sauvegarde (JSON) : le même que celui du navigateur.
     public func exportBackup(password: String) -> Data? {
-        let payload: [String: Any] = ["app": "talka", "at": nowMs(), "data": store.dump()]
+        var dump = store.dump()
+        // Les clés Brocolis vivent dans le trousseau : la sauvegarde (chiffrée
+        // par son mot de passe) les emporte, pour un autre appareil.
+        if let json = try? JSONEncoder().encode(brocolisKeys), let text = String(data: json, encoding: .utf8) {
+            let kv = (dump["kv"] as? [[Any]] ?? []).filter { ($0.first as? String) != "brocolis" && ($0.first as? String) != "brocolis_sealed" }
+            dump["kv"] = kv + [["brocolis", text]]
+        }
+        let payload: [String: Any] = ["app": "talka", "at": nowMs(), "data": dump]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let plain = String(data: data, encoding: .utf8),
               let backup = TalkaCrypto.encryptBackup(password: password, plain: plain)
@@ -891,6 +1129,9 @@ public final class Engine {
     public func wipeEverything() {
         stop()
         store.wipe()
+        #if os(iOS)
+        BrocolisVault.clear()
+        #endif
     }
 }
 

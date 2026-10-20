@@ -58,6 +58,51 @@ Comme tout est dans le navigateur, **Réglages → Exporter une sauvegarde
 chiffrée** produit un fichier protégé par mot de passe (PBKDF2 + AES-GCM), à
 importer sur un autre appareil ou après avoir effacé les données du site.
 
+## Brocolis 🥦 : une seconde couche
+
+Talka parle le format de [Brocolis](https://github.com/maxlestage/messagerie-),
+l'app qui chiffre du texte par-dessus n'importe quelle messagerie. **Réglages →
+Clés Brocolis** : collez une clé de l'app Brocolis (ou toute l'invitation
+reçue), ou créez-en une. Puis, dans une discussion, **⋮ → Chiffrer avec
+Brocolis 🥦** et cochez la ou les clés :
+
+- tout le texte qui part (messages, modifications, citations, légendes,
+  capsules) est scellé en jeton `[[BROCOLIS:v1:…]]` (une clé) ou
+  `[[BROCOLIS:v2:…]]` (plusieurs : une enveloppe, lisible par chacune), **en
+  plus** du chiffrement de Talka ; `((comme ceci))` ne chiffre qu'un passage ;
+- à l'arrivée, les jetons s'ouvrent avec toutes vos clés (marque 🥦 sur la
+  bulle) ; ceux qu'aucune clé n'ouvre s'affichent « 🔒🥦 », et s'ouvrent dès
+  que vous ajoutez la bonne clé ;
+- les jetons sont exactement ceux de l'app Brocolis (AES-256-GCM, clés de 32
+  octets) : un jeton collé depuis son clavier s'ouvre dans Talka, et
+  inversement. Voir [`client/src/jetons.rs`](client/src/jetons.rs) et
+  [`ios/Sources/TalkaKit/Brocolis.swift`](ios/Sources/TalkaKit/Brocolis.swift),
+  recoupés par les vecteurs de test et par un jeton fait par l'app Brocolis.
+
+**Des clés plus sûres.** Une clé fait 256 bits tirés au hasard (le base64
+n'est que sa façon de s'écrire) ; ce qui l'expose, c'est la façon dont on la
+partage et dont on la garde :
+
+- **envoyée par Talka** : « Créer et envoyer » (ou « Envoyer les clés
+  cochées ») la fait voyager dans le chiffrement de bout en bout de Talka ;
+  le correspondant l'ajoute d'un geste (bulle « Clé Brocolis »). Une fois
+  ajoutée, elle n'est plus gardée dans les messages ;
+- **une empreinte** (`AB12-CD34-EF56-7890`, les 8 premiers octets de son
+  SHA-256) s'affiche partout, à comparer de vive voix ;
+- **renouveler** une clé en crée une neuve, du même nom, qui la remplace dans
+  ses discussions et y part par Talka ; chez le correspondant aussi, elle
+  remplace l'ancienne. L'ancienne garde l'historique lisible mais ne chiffre
+  plus rien ;
+- **au repos** : dans le navigateur, avec un code de verrouillage, les clés
+  sont chiffrées par lui (PBKDF2-SHA256, 300 000 tours → AES-256-GCM) et
+  ouvertes au déverrouillage ; un code de 4 à 6 chiffres reste court, il
+  ralentit sans arrêter qui aurait copié le navigateur. Sur l'iPhone, elles
+  sont dans le trousseau d'iOS, pour cet appareil seulement (ni iCloud, ni
+  sauvegarde de l'iPhone).
+
+L'appareil garde le texte ouvert, comme le reste de Talka ; les clés partent
+en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
+
 ## Fonctionnalités
 
 - 💬 discussions : ✓ envoyé, ✓✓ distribué, ✓✓ bleu lu ; « écrit… » ; en ligne
