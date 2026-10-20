@@ -68,6 +68,15 @@ final class WatchTests: XCTestCase {
         XCTAssertTrue(e.watchSnapshot().chats[0].readOnly)
         XCTAssertFalse(e.perform(WatchAction(.send, chat: c.id, text: "bloqué")))
 
+        // Une capsule : lisible par son auteur sur la montre.
+        let capsule = try XCTUnwrap(e.send(c.id, Content(text: "Plus tard", openAt: nowMs() + 3_600_000)))
+        XCTAssertEqual(e.watchMessage(capsule, group: false).text, "Plus tard")
+        var theirs = capsule
+        theirs.from = "WGSEAJNSZJ"
+        XCTAssertEqual(e.watchMessage(theirs, group: false).text, "⏳ Capsule temporelle")
+        theirs.openAt = nowMs() - 1
+        XCTAssertEqual(e.watchMessage(theirs, group: false).text, "Plus tard")
+
         let data = try XCTUnwrap(WatchLink.encode(WatchAction(.refresh)))
         XCTAssertEqual(WatchLink.decode(WatchAction.self, data)?.kind, .refresh)
     }
