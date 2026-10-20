@@ -30,6 +30,7 @@ struct SettingsTab: View {
                     Section {
                         Toggle("Confirmations de lecture", isOn: setting(e, \.readReceipts))
                         Toggle("Masquer « en ligne »", isOn: setting(e, \.hideOnline))
+                        Toggle("Pastille « en ligne »", isOn: setting(e, \.presenceDot))
                         NavigationLink {
                             BlockedView()
                         } label: {
@@ -38,7 +39,7 @@ struct SettingsTab: View {
                     } header: {
                         Text("Confidentialité")
                     } footer: {
-                        Text("Sans confirmations de lecture, vous ne voyez pas non plus celles des autres.")
+                        Text("Sans confirmations de lecture, vous ne voyez pas non plus celles des autres. La pastille « en ligne » : un point vert sur l'avatar des contacts connectés, gris sinon.")
                     }
                     Section("Verrouillage") {
                         if model.hasPin {

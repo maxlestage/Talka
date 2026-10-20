@@ -17,7 +17,10 @@ use crate::emoji::{QUICK, picker, remember};
 use crate::media::{self, MAX_FILE, Recorder};
 use crate::model::{Chat, Content, Message, Reply};
 use crate::sounds;
-use crate::ui::{avatar, avatar_presence, color_of, open_add_contact, open_chat, open_image, open_info, pick_chats};
+use crate::ui::{
+    avatar, avatar_presence, color_of, open_add_contact, open_chat, open_image, open_info,
+    pick_chats,
+};
 
 const PAGE: usize = 120;
 

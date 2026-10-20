@@ -113,7 +113,7 @@ struct ConversationView: View {
                 ToolbarItem(placement: .principal) {
                     Button { showInfo = true } label: {
                         HStack(spacing: 8) {
-                            e.avatar(chatId, size: 34)
+                            e.presenceAvatar(chatId, size: 34)
                             VStack(alignment: .leading, spacing: 0) {
                                 Text(e.title(chat)).font(.headline).lineLimit(1)
                                 Text(subtitle(e, chat)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
