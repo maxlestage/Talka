@@ -585,6 +585,9 @@ pub async fn flush() {
                     store::remove("outbox", &item.id).await;
                     if !item.msg_id.is_empty() {
                         mark_failed(&item.chat, &item.msg_id).await;
+                        if e == "size" {
+                            dom::toast("Message trop lourd : il n'a pas pu partir.");
+                        }
                     }
                 }
                 // Sans réseau : on reprendra. « unknown » : le destinataire

@@ -69,7 +69,7 @@ importer sur un autre appareil ou après avoir effacé les données du site.
 - 📹 appels audio et vidéo en WebRTC (d'appareil à appareil), micro, caméra,
   changement de caméra, historique ; serveurs TURN avec `TALKA_ICE_SERVERS`
 - 🎙️ vocaux avec forme d'onde et vitesse 1×/1,5×/2× ; 📷 photos réduites
-  avant l'envoi ; 📄 fichiers (4 Mo) ; 👤 cartes de contact
+  avant l'envoi ; 📄 fichiers (3 Mo) ; 👤 cartes de contact
 - ⭕ statuts (texte coloré ou photo) pendant 24 heures, avec « vu par »
 - ⏳ messages éphémères (24 h, 7 j, 90 j) ; 📌 épingler, archiver, sourdine,
   non lu ; 🚫 bloquer

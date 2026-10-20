@@ -1836,7 +1836,7 @@ async fn send_image(file: web_sys::File) {
 
 async fn send_file(file: web_sys::File) {
     if file.size() > MAX_FILE {
-        return toast("Fichier trop lourd (4 Mo au plus).");
+        return toast("Fichier trop lourd (3 Mo au plus).");
     }
     let Some(data) = media::data_url(&file).await else {
         return;
