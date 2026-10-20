@@ -924,6 +924,32 @@ label.list-item {
   color: var(--muted);
 }
 
+/* La pastille « en ligne » : verte et lumineuse, grise hors ligne. */
+.avatar-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.presence-dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 26%;
+  height: 26%;
+  min-width: 10px;
+  min-height: 10px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: #9aa4ab;
+  transition: background-color 0.3s, box-shadow 0.3s;
+}
+
+.presence-dot.on {
+  background: #25d366;
+  box-shadow: 0 0 6px rgba(37, 211, 102, 0.75);
+}
+
 .conv-head .avatar {
   width: 38px !important;
   height: 38px !important;
