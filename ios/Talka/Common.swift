@@ -60,6 +60,35 @@ extension Engine {
         let name = id == me.code ? profile.name : displayName(id)
         return Avatar(id: id, name: name, image: avatarOf(id), size: size)
     }
+
+    /// L'avatar avec la pastille « en ligne » : verte si le contact est
+    /// connecté, grise sinon. Ni pour un groupe, ni pour soi, ni pour un
+    /// contact bloqué, ni si elle est désactivée dans les réglages.
+    func presenceAvatar(_ id: String, size: CGFloat = 48) -> some View {
+        let shown = settings.presenceDot && id != me.code && !isGroup(id) && !blocked(id)
+        let online = presence[id]?.online ?? false
+        return avatar(id, size: size)
+            .overlay(alignment: .bottomTrailing) {
+                if shown {
+                    PresenceDot(online: online, size: max(10, size * 0.27))
+                }
+            }
+    }
+}
+
+struct PresenceDot: View {
+    let online: Bool
+    let size: CGFloat
+
+    var body: some View {
+        Circle()
+            .fill(online ? Color(red: 0.1451, green: 0.8275, blue: 0.4) : Color(.systemGray3))
+            .frame(width: size, height: size)
+            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+            .shadow(color: online ? Color(red: 0.1451, green: 0.8275, blue: 0.4).opacity(0.7) : .clear, radius: 3)
+            .animation(.easeInOut(duration: 0.3), value: online)
+            .accessibilityLabel(online ? "En ligne" : "Hors ligne")
+    }
 }
 
 // MARK: Images et fichiers en adresses `data:`

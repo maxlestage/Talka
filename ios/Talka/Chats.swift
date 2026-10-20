@@ -175,7 +175,7 @@ struct ChatRow: View {
         let typing = e.typing[chat.id] ?? []
         HStack(spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
-                e.avatar(chat.id, size: 52)
+                e.presenceAvatar(chat.id, size: 52)
                 if !chat.group, e.presence[chat.id]?.online == true {
                     Circle().fill(Color.talkaAccent).frame(width: 14, height: 14)
                         .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))

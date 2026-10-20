@@ -81,6 +81,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var theme = "auto"
     public var readReceipts = true
     public var hideOnline = false
+    /// La pastille verte des contacts en ligne (grise hors ligne).
+    public var presenceDot = true
     public var notify = false
     public var sound = true
     public var enterSends = true
@@ -95,6 +97,7 @@ public struct Settings: Codable, Equatable, Sendable {
         case theme, notify, sound, wallpaper, server
         case readReceipts = "read_receipts"
         case hideOnline = "hide_online"
+        case presenceDot = "presence_dot"
         case enterSends = "enter_sends"
         case fontSize = "font_size"
         case lockAfter = "lock_after"
@@ -110,6 +113,7 @@ public struct Settings: Codable, Equatable, Sendable {
         sound = c.v(.sound, d.sound); enterSends = c.v(.enterSends, d.enterSends)
         wallpaper = c.v(.wallpaper, d.wallpaper); fontSize = c.v(.fontSize, d.fontSize)
         lockAfter = c.v(.lockAfter, d.lockAfter); server = c.v(.server, d.server)
+        presenceDot = c.v(.presenceDot, d.presenceDot)
     }
 }
 
