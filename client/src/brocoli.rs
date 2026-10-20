@@ -84,9 +84,8 @@ pub fn keys_dialog() {
                                 .child(h("div").text(&k.name))
                                 .child(h("small.muted.mono").attr("title", "Empreinte : comparez-la de vive voix").text(fingerprint(k))),
                         )
-                        .child(icon_button("copy", "Copier la clé", move || {
-                            let key = copy_key.key.clone();
-                            spawn(async move { copy(&key, "Clé copiée : à coller dans l'app Brocolis").await })
+                        .child(icon_button("share", "Exporter la clé", move || {
+                            export_dialog(copy_key.clone())
                         }))
                         .child(icon_button("edit", "Renommer", move || {
                             let (k, m) = (rename.clone(), m1.clone());
@@ -170,7 +169,7 @@ pub fn keys_dialog() {
 async fn add_key() {
     let Some(pasted) = prompt_box(
         "Ajouter une clé Brocolis",
-        "Collez la clé (ou toute l'invitation reçue de l'app Brocolis)",
+        "Collez la clé, protégée ou non (ou toute l'invitation reçue de l'app Brocolis)",
         "",
         "text",
         "Suivant",
@@ -179,6 +178,32 @@ async fn add_key() {
     .await
     else {
         return keys_dialog();
+    };
+    // Une clé protégée par une phrase secrète : la phrase d'abord.
+    let pasted = if jetons::has_protected_key(&pasted) {
+        let Some(phrase) = prompt_box(
+            "Phrase secrète",
+            "La phrase qui protège cette clé",
+            "",
+            "password",
+            "Ouvrir",
+            200,
+        )
+        .await
+        else {
+            return keys_dialog();
+        };
+        toast("Ouverture de la clé…");
+        sleep(30).await;
+        match jetons::unprotect_key(&pasted, &phrase) {
+            Some(key) => key,
+            None => {
+                toast("Phrase incorrecte, ou clé abîmée.");
+                return keys_dialog();
+            }
+        }
+    } else {
+        pasted
     };
     let Some(name) = prompt_box(
         "Le nom de la clé",
@@ -231,11 +256,93 @@ async fn create_key(chat: Option<Chat>) {
             crate::conv::render_composer(false);
             toast("🥦 Clé créée, envoyée par Talka et activée dans cette discussion");
         }
-        None => {
-            copy(&k.key, "🥦 Clé créée et copiée : partagez-la par un canal sûr (ou envoyez-la par Talka depuis une discussion)").await;
-            keys_dialog();
-        }
+        None => export_dialog(k),
     }
+}
+
+/// Sortir une clé de Talka. Recommandé : protégée par une phrase secrète
+/// (le jeton copié ne dit rien de la clé sans elle). En clair : seulement
+/// après le code de verrouillage, s'il y en a un.
+fn export_dialog(k: BrocolisKey) {
+    let (k1, k2) = (k.clone(), k.clone());
+    modal(
+        "Exporter la clé",
+        move |_| {
+            h("div.stack")
+                .child(h("p").text(format!("🥦 « {} » · empreinte {}", k.name, fingerprint(&k))))
+                .child(h("p.muted").text("Le plus sûr : l'envoyer par Talka, depuis une discussion (⋮ → Chiffrer avec Brocolis). Pour l'app Brocolis ou un autre appareil : protégée par une phrase secrète, que vous donnez à part, de vive voix."))
+                .into()
+        },
+        ModalOpts {
+            actions: vec![
+                action("En clair (déconseillé)", "ghost", move |m| {
+                    m.close();
+                    spawn(copy_clear(k1.clone()));
+                }),
+                action("Protégée par une phrase", "primary", move |m| {
+                    m.close();
+                    spawn(copy_protected(k2.clone()));
+                }),
+            ],
+            ..Default::default()
+        },
+    );
+}
+
+async fn copy_protected(k: BrocolisKey) {
+    let label = format!(
+        "{} caractères au moins. Donnez-la de vive voix, jamais avec le jeton.",
+        jetons::PHRASE_MIN
+    );
+    let Some(phrase) = prompt_box("Phrase secrète", &label, "", "password", "Suivant", 200).await
+    else {
+        return;
+    };
+    if phrase.chars().count() < jetons::PHRASE_MIN {
+        return toast(format!("{} caractères au moins.", jetons::PHRASE_MIN));
+    }
+    let Some(again) = prompt_box("Confirmez la phrase", "", "", "password", "Copier", 200).await
+    else {
+        return;
+    };
+    if again != phrase {
+        return toast("Les phrases ne correspondent pas.");
+    }
+    toast("Protection de la clé…");
+    sleep(30).await;
+    match jetons::protect_key(&k.key, &phrase) {
+        Some(token) => copy(
+            &token,
+            "🔐 Clé protégée copiée : elle s'importe dans Talka ou l'app Brocolis avec la phrase",
+        )
+        .await,
+        None => toast("La protection a échoué."),
+    }
+}
+
+async fn copy_clear(k: BrocolisKey) {
+    if crate::lock::has_pin().await {
+        let Some(pin) = prompt_box("Votre code de verrouillage", "Pour copier la clé en clair", "", "password", "Copier", 6).await else {
+            return;
+        };
+        if !crate::lock::check(&pin).await {
+            return toast("Code incorrect");
+        }
+    } else if !confirm_box(
+        "Copier la clé en clair ?",
+        "Qui la voit peut lire tous les messages qu'elle chiffre. Préférez l'envoi par Talka, ou la protection par une phrase.",
+        "Copier quand même",
+        true,
+    )
+    .await
+    {
+        return;
+    }
+    copy(
+        &k.key,
+        "Clé copiée en clair : ne l'envoyez que par un canal sûr",
+    )
+    .await;
 }
 
 /// Les clés qui chiffrent ce qui part dans une discussion.
