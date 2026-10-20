@@ -904,15 +904,23 @@ struct MessageInfoSheet: View {
 }
 
 /// Les photos de fond décodées une fois (la discussion se redessine souvent).
+/// Quelques-unes à la fois : le fond général (réglages) et celui de chaque
+/// discussion ouverte ne se chassent plus l'un l'autre à chaque affichage.
 @MainActor
 enum WallpaperCache {
-    private static var cache: (key: Int, image: UIImage)?
+    private static var cache: [(key: Int, image: UIImage)] = []
+    static let size = 4
 
     static func image(_ dataURL: String) -> UIImage? {
         let key = dataURL.hashValue
-        if let c = cache, c.key == key { return c.image }
+        if let i = cache.firstIndex(where: { $0.key == key }) {
+            let hit = cache.remove(at: i)
+            cache.append(hit)
+            return hit.image
+        }
         guard let image = UIImage.fromDataURL(dataURL) else { return nil }
-        cache = (key, image)
+        cache.append((key, image))
+        if cache.count > size { cache.removeFirst() }
         return image
     }
 }
