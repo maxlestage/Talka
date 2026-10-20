@@ -1,4 +1,10 @@
-// L'Apple Watch, côté iPhone : WatchConnectivity.
+// L'Apple Watch et les widgets, côté iPhone.
+//
+// Les widgets : le nombre de non-lus et les discussions récentes, partagés
+// par le trousseau (TalkaKit/WidgetData.swift), mis à jour dès qu'ils
+// changent pendant que Talka est ouvert.
+//
+// La montre : WatchConnectivity.
 //
 // L'iPhone reste l'appareil Talka (les clés, le relais) : il envoie à la
 // montre le résumé des discussions récentes dès qu'il change, et exécute ce
@@ -8,6 +14,7 @@
 import Foundation
 import TalkaKit
 import WatchConnectivity
+import WidgetKit
 
 @MainActor
 final class WatchBridge: NSObject {
@@ -20,11 +27,13 @@ final class WatchBridge: NSObject {
 
     func start(_ model: AppModel) {
         self.model = model
-        guard let session, timer == nil else { return }
-        session.delegate = self
-        session.activate()
-        // Le résumé n'est recalculé que si une montre a l'application ; il
-        // ne part que s'il a changé.
+        guard timer == nil else { return }
+        if let session {
+            session.delegate = self
+            session.activate()
+        }
+        // Le résumé de la montre n'est recalculé que si elle a l'application ;
+        // widgets et montre ne sont mis à jour que s'ils ont changé.
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             Task { @MainActor in WatchBridge.shared.push() }
         }
@@ -35,9 +44,30 @@ final class WatchBridge: NSObject {
         return session.isPaired && session.isWatchAppInstalled
     }
 
+    /// Les widgets : écrits seulement s'ils ont changé.
+    func updateWidgets() {
+        guard let model else { return }
+        guard let e = model.engine else {
+            if WidgetShare.read() != nil {
+                WidgetShare.clear()
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+            return
+        }
+        let data = WidgetData(e.watchSnapshot(chats: 12, messages: 0), hidden: model.hasPin)
+        if WidgetShare.write(data) { WidgetCenter.shared.reloadAllTimelines() }
+    }
+
+    func snapshot(_ e: Engine) -> WatchSnapshot {
+        var s = e.watchSnapshot()
+        s.hidden = model?.hasPin ?? false
+        return s
+    }
+
     func push(force: Bool = false) {
+        updateWidgets()
         guard let session, watchReady, let e = model?.engine,
-              let data = WatchLink.encode(e.watchSnapshot()) else { return }
+              let data = WatchLink.encode(snapshot(e)) else { return }
         guard force || data != lastSent else { return }
         lastSent = data
         // Le dernier résumé, que la montre retrouve même en se réveillant plus tard…
@@ -56,7 +86,8 @@ final class WatchBridge: NSObject {
             // Réveillé en arrière-plan par la montre : le message part tout de suite.
             if action.kind == .send { e.relay.wake() }
         }
-        let snapshot = WatchLink.encode(e.watchSnapshot())
+        updateWidgets()
+        let snapshot = WatchLink.encode(snapshot(e))
         lastSent = snapshot
         if let snapshot, let session, watchReady {
             try? session.updateApplicationContext([WatchLink.snapshotKey: snapshot])
