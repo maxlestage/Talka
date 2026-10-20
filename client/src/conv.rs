@@ -1731,6 +1731,9 @@ fn render_composer(focus_it: bool) {
                 update_btn();
                 core::typing(&chat_id, false);
                 let had_reply = reply.is_some();
+                if crate::brocoli::summons(&text) {
+                    crate::brocoli::rain();
+                }
                 spawn(async move {
                     core::send_message(
                         &chat_id,

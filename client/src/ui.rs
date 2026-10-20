@@ -1145,6 +1145,12 @@ fn on_incoming(chat: Chat, message: crate::model::Message, active: bool) {
         if core::settings().sound {
             sounds::sent();
         }
+        if message.kind == "text"
+            && !message.sealed_for(&core::my_code(), now())
+            && crate::brocoli::summons(&message.text)
+        {
+            crate::brocoli::rain();
+        }
         return;
     }
     if chat.muted {
