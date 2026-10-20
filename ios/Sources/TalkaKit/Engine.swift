@@ -454,6 +454,19 @@ public final class Engine {
         bump(chat)
     }
 
+    /// Épingle un message en haut de sa discussion ("" : retire l'épingle).
+    /// Gardé sur l'appareil, pas envoyé aux autres (comme le navigateur).
+    public func setPin(_ chat: String, _ id: String) {
+        updateChat(chat) { $0.pinMsg = id }
+    }
+
+    /// Le message épinglé d'une discussion, s'il existe encore.
+    public func pinnedMessage(_ chat: String) -> Message? {
+        guard let id = chats[chat]?.pinMsg, !id.isEmpty, let m = store.message(chat, id), !m.deleted else { return nil }
+        if let exp = m.exp, exp <= nowMs() { return nil }
+        return m
+    }
+
     public func starred() -> [Message] {
         store.allMessages().filter(\.starred).sorted { $0.at > $1.at }
     }

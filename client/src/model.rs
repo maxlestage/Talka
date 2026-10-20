@@ -104,6 +104,9 @@ pub struct Chat {
     pub v: u64,
     pub last: Option<Last>,
     pub has_exp: bool,
+    /// Le message épinglé en haut de la discussion (pour soi : il n'est pas
+    /// envoyé aux autres). Vide : aucun.
+    pub pin_msg: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -363,9 +366,37 @@ impl Wire {
     }
 }
 
+/// Pour chercher sans tenir compte des majuscules ni des accents (« ecole »
+/// trouve « École »), comme l'application iPhone.
+pub fn fold(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => 'a',
+            'ç' => 'c',
+            'è' | 'é' | 'ê' | 'ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'ñ' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' => 'u',
+            'ý' | 'ÿ' => 'y',
+            'œ' => 'o',
+            'æ' => 'a',
+            c => c,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fold_ignores_case_and_accents() {
+        assert_eq!(fold("École Où Ça"), "ecole ou ca");
+        assert!(fold("Rendez-vous à la Crêperie").contains(&fold("creperie")));
+        assert_eq!(fold("👋 OK"), "👋 ok");
+    }
 
     #[test]
     fn wire_roundtrip() {
