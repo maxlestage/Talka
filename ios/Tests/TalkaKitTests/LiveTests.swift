@@ -88,4 +88,36 @@ final class LiveTests: XCTestCase {
         XCTAssertEqual(other.read("kv", "identity", as: Identity.self), a.me)
         XCTAssertFalse(other.messagesOf(g.id).isEmpty)
     }
+
+    /// Le relais redémarre pendant que Bob est absent : sa boîte aux lettres
+    /// est perdue, mais Alice renvoie ce qui n'a pas été confirmé.
+    /// `TALKA_RESTART_FILE` : un fichier que le test crée pour demander à son
+    /// lanceur de redémarrer le serveur (voir ios/README.md).
+    func testResendAfterRelayRestart() async throws {
+        let url = try server()
+        guard let flag = ProcessInfo.processInfo.environment["TALKA_RESTART_FILE"] else {
+            throw XCTSkip("TALKA_RESTART_FILE n'est pas défini")
+        }
+        let a = phone("Alice", url), b = phone("Bob", url)
+        defer { a.stop(); b.stop() }
+        try await wait("connexion") { a.netState == .online && b.netState == .online }
+        XCTAssertFalse(a.relay.boot.isEmpty)
+        let before = a.relay.boot
+        _ = try await a.addContact(b.me.code, name: "Bob")
+        a.ensureDirectChat(b.me.code)
+
+        b.relay.stop()
+        let sent = try XCTUnwrap(a.send(b.me.code, Content(text: "Pendant ton absence")))
+        try await wait("accepté par le relais") { a.store.message(b.me.code, sent.id)?.sentTo.contains(b.me.code) == true }
+        XCTAssertEqual(a.store.read("outbox", "\(sent.id):\(b.me.code)", as: OutItem.self)?.boot, before)
+
+        // Le relais redémarre : la boîte aux lettres de Bob est perdue.
+        FileManager.default.createFile(atPath: flag, contents: Data())
+        try await wait("Alice reconnectée au nouveau relais", timeout: 40) { a.netState == .online && a.relay.boot != before }
+
+        b.relay.start()
+        try await wait("message renvoyé puis reçu", timeout: 30) { b.messages(a.me.code).contains { $0.text == "Pendant ton absence" } }
+        try await wait("accusé de réception", timeout: 15) { a.store.message(b.me.code, sent.id)?.deliveredTo.contains(b.me.code) == true }
+        XCTAssertNil(a.store.read("outbox", "\(sent.id):\(b.me.code)", as: OutItem.self))
+    }
 }

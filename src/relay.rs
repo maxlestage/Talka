@@ -14,7 +14,7 @@
 //! |---|---|---|
 //! | ← | `{"t":"challenge","nonce"}` | à signer pour se présenter |
 //! | → | `{"t":"hello","sign","dh","sig","hidden"}` | les deux clés publiques et la signature de `talka-auth:<nonce>` |
-//! | ← | `{"t":"ready","code","time"}` | puis chaque message en attente |
+//! | ← | `{"t":"ready","code","time","boot"}` | puis chaque message en attente |
 //! | → | `{"t":"send","id","to","body","live"}` | `live` : seulement si le destinataire est en ligne (saisie, appels) |
 //! | ← | `{"t":"ack","id","ts","online"}` | le message est arrivé au serveur |
 //! | ← | `{"t":"msg","n","id","from","body","ts"}` | un message reçu |
@@ -94,6 +94,19 @@ struct State {
     watchers: HashMap<String, HashSet<(String, u64)>>,
     next_n: u64,
     next_conn: u64,
+}
+
+/// L'identifiant de ce démarrage du relais. Les boîtes aux lettres ne vivent
+/// qu'en mémoire : quand il change (redémarrage, nouveau déploiement), ce qui
+/// attendait un destinataire hors ligne est perdu, et les appareils renvoient
+/// les messages qui n'ont pas été confirmés (`ready.boot`).
+pub fn boot_id() -> &'static str {
+    static BOOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BOOT.get_or_init(|| {
+        let mut bytes = [0u8; 9];
+        let _ = getrandom::getrandom(&mut bytes);
+        B64.encode(bytes)
+    })
 }
 
 /// Le relais, partagé par toutes les connexions (`app.state(Relay::default())`).
@@ -390,7 +403,8 @@ impl Relay {
         }
         let me = code::derive(&sign, &dh);
         let hidden = hello["hidden"].as_bool().unwrap_or(false);
-        let ready = json!({ "t": "ready", "code": me, "time": now_ms() }).to_string();
+        let ready =
+            json!({ "t": "ready", "code": me, "time": now_ms(), "boot": boot_id() }).to_string();
         if tx.send(ready).await.is_err() {
             return;
         }

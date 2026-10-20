@@ -77,6 +77,9 @@ Choisissez votre équipe dans *Signing & Capabilities*, puis lancez sur un simul
 cd ios && swift test                                          # codes et chiffrement recoupés avec le navigateur
 TALKA_SERVER=http://localhost:3000 swift test                 # + deux iPhones qui discutent sur un vrai serveur
 TALKA_SERVER=http://localhost:3000 node interop.mjs           # + un navigateur et un iPhone ensemble
+# + le relais redémarre pendant une absence : le message est renvoyé. Le test crée
+#   le fichier TALKA_RESTART_FILE ; à son lanceur de redémarrer le serveur en le voyant.
+TALKA_SERVER=… TALKA_RESTART_FILE=/tmp/talka-restart swift test --filter testResendAfterRelayRestart
 ```
 
 Le workflow GitHub `iOS` lance `swift test`, puis compile l'application pour le simulateur sur un Mac.
