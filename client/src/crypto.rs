@@ -405,7 +405,8 @@ mod tests {
         let salt = random_bytes(16);
         let key = pin_key("2580", &salt);
         let sealed = seal_keys(&key, &b64(&salt), "[{\"id\":\"k1\"}]").unwrap();
-        assert!(!sealed.data.contains("k1"));
+        // Des guillemets n'apparaissent jamais en base64 : « k1 » seul, si.
+        assert!(!sealed.data.contains("\"k1\""));
         assert_eq!(
             open_keys(&key, &sealed).as_deref(),
             Some("[{\"id\":\"k1\"}]")
