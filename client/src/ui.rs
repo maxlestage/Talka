@@ -1133,7 +1133,7 @@ fn on_incoming(chat: Chat, message: crate::model::Message, active: bool) {
     if chat.muted {
         return;
     }
-    let text = if message.kind == "text" {
+    let text = if message.kind == "text" && !message.is_capsule() {
         message.text.clone()
     } else {
         core::preview(&message)

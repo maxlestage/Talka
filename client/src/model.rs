@@ -155,9 +155,27 @@ pub struct Message {
     pub starred: bool,
     pub exp: Option<f64>,
     pub read_by_me: bool,
+    /// Une capsule temporelle : scellée jusqu'à cette heure (ms ; 0 : non).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub open_at: f64,
+}
+
+pub(crate) fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl Message {
+    /// Une capsule temporelle (scellée ou déjà ouverte).
+    pub fn is_capsule(&self) -> bool {
+        self.open_at > 0.0
+    }
+
+    /// Une capsule encore scellée pour son destinataire : l'auteur, lui, voit
+    /// toujours ce qu'il a écrit.
+    pub fn sealed_for(&self, me: &str, now: f64) -> bool {
+        self.open_at > now && self.from != me
+    }
+
     /// `chat|id` : la clé dans IndexedDB.
     pub fn key(&self) -> String {
         format!("{}|{}", self.chat, self.id)
@@ -262,6 +280,11 @@ pub struct Content {
     pub code: String,
     pub reply: Option<Reply>,
     pub fwd: bool,
+    /// Une capsule temporelle : à ouvrir à cette heure (ms ; absent : non).
+    /// Les versions qui ne la connaissent pas affichent le message tout de
+    /// suite.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub open_at: f64,
 }
 
 /// Ce qui voyage, chiffré, d'un appareil à l'autre.
