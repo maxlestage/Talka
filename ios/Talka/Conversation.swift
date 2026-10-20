@@ -14,6 +14,7 @@ struct ConversationView: View {
     @State private var editing: Message?
     @State private var photos: [PhotosPickerItem] = []
     @State private var pickingPhotos = false
+    @State private var takingPhoto = false
     @State private var importingFile = false
     @State private var sharingContact = false
     @State private var forwarding: Message?
@@ -152,6 +153,15 @@ struct ConversationView: View {
                 e.setTyping(chatId, false)
             }
             .photosPicker(isPresented: $pickingPhotos, selection: $photos, maxSelectionCount: 10, matching: .images)
+            .fullScreenCover(isPresented: $takingPhoto) {
+                CameraPicker { image in
+                    takingPhoto = false
+                    if let image, let (url, w, h) = image.compressed() {
+                        send(e, Content(kind: "image", data: url, mime: "image/jpeg", w: w, h: h))
+                    }
+                }
+                .ignoresSafeArea()
+            }
             .onChange(of: photos) { _, items in
                 guard !items.isEmpty else { return }
                 photos = []
@@ -377,7 +387,10 @@ struct ConversationView: View {
                         .frame(height: 38)
                     } else {
                         Menu {
-                            Button { pickingPhotos = true } label: { Label("Photos", systemImage: "photo.on.rectangle") }
+                            Button { pickingPhotos = true } label: { Label("Galerie photos", systemImage: "photo.on.rectangle") }
+                            if CameraPicker.available {
+                                Button { takingPhoto = true } label: { Label("Appareil photo", systemImage: "camera") }
+                            }
                             Button { importingFile = true } label: { Label("Document", systemImage: "doc") }
                             Button { sharingContact = true } label: { Label("Contact", systemImage: "person.crop.circle") }
                         } label: {
@@ -393,6 +406,13 @@ struct ConversationView: View {
                             .onChange(of: text) { _, t in
                                 if editing == nil { e.setTyping(chatId, !t.isEmpty) }
                             }
+                        // La galerie à portée de pouce, comme WhatsApp.
+                        if text.isEmpty && editing == nil {
+                            Button { pickingPhotos = true } label: {
+                                Image(systemName: "photo.on.rectangle").font(.title3).frame(width: 34, height: 38)
+                            }
+                            .accessibilityLabel("Envoyer une photo de la galerie")
+                        }
                     }
                     if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && editing == nil {
                         Button {
