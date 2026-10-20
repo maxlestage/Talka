@@ -11,6 +11,7 @@ struct SettingsTab: View {
     @State private var name = ""
     @State private var about = ""
     @State private var photo: PhotosPickerItem?
+    @State private var takingPhoto = false
     @State private var showCode = false
     @State private var settingPin = false
     @State private var exporting = false
@@ -123,14 +124,23 @@ struct SettingsTab: View {
                     server = model.serverString
                 }
                 .onChange(of: photo) { _, item in
+                    guard let item else { return }
+                    photo = nil // la même photo pourra être rechoisie
                     Task {
-                        guard let data = try? await item?.loadTransferable(type: Data.self), let ui = UIImage(data: data),
+                        guard let data = try? await item.loadTransferable(type: Data.self), let ui = UIImage(data: data),
                               let url = ui.avatarDataURL()
                         else { return }
                         e.saveProfile { $0.avatar = url }
                     }
                 }
                 .sheet(isPresented: $showCode) { MyCodeSheet() }
+                .fullScreenCover(isPresented: $takingPhoto) {
+                    CameraPicker { image in
+                        takingPhoto = false
+                        if let url = image?.avatarDataURL() { e.saveProfile { $0.avatar = url } }
+                    }
+                    .ignoresSafeArea()
+                }
                 .sheet(isPresented: $settingPin) { PinSetup() }
                 .sheet(item: Binding(get: { backupURL.map(SharedURL.init) }, set: { backupURL = $0?.url })) { s in
                     ActivityView(items: [s.url])
@@ -183,6 +193,7 @@ struct SettingsTab: View {
                 PhotosPicker(selection: $photo, matching: .images) {
                     e.avatar(e.me.code, size: 64)
                 }
+                .buttonStyle(.borderless)
                 .accessibilityLabel("Changer de photo")
                 VStack(alignment: .leading, spacing: 6) {
                     TextField("Votre nom", text: $name)
@@ -192,6 +203,12 @@ struct SettingsTab: View {
                         .foregroundStyle(.secondary)
                         .onSubmit { saveProfile(e) }
                 }
+            }
+            PhotosPicker(selection: $photo, matching: .images) {
+                Label(e.profile.avatar.isEmpty ? "Ajouter une photo de la galerie" : "Changer de photo (galerie)", systemImage: "photo.on.rectangle")
+            }
+            if CameraPicker.available {
+                Button { takingPhoto = true } label: { Label("Prendre une photo", systemImage: "camera") }
             }
             if !e.profile.avatar.isEmpty {
                 Button("Retirer la photo", role: .destructive) { e.saveProfile { $0.avatar = "" } }
