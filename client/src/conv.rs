@@ -1677,7 +1677,7 @@ fn render_composer(focus_it: bool) {
                 e.stop_propagation();
                 menu(
                     vec![
-                        item("image", "Photos", || {
+                        item("image", "Galerie photos", || {
                             spawn(async {
                                 if let Some(f) = media::pick_file("image/*", None).await {
                                     send_image(f).await;
