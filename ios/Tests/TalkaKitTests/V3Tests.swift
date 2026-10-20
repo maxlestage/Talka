@@ -233,12 +233,22 @@ final class V3EngineStoreTests: XCTestCase {
         return Engine(store: store, server: URL(string: "http://127.0.0.1:9")!)
     }
 
+    /// Les clés publiées, sans leurs signatures : CryptoKit signe avec un
+    /// hasard (Ed25519 comme P-256), deux paquets du même appareil n'ont donc
+    /// pas les mêmes octets sur un Mac ou un iPhone.
+    func keys(_ e: Engine) -> [[UInt8]]? {
+        guard let b = e.v3?.bundle(), let p = e.v3?.published(e.me), V3.verifyBundle(code: e.me.code, sign: e.me.sign, dh: e.me.dh, bundle: p.bundle, sig: p.sig) != nil
+        else { return nil }
+        return [b.identity.dh, b.identity.sign, b.spk, b.pq?.key ?? []]
+    }
+
     func testDeviceIsCreatedOnceAndKept() async throws {
         let e = phone("Alice")
         let device = try XCTUnwrap(e.store.readRaw("kv", V3.deviceKey))
         let again = Engine(store: e.store, server: URL(string: "http://127.0.0.1:9")!)
         XCTAssertEqual(again.store.readRaw("kv", V3.deviceKey), device)
-        XCTAssertEqual(again.v3?.published(again.me)?.bundle, e.v3?.published(e.me)?.bundle)
+        XCTAssertEqual(keys(again), keys(e))
+        XCTAssertNotNil(keys(e))
     }
 
     func testReceivedMessageAndSessionAreStoredTogether() async throws {
@@ -316,7 +326,8 @@ final class V3EngineStoreTests: XCTestCase {
         XCTAssertNil(other.readRaw("kv", V3.sessionPrefix + b.me.code))
         // Le même appareil, donc le même paquet.
         let restored = Engine(store: other, server: URL(string: "http://127.0.0.1:9")!)
-        XCTAssertEqual(restored.v3?.published(restored.me)?.bundle, a.v3?.published(a.me)?.bundle)
+        XCTAssertEqual(keys(restored), keys(a))
+        XCTAssertNotNil(keys(a))
     }
 
     func testTransactionsNest() async {
