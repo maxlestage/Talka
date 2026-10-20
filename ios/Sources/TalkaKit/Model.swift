@@ -302,6 +302,7 @@ public struct Content: Codable, Equatable, Sendable {
         if !code.isEmpty { try c.encode(code, forKey: .code) }
         try c.encodeIfPresent(reply, forKey: .reply)
         if fwd { try c.encode(fwd, forKey: .fwd) }
+        try c.encodeIfPresent(openAt, forKey: .openAt)
     }
 }
 

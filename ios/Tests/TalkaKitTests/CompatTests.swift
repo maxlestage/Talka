@@ -80,7 +80,7 @@ final class CompatTests: XCTestCase {
 
     func testWires() throws {
         let wires = try XCTUnwrap(v["wires"] as? [String])
-        XCTAssertEqual(wires.count, 13)
+        XCTAssertEqual(wires.count, 14)
         for text in wires {
             let w = try XCTUnwrap(Wire.parse(text), text)
             if case .unknown = w.body { XCTFail("sorte inconnue : \(text)") }
@@ -109,6 +109,13 @@ final class CompatTests: XCTestCase {
         XCTAssertTrue(video)
         XCTAssertEqual(cand?["sdpMid"]?.string, "0")
         XCTAssertEqual(cand?["sdpMLineIndex"]?.number, 0)
+        // La capsule temporelle : son heure d'ouverture traverse intacte.
+        let capsule = try XCTUnwrap(Wire.parse(wires[13]))
+        guard case let .msg(_, _, _, sealed) = capsule.body else { return XCTFail("capsule") }
+        XCTAssertEqual(sealed.openAt, 1_800_000_000_000)
+        XCTAssertEqual(sealed.text, "À ouvrir plus tard")
+        // Et un message ordinaire n'en a pas.
+        XCTAssertNil(content.openAt)
     }
 
     func isEmptyValue(_ v: Any) -> Bool {
