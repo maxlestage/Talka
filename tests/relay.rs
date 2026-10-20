@@ -104,6 +104,10 @@ async fn relay_end_to_end() {
     let ready = next_json(&mut a).await;
     assert_eq!(ready["t"], "ready");
     assert_eq!(ready["code"], alice.code.as_str());
+    // L'identifiant du démarrage : le même pour toutes les connexions.
+    let boot = ready["boot"].as_str().unwrap_or_default().to_owned();
+    assert!(!boot.is_empty());
+    assert_eq!(boot, talka::relay::boot_id());
 
     // Bob n'est pas en ligne : le message attend dans sa boîte.
     send(
@@ -165,7 +169,9 @@ async fn relay_end_to_end() {
     drop(b);
     tokio::time::sleep(Duration::from_millis(100)).await;
     let mut b = connect(port, &bob, false).await;
-    assert_eq!(next_json(&mut b).await["t"], "ready");
+    let ready = next_json(&mut b).await;
+    assert_eq!(ready["t"], "ready");
+    assert_eq!(ready["boot"], boot.as_str());
     send(&mut b, json!({ "t": "ping" })).await;
     assert_eq!(next_json(&mut b).await["t"], "pong");
 
