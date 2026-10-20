@@ -31,7 +31,8 @@ Les notifications sont locales : l'iPhone, qui a déchiffré le message, se pré
 |---|---|
 | `Sources/TalkaKit/` | le cœur, sans interface, testé aussi sous Linux : `Crypto.swift` (codes, ECDSA et ECDH P-256, HKDF, AES-256-GCM, PIN, sauvegardes), `Model.swift` (le format des messages, identique au navigateur), `Relay.swift` et `Socket.swift` (le relais), `Store.swift` (SQLite, la même table que le modèle Memoire du navigateur), `Engine.swift` (les discussions, groupes, accusés, actus, appels) |
 | `Tests/TalkaKitTests/` | les tests. `vectors.json` est produit par le code Rust du navigateur (`cargo run -p talka-web --example vectors`) : TalkaKit doit retrouver les mêmes codes et ouvrir les mêmes messages |
-| `Talka/` | l'application SwiftUI : écrans, appels, messages vocaux, verrou, icône |
+| `Talka/` | l'application SwiftUI : écrans, appels, messages vocaux, verrou, icône ; `WatchBridge.swift` : le lien avec la montre |
+| `TalkaWatch/` | l'app Apple Watch, livrée avec celle de l'iPhone : les discussions récentes, répondre (dictée, réponses rapides, emoji), réagir, marquer comme lu. La montre n'a pas de clés : elle passe par l'iPhone (WatchConnectivity, `Sources/TalkaKit/WatchLink.swift`) ; loin de lui, elle affiche le dernier résumé reçu et ses réponses partent à son retour |
 | `project.yml` | le projet Xcode, pour [XcodeGen](https://github.com/yonaskolb/XcodeGen) |
 | `ci/` | l'envoi sur TestFlight depuis GitHub Actions (`asc.py` : App Store Connect ; `ExportOptions.plist`) |
 | `interop.mjs` | un navigateur (Playwright) et un iPhone (TalkaKit) dans la même conversation |
