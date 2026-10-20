@@ -127,6 +127,7 @@ final class AppModel {
         path = []
         locked = false
         UserDefaults.standard.removeObject(forKey: "talka.faceid")
+        WatchBridge.shared.updateWidgets()
     }
 
     func changeServer(_ server: String) {
@@ -153,6 +154,8 @@ final class AppModel {
             engine?.foreground = false
             hiddenAt = Date()
             store.save()
+            // Les widgets et la montre partent avec le dernier état.
+            WatchBridge.shared.push()
         default:
             engine?.foreground = false
         }
@@ -202,6 +205,17 @@ final class AppModel {
 
     /// `talka://add/K7Q2MX9PRT`, `https://…/c/K7Q2MX9PRT`, `…/app/#add=…`.
     func open(_ url: URL) {
+        // Un widget : une discussion (talka://chat/…) ou la liste (talka://chats).
+        if url.scheme == "talka", url.host == "chat" || url.host == "chats" {
+            if let id = WidgetData.chat(in: url), engine?.chat(id) != nil {
+                tab = .chats
+                path = [id]
+            } else {
+                tab = .chats
+                path = []
+            }
+            return
+        }
         guard let code = TalkaCode.find(in: url.absoluteString) else { return }
         if engine?.contact(code)?.saved == true {
             openChat(code)
@@ -257,6 +271,7 @@ final class AppModel {
             Notifier.message(title: e.title(chat), body: body, thread: chat.id, sound: e.settings.sound)
         }
         UNUserNotificationCenter.current().setBadgeCount(unreadTotal) { _ in }
+        WatchBridge.shared.push()
     }
 
     // ----- Appels -----

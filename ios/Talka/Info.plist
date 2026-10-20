@@ -35,6 +35,9 @@
 	<!-- Le serveur Talka (le même que celui du navigateur). Vide : demandé au premier lancement. -->
 	<key>TalkaServer</key>
 	<string>$(TALKA_SERVER)</string>
+	<!-- Le groupe de trousseau partagé avec les widgets (Shared.entitlements). -->
+	<key>TalkaKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)com.maxlestage.talka.shared</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>

@@ -4,6 +4,7 @@
 import Foundation
 import Observation
 import WatchConnectivity
+import WidgetKit
 
 @MainActor
 @Observable
@@ -30,6 +31,15 @@ final class WatchModel: NSObject {
         guard let s = WatchLink.decode(WatchSnapshot.self, data), s != snapshot else { return }
         snapshot = s
         UserDefaults.standard.set(data, forKey: Self.savedKey)
+        updateWidgets()
+    }
+
+    /// Les complications : rechargées seulement si elles ont changé.
+    private func updateWidgets() {
+        guard let s = snapshot else { return }
+        if WidgetShare.write(WidgetData(s, hidden: s.hidden ?? false)) {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
     }
 
     // ----- Les actions -----
@@ -58,6 +68,7 @@ final class WatchModel: NSObject {
     func markRead(_ chat: String) {
         guard let c = self.chat(chat), c.unread > 0 else { return }
         update(chat) { $0.unread = 0 }
+        updateWidgets()
         perform(WatchAction(.read, chat: chat))
     }
 

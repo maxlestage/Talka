@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Un groupe de trousseau commun à l'app et à ses widgets (iPhone et montre) :
+     l'app y écrit le nombre de non-lus et les discussions récentes, les
+     widgets le lisent. Rien d'autre n'y est partagé. -->
+<plist version="1.0">
+<dict>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.maxlestage.talka.shared</string>
+	</array>
+</dict>
+</plist>
