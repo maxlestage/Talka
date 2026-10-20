@@ -61,6 +61,86 @@ pub fn fingerprint(key_b64: &str) -> Option<String> {
     )
 }
 
+// ----- Une clé protégée par une phrase secrète ------------------------------
+//
+// Pour sortir une clé de l'appareil sans la montrer : `[[BROCOLIS-CLE:v1:…]]`,
+// le même format que l'app Brocolis (iOS, Android). Décodé : sel (16) ‖
+// nonce (12) ‖ AES-256-GCM(clé brute, données associées `brocolis-cle-v1`),
+// sous PBKDF2-HMAC-SHA256(phrase, sel, 600 000 tours). Sans la phrase, le
+// jeton ne dit rien de la clé.
+
+pub const KEY_HEAD: &str = "[[BROCOLIS-CLE:v1:";
+const KEY_AD: &[u8] = b"brocolis-cle-v1";
+pub const PHRASE_ROUNDS: u32 = 600_000;
+/// La phrase la plus courte acceptée pour protéger une clé.
+pub const PHRASE_MIN: usize = 8;
+
+pub fn has_protected_key(text: &str) -> bool {
+    text.contains(KEY_HEAD)
+}
+
+fn phrase_key(phrase: &str, salt: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(phrase.as_bytes(), salt, PHRASE_ROUNDS, &mut out);
+    out
+}
+
+fn protect_key_with(key: &Key, phrase: &str, salt: &[u8], nonce: &[u8]) -> Option<String> {
+    use aes_gcm::aead::Payload;
+    let ct = Aes256Gcm::new_from_slice(&phrase_key(phrase, salt))
+        .ok()?
+        .encrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: key,
+                aad: KEY_AD,
+            },
+        )
+        .ok()?;
+    Some(format!(
+        "{KEY_HEAD}{}{END}",
+        b64(&[salt, nonce, &ct].concat())
+    ))
+}
+
+/// Protège une clé (en base64) par une phrase secrète.
+pub fn protect_key(key_b64: &str, phrase: &str) -> Option<String> {
+    if phrase.chars().count() < PHRASE_MIN {
+        return None;
+    }
+    protect_key_with(
+        &key_from_b64(key_b64)?,
+        phrase,
+        &random_bytes(16),
+        &random_bytes(12),
+    )
+}
+
+/// Retrouve la clé (en base64) d'un jeton `[[BROCOLIS-CLE:v1:…]]` collé
+/// (seul ou dans un texte) ; `None` si la phrase est fausse ou le jeton abîmé.
+pub fn unprotect_key(text: &str, phrase: &str) -> Option<String> {
+    use aes_gcm::aead::Payload;
+    let start = text.find(KEY_HEAD)? + KEY_HEAD.len();
+    let end = text[start..].find(END)?;
+    let data = unb64(&text[start..start + end])?;
+    if data.len() != 16 + 12 + 32 + 16 {
+        return None;
+    }
+    let (salt, rest) = data.split_at(16);
+    let (nonce, ct) = rest.split_at(12);
+    let key = Aes256Gcm::new_from_slice(&phrase_key(phrase, salt))
+        .ok()?
+        .decrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: ct,
+                aad: KEY_AD,
+            },
+        )
+        .ok()?;
+    (key.len() == 32).then(|| b64(&key))
+}
+
 /// Une nouvelle clé, en base64.
 pub fn generate_key() -> String {
     b64(&random_bytes(32))
@@ -306,6 +386,33 @@ mod tests {
         let invite = format!("3) Colle CETTE clé :\n\n{k}\n\n(C'est notre clé commune.)");
         assert_eq!(find_key(&invite), Some(k));
         assert_eq!(find_key("pas de clé ici"), None);
+    }
+
+    #[test]
+    fn a_protected_key_matches_the_shared_vector() {
+        // Le vecteur commun avec l'app Brocolis (iOS, Android).
+        let key: Key = std::array::from_fn(|i| i as u8);
+        let token = protect_key_with(&key, "brocoli vert 2026", &[0x11; 16], &[0x22; 12]).unwrap();
+        assert_eq!(
+            token,
+            "[[BROCOLIS-CLE:v1:ERERERERERERERERERERESIiIiIiIiIiIiIiIsq57j18BXkqq/4VdIw82nQqzrax9Cfn2mfUJjWH8l327NAf2rWaSYCJh3BfGH4eWA==]]"
+        );
+        assert_eq!(
+            unprotect_key(&format!("Voici : {token} !"), "brocoli vert 2026"),
+            Some(b64(&key))
+        );
+        assert_eq!(unprotect_key(&token, "brocoli vert 2025"), None);
+    }
+
+    #[test]
+    fn a_protected_key_needs_a_phrase_and_hides_the_key() {
+        let k = generate_key();
+        assert_eq!(protect_key(&k, "court"), None);
+        let token = protect_key(&k, "une phrase longue").unwrap();
+        assert!(has_protected_key(&token) && !token.contains(&k));
+        assert_eq!(unprotect_key(&token, "une phrase longue"), Some(k));
+        let broken = token.replace("v1:", "v1:AAAA");
+        assert_eq!(unprotect_key(&broken, "une phrase longue"), None);
     }
 
     #[test]

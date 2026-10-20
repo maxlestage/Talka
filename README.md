@@ -93,6 +93,13 @@ partage et dont on la garde :
   ses discussions et y part par Talka ; chez le correspondant aussi, elle
   remplace l'ancienne. L'ancienne garde l'historique lisible mais ne chiffre
   plus rien ;
+- **jamais affichée** : pour sortir une clé de Talka, « Exporter » la copie
+  **protégée par une phrase secrète** (`[[BROCOLIS-CLE:v1:…]]` :
+  PBKDF2-SHA256 600 000 tours → AES-256-GCM, le même format que l'app
+  Brocolis), à donner à part, de vive voix ; sans la phrase, le jeton ne
+  dit rien de la clé. La copie en clair reste possible, après le code de
+  verrouillage (Face ID ou le code de l'iPhone sur iPhone, où le
+  presse-papiers reste local et s'efface au bout de deux minutes) ;
 - **au repos** : dans le navigateur, avec un code de verrouillage, les clés
   sont chiffrées par lui (PBKDF2-SHA256, 300 000 tours → AES-256-GCM) et
   ouvertes au déverrouillage ; un code de 4 à 6 chiffres reste court, il

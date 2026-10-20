@@ -2,9 +2,18 @@
 // discussions qu'elles chiffrent, en plus de Talka. Le même réglage que le
 // navigateur : un iPhone et un ordinateur se lisent.
 
+import LocalAuthentication
 import SwiftUI
 import TalkaKit
 import UIKit
+import UniformTypeIdentifiers
+
+/// Copie un secret : sur cet iPhone seulement (pas de presse-papiers
+/// universel vers le Mac ou l'iPad), effacé au bout de deux minutes.
+func copySecret(_ text: String) {
+    UIPasteboard.general.setItems([[UTType.plainText.identifier: text]],
+                                  options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
+}
 
 let brocolisAbout = "Brocolis chiffre vos messages une seconde fois, avec des clés que vous partagez avec vos proches dans l'app Brocolis 🥦. Talka les chiffre déjà de bout en bout ; seuls ceux qui ont la clé ouvrent cette seconde couche, ici ou dans l'app Brocolis (clavier, Partager)."
 let brocolisStrength = "Chaque clé : 256 bits tirés au hasard (AES-256-GCM) ; le base64 n'est que sa façon de s'écrire. Le point faible, c'est le partage : envoyez-la par Talka plutôt que par un canal en clair, et comparez son empreinte de vive voix. Sur l'iPhone, les clés sont dans le trousseau, pour cet appareil seulement."
@@ -28,6 +37,7 @@ struct BrocolisKeysView: View {
     @State private var newName = ""
     @State private var forgetting: BrocolisKey?
     @State private var renewing: BrocolisKey?
+    @State private var exporting: BrocolisKey?
 
     var body: some View {
         if let e = model.engine {
@@ -45,13 +55,12 @@ struct BrocolisKeysView: View {
                             }
                             Spacer()
                             Button {
-                                UIPasteboard.general.string = k.key
-                                model.show("Clé copiée : à coller dans l'app Brocolis")
+                                exporting = k
                             } label: {
-                                Image(systemName: "doc.on.doc")
+                                Image(systemName: "square.and.arrow.up")
                             }
                             .buttonStyle(.borderless)
-                            .accessibilityLabel("Copier la clé")
+                            .accessibilityLabel("Exporter la clé")
                         }
                         .opacity(k.retired ? 0.6 : 1)
                         .swipeActions {
@@ -75,6 +84,7 @@ struct BrocolisKeysView: View {
             }
             .navigationTitle("Brocolis 🥦")
             .sheet(isPresented: $adding) { AddBrocolisKey() }
+            .sheet(item: $exporting) { k in ExportBrocolisKey(key: k) }
             .alert("Renommer la clé", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField("Nom", text: $newName)
                 Button("Annuler", role: .cancel) {}
@@ -101,8 +111,7 @@ struct BrocolisKeysView: View {
 
     func create(_ e: Engine) {
         guard let k = try? e.addBrocolisKey(name: "", pasted: Brocolis.generateKey()) else { return }
-        UIPasteboard.general.string = k.key
-        model.show("🥦 Clé créée et copiée : partagez-la avec vos proches")
+        model.show("🥦 Clé créée : envoyez-la par Talka, ou exportez-la protégée")
         // Tout de suite son nom : pour qui est-elle ?
         newName = ""
         renaming = k
@@ -115,6 +124,8 @@ struct AddBrocolisKey: View {
     @Environment(\.dismiss) private var dismiss
     @State private var pasted = ""
     @State private var name = ""
+    @State private var phrase = ""
+    @State private var opening = false
     @State private var error: String?
 
     var body: some View {
@@ -131,7 +142,14 @@ struct AddBrocolisKey: View {
                         Label("Coller", systemImage: "doc.on.clipboard")
                     }
                 } footer: {
-                    Text("Dans l'app Brocolis : copiez la clé, ou partagez l'invitation reçue.")
+                    Text("Dans l'app Brocolis : copiez la clé (de préférence protégée par une phrase), ou partagez l'invitation reçue.")
+                }
+                if Brocolis.hasProtectedKey(pasted) {
+                    Section {
+                        SecureField("Phrase secrète", text: $phrase)
+                    } footer: {
+                        Text("Cette clé est protégée : il faut la phrase qu'on vous a donnée à part.")
+                    }
                 }
                 Section {
                     TextField("Nom (par exemple : Maman, Travail)", text: $name)
@@ -145,22 +163,108 @@ struct AddBrocolisKey: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Ajouter") { add() }
-                        .disabled(pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Ajouter") { Task { await add() } }
+                        .disabled(opening || pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
     }
 
-    func add() {
+    func add() async {
         guard let e = model.engine else { return }
+        var key = pasted
+        if Brocolis.hasProtectedKey(pasted) {
+            opening = true
+            let (text, secret) = (pasted, phrase)
+            let opened = await Task.detached { Brocolis.unprotectKey(text, phrase: secret) }.value
+            opening = false
+            guard let opened else {
+                error = "Phrase incorrecte, ou clé abîmée."
+                return
+            }
+            key = opened
+        }
         do {
-            let k = try e.addBrocolisKey(name: name, pasted: pasted)
+            let k = try e.addBrocolisKey(name: name, pasted: key)
             model.show("🥦 Clé « \(k.name) » ajoutée · empreinte \(Brocolis.fingerprint(k.key) ?? "")")
             dismiss()
         } catch let failure {
             error = failure.localizedDescription
         }
+    }
+}
+
+/// Sortir une clé de Talka. Recommandé : protégée par une phrase secrète (le
+/// jeton copié ne dit rien de la clé sans elle). En clair : seulement après
+/// Face ID ou le code de l'iPhone.
+struct ExportBrocolisKey: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let key: BrocolisKey
+    @State private var phrase = ""
+    @State private var again = ""
+    @State private var working = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    LabeledContent("🥦 \(key.name)") { BrocolisFingerprint(key: key.key) }
+                } footer: {
+                    Text("Le plus sûr : l'envoyer par Talka, depuis une discussion (⋯ → Chiffrer avec Brocolis). Pour l'app Brocolis ou un autre appareil : protégée par une phrase secrète, donnée à part, de vive voix.")
+                }
+                Section {
+                    SecureField("Phrase secrète (\(Brocolis.phraseMin) caractères au moins)", text: $phrase)
+                    SecureField("Confirmez la phrase", text: $again)
+                    Button {
+                        Task { await copyProtected() }
+                    } label: {
+                        Label(working ? "Protection…" : "Copier la clé protégée", systemImage: "lock.doc")
+                    }
+                    .disabled(working || phrase.count < Brocolis.phraseMin || phrase != again)
+                } header: {
+                    Text("Protégée par une phrase (recommandé)")
+                }
+                Section {
+                    Button(role: .destructive) {
+                        Task { await copyClear() }
+                    } label: {
+                        Label("Copier en clair", systemImage: "doc.on.doc")
+                    }
+                } header: {
+                    Text("En clair (déconseillé)")
+                } footer: {
+                    Text("Qui la voit peut lire tous les messages qu'elle chiffre. Demande Face ID ou le code de l'iPhone ; le presse-papiers reste sur cet iPhone et s'efface au bout de deux minutes.")
+                }
+            }
+            .navigationTitle("Exporter la clé")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } }
+            }
+        }
+    }
+
+    func copyProtected() async {
+        working = true
+        let (k, p) = (key.key, phrase)
+        let token = await Task.detached { Brocolis.protectKey(k, phrase: p) }.value
+        working = false
+        guard let token else { return model.show("La protection a échoué.") }
+        copySecret(token)
+        model.show("🔐 Clé protégée copiée : elle s'importe dans Talka ou l'app Brocolis avec la phrase")
+        dismiss()
+    }
+
+    func copyClear() async {
+        let ctx = LAContext()
+        if ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) {
+            let ok = (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Copier la clé Brocolis en clair")) ?? false
+            guard ok else { return }
+        }
+        copySecret(key.key)
+        model.show("Clé copiée en clair : ne l'envoyez que par un canal sûr")
+        dismiss()
     }
 }
 
