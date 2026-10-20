@@ -301,7 +301,7 @@ pub fn home(site: &Site) -> Page {
                         .child(feature("⭕", "Statuts", "Un texte coloré ou une photo, visible par vos contacts pendant 24 heures."))
                         .child(feature("😍", "Réactions et emojis", "Réagissez d'un geste et voyez qui a réagi ; modifiez ou supprimez pour tout le monde, mettez en favori."))
                         .child(feature("📌", "Messages épinglés", "Gardez l'adresse, le code ou le rendez-vous en haut de la discussion, à un toucher."))
-                        .child(feature("🔎", "Recherche", "Retrouvez un message dans une discussion, avec ou sans accents."))
+                        .child(feature("⏳", "Capsule temporelle", "Un message scellé jusqu'à la date choisie : une enveloppe et un compte à rebours, puis il s'ouvre tout seul. Introuvable ailleurs."))
                         .child(feature("⏳", "Messages éphémères", "Choisissez 24 heures, 7 jours ou 90 jours : les messages disparaissent tout seuls."))
                         .child(feature("🔐", "Code de verrouillage", "Un code à 4 ou 6 chiffres protège Talka quand vous prêtez votre appareil."))
                         .child(feature("💾", "Sauvegarde chiffrée", "Exportez tout dans un fichier protégé par mot de passe, et retrouvez-le sur un autre appareil."))

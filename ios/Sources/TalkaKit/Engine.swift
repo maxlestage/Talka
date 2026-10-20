@@ -10,6 +10,8 @@ import Foundation
 import Observation
 
 public let dayMs: Double = 86_400_000
+/// Une capsule temporelle s'ouvre au plus tard dans dix ans.
+public let capsuleMaxMs: Double = 10 * 366 * dayMs
 
 @MainActor
 @Observable
@@ -284,6 +286,8 @@ public final class Engine {
 
     public static func preview(_ m: Message) -> String {
         if m.deleted { return "🚫 Message supprimé" }
+        // Ni l'aperçu de la liste, ni la notification ne trahissent une capsule.
+        if m.isCapsule { return "⏳ Capsule temporelle" }
         switch m.kind {
         case "image": return "📷 \(m.text.isEmpty ? "Photo" : m.text)"
         case "voice": return "🎙️ Message vocal (\(formatDuration(m.dur)))"
@@ -504,6 +508,7 @@ public final class Engine {
         var content = m.content
         content.reply = nil
         content.fwd = true
+        content.openAt = nil
         for id in chats { send(id, content) }
     }
 
@@ -731,7 +736,10 @@ public final class Engine {
             var safe = content
             if !kinds.contains(safe.kind) { safe.kind = "text" }
             safe.text = String(safe.text.prefix(65_536))
-            var m = Message(chat: c.id, id: id, from: from, at: min(at, ts + 60_000), content: safe)
+            // Une capsule s'ouvre au plus tard dans dix ans.
+            let mAt = min(at, ts + 60_000)
+            if let open = safe.openAt { safe.openAt = open > mAt ? min(open, mAt + capsuleMaxMs) : nil }
+            var m = Message(chat: c.id, id: id, from: from, at: mAt, content: safe)
             if let ttl = wire.ttl { m.exp = m.at + Double(ttl) * 1000 }
             if var sender = contacts[from], sender.profileName.isEmpty, !pn.isEmpty {
                 sender.profileName = String(pn.prefix(40))
