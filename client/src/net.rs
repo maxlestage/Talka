@@ -1,8 +1,9 @@
 //! La connexion au relais : une WebSocket qui se présente (signature du
 //! défi), se reconnecte toute seule, et transporte les enveloppes chiffrées.
 //!
-//! Les réponses du relais (`ack`, `error`, `keys`) réveillent la tâche qui
-//! les attend ; les messages reçus et la présence vont au cœur (`core`).
+//! Les réponses du relais (`ack`, `error`, `keys`, `bundle`) réveillent la
+//! tâche qui les attend ; les messages reçus et la présence vont au cœur
+//! (`core`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -42,6 +43,9 @@ thread_local! {
     static STOPPED: Cell<bool> = const { Cell::new(false) };
     static PENDING: RefCell<HashMap<String, Sender<Ack>>> = RefCell::new(HashMap::new());
     static LOOKUPS: RefCell<HashMap<String, Vec<Sender<Value>>>> = RefCell::new(HashMap::new());
+    static BUNDLES: RefCell<HashMap<String, Vec<Sender<Value>>>> = RefCell::new(HashMap::new());
+    /// Le relais connaît-il les paquets v3 ? (`None` : pas encore su.)
+    static RELAY_V3: Cell<Option<bool>> = const { Cell::new(None) };
     static WATCHED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static HANDLERS: RefCell<Vec<Handler>> = const { RefCell::new(Vec::new()) };
 }
@@ -163,9 +167,11 @@ fn connect() {
         for (_, s) in PENDING.with(|p| p.borrow_mut().drain().collect::<Vec<_>>()) {
             s.send(Some(Ack::Err("offline".into())));
         }
-        for (_, list) in LOOKUPS.with(|l| l.borrow_mut().drain().collect::<Vec<_>>()) {
-            for s in list {
-                s.send(None);
+        for waiting in [&LOOKUPS, &BUNDLES] {
+            for (_, list) in waiting.with(|l| l.borrow_mut().drain().collect::<Vec<_>>()) {
+                for s in list {
+                    s.send(None);
+                }
             }
         }
         schedule_retry();
@@ -221,6 +227,7 @@ fn on_text(text: &str) {
             RETRY.with(|r| r.set(0));
             let boot = msg["boot"].as_str().unwrap_or("").to_owned();
             BOOT.with(|b| *b.borrow_mut() = boot);
+            RELAY_V3.with(|r| r.set(None));
             set_state(State::Online);
             let watched: Vec<String> = WATCHED.with(|w| w.borrow().iter().cloned().collect());
             if !watched.is_empty() {
@@ -247,6 +254,38 @@ fn on_text(text: &str) {
                 .unwrap_or_default()
             {
                 s.send(found.clone());
+            }
+        }
+        "bundle" => {
+            let code = msg["code"].as_str().unwrap_or("").to_owned();
+            let found = Some(msg);
+            for s in BUNDLES
+                .with(|l| l.borrow_mut().remove(&code))
+                .unwrap_or_default()
+            {
+                s.send(found.clone());
+            }
+        }
+        // La réponse au `ping` qui suit la publication du paquet : si elle
+        // arrive avant `published`, le relais ne connaît pas v3 (les
+        // réponses arrivent dans l'ordre des demandes).
+        "pong" => {
+            if RELAY_V3.with(Cell::get).is_none() {
+                RELAY_V3.with(|r| r.set(Some(false)));
+                for (_, list) in BUNDLES.with(|l| l.borrow_mut().drain().collect::<Vec<_>>()) {
+                    for s in list {
+                        s.send(None);
+                    }
+                }
+            }
+        }
+        "published" => {
+            RELAY_V3.with(|r| r.set(Some(true)));
+            if msg["ok"] != true {
+                crate::dom::warn(&format!(
+                    "v3 : paquet de clés refusé par le relais ({})",
+                    msg["error"].as_str().unwrap_or("?")
+                ));
             }
         }
         "presence" => crate::core::on_presence(&msg),
@@ -293,6 +332,35 @@ pub async fn lookup(code: &str) -> Option<Value> {
     });
     let s = d.sender();
     let t = timer(15_000, move || s.send(None));
+    let out = d.wait().await;
+    clear_timer(t);
+    out
+}
+
+/// Publie le paquet de clés v3 (base64) et sa signature par la clé du code.
+pub fn publish_bundle(bundle: &str, sig: &str) -> bool {
+    raw(&json!({ "t": "publish-bundle", "bundle": bundle, "sig": sig }))
+        && raw(&json!({ "t": "ping" }))
+}
+
+/// La réponse du relais à la demande du paquet de clés v3 d'un code
+/// (`"none": true` s'il n'en a pas ; `None` : pas de réponse, sans réseau ou
+/// avec un relais d'avant v3). Le paquet est à vérifier : `v3::verify_bundle`.
+pub async fn fetch_bundle(code: &str) -> Option<Value> {
+    if RELAY_V3.with(Cell::get) == Some(false)
+        || !raw(&json!({ "t": "fetch-bundle", "code": code }))
+    {
+        return None;
+    }
+    let d = Deferred::<Value>::new();
+    BUNDLES.with(|l| {
+        l.borrow_mut()
+            .entry(code.to_owned())
+            .or_default()
+            .push(d.sender())
+    });
+    let s = d.sender();
+    let t = timer(10_000, move || s.send(None));
     let out = d.wait().await;
     clear_timer(t);
     out

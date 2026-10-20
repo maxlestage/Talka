@@ -6,6 +6,11 @@
 //! dans une discussion à deux) : chacune est chiffrée pour son destinataire,
 //! au moment de partir. En attendant, elle est gardée dans `outbox` : un
 //! message écrit hors ligne part tout seul au retour du réseau.
+//!
+//! Avec un contact qui a publié son paquet de clés v3 (voir [`crate::v3`]),
+//! l'enveloppe porte un jeton de sa session à double cliquet ; l'état de la
+//! session est écrit avec le message qui l'a fait avancer, et rien ne part
+//! vers le relais avant qu'il soit dans IndexedDB.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -18,6 +23,7 @@ use crate::jetons;
 use crate::model::*;
 use crate::net::{self, Ack, State};
 use crate::store;
+use crate::v3::{self, Engine, Failure, KeyBundle, Opened, Protection};
 
 pub const DAY: f64 = 86_400_000.0;
 
@@ -77,6 +83,12 @@ thread_local! {
     static TYPING_SENT: Cell<f64> = const { Cell::new(0.0) };
     static RECEIPTS: RefCell<HashMap<(String, String, String), HashSet<String>>> = RefCell::new(HashMap::new());
     static RECEIPT_TIMER: Cell<i32> = const { Cell::new(0) };
+    /// L'appareil v3 et les sessions (chargées contact par contact).
+    static V3: RefCell<Option<Engine>> = const { RefCell::new(None) };
+    /// Les paquets v3 demandés au relais : (paquet vérifié ou aucun, heure).
+    static BUNDLES: RefCell<HashMap<String, (Option<KeyBundle>, f64)>> = RefCell::new(HashMap::new());
+    /// La dernière session réparée, contact par contact.
+    static REPAIRS: RefCell<HashMap<String, f64>> = RefCell::new(HashMap::new());
 }
 
 fn with<T>(f: impl FnOnce(&mut St) -> T) -> T {
@@ -222,6 +234,7 @@ pub async fn start() {
         s.contacts = contacts.into_iter().map(|c| (c.code.clone(), c)).collect();
         s.chats = chats.into_iter().map(|c| (c.id.clone(), c)).collect();
     });
+    start_v3().await;
     net::start(identity, hidden);
     sweep().await;
     dom::interval(60_000, || spawn(sweep()));
@@ -232,6 +245,7 @@ pub fn on_net(state: State) {
     emit(Ev::Net);
     if state == State::Online {
         watch_contacts();
+        publish_v3();
         spawn(flush());
         spawn(refresh_missing_keys());
     }
@@ -283,6 +297,139 @@ async fn sweep() {
         }
     }
     emit(Ev::Statuses);
+    // Les clés pré-signées v3 : renouvelées chaque semaine, puis republiées.
+    if with_v3(|e| e.maintain(v3::secs(t))).unwrap_or(false) {
+        save_v3().await;
+        publish_v3();
+    }
+}
+
+// ----- Le protocole v3 --------------------------------------------------------
+
+fn with_v3<T>(f: impl FnOnce(&mut Engine) -> T) -> Option<T> {
+    V3.with(|v| v.borrow_mut().as_mut().map(f))
+}
+
+/// L'appareil v3 : relu, ou créé au premier démarrage d'une version qui sait
+/// faire v3.
+async fn start_v3() {
+    let device = store::get_raw("kv", v3::DEVICE_KEY).await;
+    let engine = Engine::start(device.as_deref(), v3::secs(now()));
+    V3.with(|v| *v.borrow_mut() = Some(engine));
+    save_v3().await;
+}
+
+async fn write_json(key: &str, json: &str) {
+    if let Ok(value) = serde_json::from_str::<Value>(json) {
+        store::write("kv", key, &value).await;
+    }
+}
+
+/// Écrit ce qui a changé dans l'état v3 (l'appareil, des sessions).
+async fn save_v3() {
+    let Some(dirty) = with_v3(Engine::take_dirty) else {
+        return;
+    };
+    if let Some(device) = dirty.device {
+        write_json(v3::DEVICE_KEY, &device).await;
+    }
+    for (code, json) in dirty.peers {
+        let key = format!("{}{code}", v3::SESSION_PREFIX);
+        if json.is_empty() {
+            store::remove("kv", &key).await;
+        } else {
+            write_json(&key, &json).await;
+        }
+    }
+}
+
+/// Les sessions d'un contact, lues d'IndexedDB la première fois.
+async fn load_v3(code: &str) {
+    if with_v3(|e| e.is_loaded(code)).unwrap_or(true) {
+        return;
+    }
+    let json = store::get_raw("kv", &format!("{}{code}", v3::SESSION_PREFIX)).await;
+    with_v3(|e| e.load(code, json.as_deref()));
+}
+
+/// Publie le paquet de clés v3, signé par la clé du code (à chaque
+/// connexion : le relais ne garde rien sur disque).
+fn publish_v3() {
+    if let Some((bundle, sig)) = with_v3(|e| e.published(&me())).flatten() {
+        net::publish_bundle(&bundle, &sig);
+    }
+}
+
+/// Le paquet v3 d'un contact, vérifié (lié à son code) ; gardé une heure en
+/// mémoire (dix minutes s'il n'en a pas).
+async fn bundle_for(peer: &Contact) -> Option<KeyBundle> {
+    let t = now();
+    if let Some((bundle, at)) = BUNDLES.with(|b| b.borrow().get(&peer.code).cloned()) {
+        let ttl = if bundle.is_some() {
+            3_600_000.0
+        } else {
+            600_000.0
+        };
+        if t - at < ttl {
+            return bundle;
+        }
+    }
+    // Pas de réponse (réseau, ancien relais) : rien n'est retenu.
+    let found = net::fetch_bundle(&peer.code).await?;
+    let bundle = (!found["none"].as_bool().unwrap_or(false))
+        .then(|| {
+            v3::verify_bundle(
+                &peer.code,
+                &peer.sign,
+                &peer.dh,
+                found["bundle"].as_str()?,
+                found["sig"].as_str()?,
+            )
+        })
+        .flatten();
+    if bundle.is_none() && found["none"] != true {
+        dom::warn("v3 : paquet de clés refusé (signature ou format)");
+    }
+    BUNDLES.with(|b| {
+        b.borrow_mut()
+            .insert(peer.code.clone(), (bundle.clone(), t))
+    });
+    bundle
+}
+
+/// La protection de la discussion avec un contact (fiche du contact).
+pub async fn protection(code: &str) -> Protection {
+    load_v3(code).await;
+    if let Some(p) = with_v3(|e| e.session_protection(code)).flatten() {
+        return p;
+    }
+    if let Some(peer) = keys_for(code).await
+        && let Some(bundle) = bundle_for(&peer).await
+    {
+        return Protection::Ratchet {
+            pq: bundle.pq.is_some(),
+        };
+    }
+    Protection::Legacy
+}
+
+/// Une enveloppe v3 illisible (session perdue d'un côté ou de l'autre) :
+/// on oublie nos sessions avec ce contact et on lui envoie notre profil, qui
+/// ouvre une session neuve ; il la prend, et ses messages suivants se
+/// lisent. Au plus une fois toutes les cinq minutes par contact.
+fn repair_v3(code: &str) {
+    let t = now();
+    let recent = REPAIRS.with(|r| r.borrow().get(code).is_some_and(|at| t - at < 300_000.0));
+    if recent {
+        return;
+    }
+    REPAIRS.with(|r| r.borrow_mut().insert(code.to_owned(), t));
+    with_v3(|e| e.forget(code));
+    let code = code.to_owned();
+    spawn(async move {
+        save_v3().await;
+        enqueue(&code, Wire::new(profile_body()), None, None, false).await;
+    });
 }
 
 pub async fn save_settings(f: impl FnOnce(&mut Settings)) {
@@ -962,7 +1109,35 @@ async fn enqueue(to: &str, wire: Wire, chat: Option<&str>, msg_id: Option<&str>,
 
 async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
     let peer = keys_for(&item.to).await.ok_or("unknown")?;
-    let body = crypto::seal(&me(), &peer.code, &peer.dh, &item.payload).ok_or("crypto")?;
+    load_v3(&peer.code).await;
+    // « écrit… » et les signaux d'appel ne sont remis qu'à un destinataire
+    // en ligne : hors ligne, le relais les jette, et chacun laisserait chez
+    // lui une clé sautée dans la session. Ils gardent alors l'ancien format.
+    let ratchet = !live || presence(&peer.code).is_some_and(|(online, _)| online);
+    // Sans session, le paquet du contact en ouvre une (s'il en a publié un).
+    let bundle = if !ratchet || with_v3(|e| e.has_session(&peer.code)).unwrap_or(true) {
+        None
+    } else {
+        bundle_for(&peer).await
+    };
+    // Chiffré au moment de partir : un nouvel essai chiffre à nouveau (un
+    // autre numéro de message) ; le destinataire range par identifiant.
+    let v3 = ratchet
+        .then(|| with_v3(|e| e.seal(&me(), &peer.code, &peer.dh, bundle.as_ref(), &item.payload)))
+        .flatten();
+    let sealed = match v3 {
+        Some(sealed) => sealed,
+        None => crypto::seal(&me(), &peer.code, &peer.dh, &item.payload)
+            .map(|body| v3::Sealed { body, v3: false }),
+    }
+    .ok_or("crypto")?;
+    if sealed.v3 {
+        // La session a avancé : rien ne part avant qu'elle soit écrite (une
+        // clé de message ne doit jamais servir deux fois).
+        save_v3().await;
+        store::committed().await;
+    }
+    let body = sealed.body;
     match net::send(&item.id, &item.to, &body, live).await {
         Ack::Ok => Ok(()),
         Ack::Err(e) => Err(e),
@@ -1534,6 +1709,9 @@ pub fn on_envelope(env: Value) {
         let n = env["n"].as_u64();
         receive(&env).await;
         if let Some(n) = n {
+            // Le relais oublie le message une fois rangé pour de bon (avec
+            // l'état de session qui l'a ouvert).
+            store::committed().await;
             net::got(&[n]);
         }
     });
@@ -1547,13 +1725,27 @@ async fn receive(env: &Value) {
     let Some(peer) = keys_for(&from).await else {
         return;
     };
-    let Some(plain) = crypto::open(
-        &me(),
-        &peer.code,
-        &peer.dh,
-        env["body"].as_str().unwrap_or(""),
-    ) else {
-        return; // pas pour nous, ou abîmé
+    load_v3(&from).await;
+    let body = env["body"].as_str().unwrap_or("");
+    // Le message, et l'état de session qui l'a ouvert : une seule
+    // transaction IndexedDB.
+    let _batch = store::batch();
+    let opened = with_v3(|e| e.open(&me(), &peer.code, &peer.dh, body, v3::secs(now())))
+        .unwrap_or_else(|| match crypto::open(&me(), &peer.code, &peer.dh, body) {
+            Some(plain) => Opened::Legacy(plain),
+            None => Opened::Failed(Failure::Envelope),
+        });
+    save_v3().await;
+    let plain = match opened {
+        Opened::Legacy(plain) | Opened::V3(plain) => plain,
+        // Déjà lu : le relais l'a renvoyé.
+        Opened::Replay => return,
+        Opened::Failed(Failure::Envelope) => return, // pas pour nous, ou abîmé
+        Opened::Failed(Failure::V3(e)) => {
+            dom::warn(&format!("v3 : message de {from} illisible ({e})"));
+            repair_v3(&from);
+            return;
+        }
     };
     let Ok(wire) = serde_json::from_str::<Wire>(&plain) else {
         return;
@@ -2049,6 +2241,17 @@ pub async fn export_backup(password: &str) -> Option<String> {
                 .is_none_or(|k| k != "brocolis" && k != "brocolis_sealed")
         });
         kv.push(row);
+    }
+    // Les sessions v3 n'y vont pas : restaurées plus tard, en retard sur
+    // celles du contact, elles reprendraient des clés de message déjà
+    // servies. L'appareil v3 (`v3_device`) y va, comme l'identité ; après
+    // une restauration, chaque contact ouvre (ou reçoit) une session neuve.
+    if let Some(kv) = dump.get_mut("kv").and_then(Value::as_array_mut) {
+        kv.retain(|r| {
+            r.get(0)
+                .and_then(Value::as_str)
+                .is_none_or(|k| !k.starts_with(v3::SESSION_PREFIX))
+        });
     }
     let data = serde_json::json!({ "app": "talka", "at": now(), "data": dump });
     let backup = crypto::encrypt_backup(password, &data.to_string())?;
