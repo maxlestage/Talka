@@ -46,13 +46,38 @@ Conséquences :
 | Où | Quoi |
 |---|---|
 | **Le navigateur** (IndexedDB, [`client/src/store.rs`](client/src/store.rs)) | identité et clés, profil, contacts, discussions, messages, photos, vocaux, statuts, historique des appels, réglages |
-| **Le relais** (mémoire vive, [`src/relay.rs`](src/relay.rs)) | les clés publiques des codes connectés, l'heure de dernière connexion, et les messages chiffrés qui attendent un destinataire hors ligne (30 jours au plus, effacés dès que le destinataire confirme les avoir rangés) |
+| **Le relais** (mémoire vive, [`src/relay.rs`](src/relay.rs)) | les clés publiques des codes connectés et leur dernier paquet de clés v3 (signé), l'heure de dernière connexion, et les messages chiffrés qui attendent un destinataire hors ligne (30 jours au plus, effacés dès que le destinataire confirme les avoir rangés) |
 
 Le relais ne peut lire aucun message. Chaque message est chiffré pour chaque
 destinataire (ECDH → HKDF-SHA256 → AES-256-GCM, les deux codes en données
 associées) ; dans un groupe, il part en autant d'enveloppes que de membres. Un
 message écrit hors ligne attend dans la boîte d'envoi du navigateur et part
 au retour du réseau.
+
+## Sessions à double cliquet (protocole v3)
+
+Avec un contact qui a la mise à jour, chaque message part en plus dans une
+**session à double cliquet** (une clé neuve par message, effacée aussitôt
+utilisée), établie en **hybride X25519 + ML-KEM-768** : le protocole v3 de
+[`docs/SECURITE.md`](docs/SECURITE.md), avec son implémentation de référence
+(`brocolis-proto`, voir [`client/src/v3.rs`](client/src/v3.rs)).
+
+- chaque navigateur a un appareil v3 (clés X25519, Ed25519, ML-KEM-768),
+  dont les clés pré-signées changent chaque semaine ; son **paquet de clés
+  est signé par la clé du code** et publié sur le relais. Un paquet n'est
+  accepté que si cette signature vérifie avec les clés dont le code est
+  l'empreinte : rien de plus à comparer que le code ;
+- le jeton v3 voyage **dans** l'enveloppe chiffrée habituelle : le relais ne
+  voit aucune différence ; avec un contact qui n'a pas publié de paquet
+  (l'iPhone, pour l'instant), l'ancien format, exactement ;
+- l'état des sessions est écrit dans IndexedDB avec le message qu'il a
+  ouvert, et rien ne part avant qu'il y soit ; il ne va pas dans la
+  sauvegarde (restauré en retard, il reprendrait des clés déjà servies) :
+  après une restauration, les sessions se rouvrent toutes seules ;
+- un document de plus de 200 Kio (photo lourde, vocal, fichier) dépasse ce
+  que porte un jeton v3 : il part dans l'ancien format ;
+- la fiche du contact dit « 🔐 Session à double cliquet (post-quantique) »,
+  « (classique) », ou « Ancien chiffrement ».
 
 Comme tout est dans le navigateur, **Réglages → Exporter une sauvegarde
 chiffrée** produit un fichier protégé par mot de passe (PBKDF2 + AES-GCM), à
@@ -146,7 +171,7 @@ en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
 | [`src/site.rs`](src/site.rs) | le site, rendu par le serveur avec Active (SEO, Open Graph) |
 | [`src/assets.rs`](src/assets.rs) | le navigateur compilé et `web/` (styles, icônes) rangés dans le binaire, servis sous `/s/<empreinte>/` |
 | [`src/export.rs`](src/export.rs) | `talka export` : la version statique pour GitHub Pages |
-| [`client/`](client/) | le navigateur, en Rust → WebAssembly : `crypto` (codes, ECDH, AES-GCM, PBKDF2), `store` (IndexedDB), `net` (relais), `core` (logique), `ui` et `conv` (interface), `calls` (WebRTC), `lock`, `media`, `sounds`, `emoji`, `site` |
+| [`client/`](client/) | le navigateur, en Rust → WebAssembly : `crypto` (codes, ECDH, AES-GCM, PBKDF2), `v3` (sessions à double cliquet), `store` (IndexedDB), `net` (relais), `core` (logique), `ui` et `conv` (interface), `calls` (WebRTC), `lock`, `media`, `sounds`, `emoji`, `site` |
 | [`xtask/`](xtask/) | `cargo xtask web` : compile `client/` et génère la colle wasm-bindgen (sans outil à installer) |
 | [`ios/`](ios/) | l'application iOS : `TalkaKit` (le même protocole en Swift, recoupé avec le navigateur par des vecteurs de test) et l'interface SwiftUI ; TestFlight depuis GitHub Actions ([`ios/README.md`](ios/README.md)) |
 

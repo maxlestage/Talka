@@ -22,6 +22,16 @@
 //! | → | `{"t":"lookup","code"}` | ← `{"t":"keys","code","sign","dh"}` (ou `"unknown":true`) |
 //! | → | `{"t":"watch","codes":[…]}` | ← `{"t":"presence","code","online","seen"}`, maintenant et à chaque changement |
 //! | ← | `{"t":"error","id","error"}` | un envoi refusé |
+//! | → | `{"t":"publish-bundle","bundle","sig"}` | le paquet de clés v3 (base64), signé par la clé du code ; il remplace le précédent |
+//! | ← | `{"t":"published","ok"}` | et `"error":"size"` ou `"signature"` s'il est refusé |
+//! | → | `{"t":"fetch-bundle","code"}` | ← `{"t":"bundle","code","sign","dh","bundle","sig"}` (ou `"none":true`) |
+//!
+//! Le paquet v3 (voir `talka_web::v3`) : le relais vérifie seulement qu'il est
+//! signé par la clé du code qui le publie (ECDSA P-256 de
+//! `talka-v3-paquet:` ‖ paquet) et qu'il n'est pas trop gros ; c'est
+//! l'appareil qui le lit, et qui revérifie tout. Il est oublié à chaque
+//! nouvelle connexion du code (un appareil v3 le republie aussitôt), et
+//! gardé quand le code se déconnecte.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -52,6 +62,8 @@ const PING_EVERY: Duration = Duration::from_secs(25);
 const MAX_KEYS: usize = 200_000;
 /// Les codes suivis par une connexion.
 const MAX_WATCH: usize = 2_000;
+/// Un paquet de clés v3 : 1 418 octets avec ML-KEM ; 2 Kio au plus.
+pub const MAX_BUNDLE: usize = 2048;
 
 /// L'heure en millisecondes, comme `Date.now()`.
 pub fn now_ms() -> u64 {
@@ -77,6 +89,12 @@ struct Keys {
     dh: String,
 }
 
+/// Le dernier paquet de clés v3 publié par un code, et sa signature.
+struct Bundle {
+    bundle: String,
+    sig: String,
+}
+
 struct Conn {
     id: u64,
     tx: mpsc::UnboundedSender<String>,
@@ -87,6 +105,7 @@ struct Conn {
 struct State {
     online: HashMap<String, Vec<Conn>>,
     keys: HashMap<String, Keys>,
+    bundles: HashMap<String, Bundle>,
     seen: HashMap<String, u64>,
     mailboxes: HashMap<String, Mailbox>,
     total_bytes: usize,
@@ -221,10 +240,15 @@ impl Relay {
             oldest.sort_by_key(|(_, seen)| *seen);
             for (c, _) in oldest.into_iter().take(MAX_KEYS / 10) {
                 st.keys.remove(&c);
+                st.bundles.remove(&c);
                 st.seen.remove(&c);
             }
         }
         st.keys.insert(code.to_owned(), Keys { sign, dh });
+        // Un appareil v3 republie son paquet aussitôt connecté ; un appareil
+        // qui ne le fait pas (une ancienne version avec la même identité)
+        // ne doit pas recevoir de jetons v3 qu'il ne saurait pas lire.
+        st.bundles.remove(code);
         let was_visible = st.is_visible(code);
         st.online.entry(code.to_owned()).or_default().push(Conn {
             id,
@@ -338,6 +362,53 @@ impl Relay {
         match st.keys.get(code) {
             Some(k) => json!({ "t": "keys", "code": code, "sign": k.sign, "dh": k.dh }),
             None => json!({ "t": "keys", "code": code, "unknown": true }),
+        }
+    }
+
+    /// Garde le paquet de clés v3 de `code`, s'il est signé par sa clé
+    /// (`sign`, brute) et pas trop gros. Il remplace le précédent.
+    fn publish(
+        &self,
+        code: &str,
+        sign: &[u8],
+        bundle: &str,
+        sig: &str,
+    ) -> Result<(), &'static str> {
+        if bundle.is_empty() || bundle.len() > MAX_BUNDLE.div_ceil(3) * 4 || sig.len() > 128 {
+            return Err("size");
+        }
+        let bytes = B64.decode(bundle).map_err(|_| "size")?;
+        if bytes.len() > MAX_BUNDLE {
+            return Err("size");
+        }
+        if !code::verify(sign, &code::bundle_message(&bytes), sig) {
+            return Err("signature");
+        }
+        let mut st = self.lock();
+        if st.keys.contains_key(code) {
+            st.bundles.insert(
+                code.to_owned(),
+                Bundle {
+                    bundle: bundle.to_owned(),
+                    sig: sig.to_owned(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn bundle(&self, code: &str) -> Value {
+        let st = self.lock();
+        match (st.keys.get(code), st.bundles.get(code)) {
+            (Some(k), Some(b)) => json!({
+                "t": "bundle",
+                "code": code,
+                "sign": k.sign,
+                "dh": k.dh,
+                "bundle": b.bundle,
+                "sig": b.sig,
+            }),
+            _ => json!({ "t": "bundle", "code": code, "none": true }),
         }
     }
 
@@ -510,6 +581,25 @@ impl Relay {
                     for presence in self.watch(&me, conn_id, &codes) {
                         reply(presence);
                     }
+                }
+                "publish-bundle" => {
+                    let answer = match self.publish(
+                        &me,
+                        &sign,
+                        msg["bundle"].as_str().unwrap_or(""),
+                        msg["sig"].as_str().unwrap_or(""),
+                    ) {
+                        Ok(()) => json!({ "t": "published", "ok": true }),
+                        Err(error) => json!({ "t": "published", "ok": false, "error": error }),
+                    };
+                    reply(answer.to_string());
+                }
+                "fetch-bundle" => {
+                    let answer = match msg["code"].as_str().and_then(code::normalize) {
+                        Some(code) => self.bundle(&code),
+                        None => json!({ "t": "bundle", "code": msg["code"], "none": true }),
+                    };
+                    reply(answer.to_string());
                 }
                 "ping" => reply(json!({ "t": "pong", "time": now_ms() }).to_string()),
                 _ => {}
