@@ -60,6 +60,10 @@ importer sur un autre appareil ou après avoir effacé les données du site.
 
 ## Brocolis 🥦 : une seconde couche
 
+La sécurité de Talka et de Brocolis est repensée en trois phases (stockage
+matériel, Argon2id, protocole à double cliquet, post-quantique) : voir
+[`docs/SECURITE.md`](docs/SECURITE.md), la référence commune aux deux dépôts.
+
 Talka parle le format de [Brocolis](https://github.com/maxlestage/messagerie-),
 l'app qui chiffre du texte par-dessus n'importe quelle messagerie. **Réglages →
 Clés Brocolis** : collez une clé de l'app Brocolis (ou toute l'invitation

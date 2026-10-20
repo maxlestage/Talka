@@ -25,6 +25,20 @@ struct TalkaApp: App {
     }
 }
 
+/// Ce que montre l'aperçu d'iOS quand Talka n'est pas au premier plan.
+struct PrivacyCover: View {
+    var body: some View {
+        ZStack {
+            Color.chatBackground.ignoresSafeArea()
+            VStack(spacing: 12) {
+                Image(systemName: "lock.fill").font(.system(size: 40)).foregroundStyle(Color.talkaGreen)
+                Text("Talka").font(.title2.bold())
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 extension Color {
     static let talkaGreen = Color(red: 0, green: 0.6588, blue: 0.5176)
     static let talkaDark = Color(red: 0, green: 0.502, blue: 0.4118)
@@ -42,6 +56,7 @@ extension Color {
 /// L'accueil, le verrou, ou l'application ; l'appel et les bandeaux par-dessus.
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var phase
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -68,6 +83,11 @@ struct RootView: View {
             }
             if let step = model.loading {
                 LoadingView(step: step).zIndex(4).transition(.opacity)
+            }
+            // Hors du premier plan (sélecteur d'apps, centre de contrôle) :
+            // l'aperçu d'iOS ne montre ni les discussions ni les clés.
+            if phase != .active, model.engine != nil {
+                PrivacyCover().zIndex(5)
             }
         }
         .animation(.spring(duration: 0.3), value: model.toast)
