@@ -3306,3 +3306,13 @@ body.locked .lock-screen {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Brocolis 🥦 : la marque des messages chiffrés aussi par Brocolis. */
+.meta .bro {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.bro-key {
+  font-size: 22px;
+}

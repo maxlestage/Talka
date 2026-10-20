@@ -1157,7 +1157,7 @@ fn on_incoming(chat: Chat, message: crate::model::Message, active: bool) {
         return;
     }
     let text = if message.kind == "text" && !message.is_capsule() {
-        message.text.clone()
+        crate::jetons::masked(&message.text).into_owned()
     } else {
         core::preview(&message)
     };
@@ -3076,6 +3076,7 @@ pub async fn open_settings() {
                 .child(h("div.settings-profile").child(avatar_btn).child(h("div.stack.grow").child(h("label.muted.small").text("Votre nom")).child(name.clone()).child(h("label.muted.small").text("Actu")).child(about.clone())))
                 .child(h("div.settings-group").child(h("h3").text("Mon code")).child(setting("qr", &pretty(&core::my_code()), "Votre identifiant Talka : il remplace le numéro de téléphone", false, show_my_code)))
                 .child(privacy)
+                .child(h("div.settings-group").child(h("h3").text("Brocolis 🥦")).child(setting("lock", "Clés Brocolis", &brocolis_summary(), false, crate::brocoli::keys_dialog)))
                 .child(
                     h("div.settings-group")
                         .child(h("h3").text("Discussions"))
@@ -3142,6 +3143,14 @@ pub async fn open_settings() {
             ..Default::default()
         },
     );
+}
+
+fn brocolis_summary() -> String {
+    match core::brocolis_keys().len() {
+        0 => "Une seconde couche de chiffrement, avec l'app Brocolis".into(),
+        1 => "1 clé".into(),
+        n => format!("{n} clés"),
+    }
 }
 
 fn blocked_list() {

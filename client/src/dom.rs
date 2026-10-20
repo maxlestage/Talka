@@ -1180,6 +1180,9 @@ pub fn scope_into<T>(name: &str, f: impl FnOnce() -> T) -> T {
 
 /// Le texte d'un message : liens cliquables, *gras*, _italique_, ~barré~, `code`.
 pub fn rich_text(text: &str) -> Vec<Child> {
+    // Un jeton Brocolis qu'aucune clé n'ouvre : « 🔒🥦 », pas un pavé de base64.
+    let masked = crate::jetons::masked(text);
+    let text: &str = &masked;
     let mut out = Vec::new();
     let mut plain = String::new();
     let chars: Vec<char> = text.chars().collect();

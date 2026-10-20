@@ -58,6 +58,30 @@ Comme tout est dans le navigateur, **Réglages → Exporter une sauvegarde
 chiffrée** produit un fichier protégé par mot de passe (PBKDF2 + AES-GCM), à
 importer sur un autre appareil ou après avoir effacé les données du site.
 
+## Brocolis 🥦 : une seconde couche
+
+Talka parle le format de [Brocolis](https://github.com/maxlestage/messagerie-),
+l'app qui chiffre du texte par-dessus n'importe quelle messagerie. **Réglages →
+Clés Brocolis** : collez une clé de l'app Brocolis (ou toute l'invitation
+reçue), ou créez-en une. Puis, dans une discussion, **⋮ → Chiffrer avec
+Brocolis 🥦** et cochez la ou les clés :
+
+- tout le texte qui part (messages, modifications, citations, légendes,
+  capsules) est scellé en jeton `[[BROCOLIS:v1:…]]` (une clé) ou
+  `[[BROCOLIS:v2:…]]` (plusieurs : une enveloppe, lisible par chacune), **en
+  plus** du chiffrement de Talka ; `((comme ceci))` ne chiffre qu'un passage ;
+- à l'arrivée, les jetons s'ouvrent avec toutes vos clés (marque 🥦 sur la
+  bulle) ; ceux qu'aucune clé n'ouvre s'affichent « 🔒🥦 », et s'ouvrent dès
+  que vous ajoutez la bonne clé ;
+- les jetons sont exactement ceux de l'app Brocolis (AES-256-GCM, clés de 32
+  octets) : un jeton collé depuis son clavier s'ouvre dans Talka, et
+  inversement. Voir [`client/src/jetons.rs`](client/src/jetons.rs) et
+  [`ios/Sources/TalkaKit/Brocolis.swift`](ios/Sources/TalkaKit/Brocolis.swift),
+  recoupés par les vecteurs de test et par un jeton fait par l'app Brocolis.
+
+L'appareil garde le texte ouvert, comme le reste de Talka ; les clés sont
+dans la sauvegarde chiffrée.
+
 ## Fonctionnalités
 
 - 💬 discussions : ✓ envoyé, ✓✓ distribué, ✓✓ bleu lu ; « écrit… » ; en ligne
