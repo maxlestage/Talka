@@ -79,8 +79,29 @@ Brocolis 🥦** et cochez la ou les clés :
   [`ios/Sources/TalkaKit/Brocolis.swift`](ios/Sources/TalkaKit/Brocolis.swift),
   recoupés par les vecteurs de test et par un jeton fait par l'app Brocolis.
 
-L'appareil garde le texte ouvert, comme le reste de Talka ; les clés sont
-dans la sauvegarde chiffrée.
+**Des clés plus sûres.** Une clé fait 256 bits tirés au hasard (le base64
+n'est que sa façon de s'écrire) ; ce qui l'expose, c'est la façon dont on la
+partage et dont on la garde :
+
+- **envoyée par Talka** : « Créer et envoyer » (ou « Envoyer les clés
+  cochées ») la fait voyager dans le chiffrement de bout en bout de Talka ;
+  le correspondant l'ajoute d'un geste (bulle « Clé Brocolis »). Une fois
+  ajoutée, elle n'est plus gardée dans les messages ;
+- **une empreinte** (`AB12-CD34-EF56-7890`, les 8 premiers octets de son
+  SHA-256) s'affiche partout, à comparer de vive voix ;
+- **renouveler** une clé en crée une neuve, du même nom, qui la remplace dans
+  ses discussions et y part par Talka ; chez le correspondant aussi, elle
+  remplace l'ancienne. L'ancienne garde l'historique lisible mais ne chiffre
+  plus rien ;
+- **au repos** : dans le navigateur, avec un code de verrouillage, les clés
+  sont chiffrées par lui (PBKDF2-SHA256, 300 000 tours → AES-256-GCM) et
+  ouvertes au déverrouillage ; un code de 4 à 6 chiffres reste court, il
+  ralentit sans arrêter qui aurait copié le navigateur. Sur l'iPhone, elles
+  sont dans le trousseau d'iOS, pour cet appareil seulement (ni iCloud, ni
+  sauvegarde de l'iPhone).
+
+L'appareil garde le texte ouvert, comme le reste de Talka ; les clés partent
+en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
 
 ## Fonctionnalités
 

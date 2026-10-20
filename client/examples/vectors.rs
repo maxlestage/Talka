@@ -201,6 +201,7 @@ fn main() {
         "v2_plain": "À tous 🥦",
         "marked": jetons::seal("On se voit ((au parc)) demain", &keys[1..]),
         "marked_plain": "On se voit au parc demain",
+        "fingerprint_k1": jetons::fingerprint(&k1),
     });
 
     let vectors = json!({

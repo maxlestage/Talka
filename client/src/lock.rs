@@ -24,6 +24,8 @@ pub async fn set_pin(pin: Option<&str>) {
         Some(p) => store::write("kv", "pin", &hash_pin(p)).await,
         None => store::remove("kv", "pin").await,
     }
+    // Les clés Brocolis suivent le code : scellées par lui, ou en clair sans.
+    crate::core::protect_brocolis(pin).await;
 }
 
 async fn verify(pin: &str) -> bool {
@@ -161,11 +163,12 @@ pub fn pin_pad(title: &str, subtitle: &str, on_done: impl Fn(String, Pad) + 'sta
     pad
 }
 
-/// L'écran verrouillé : se termine quand le bon code est tapé.
-pub async fn lock_screen() {
+/// L'écran verrouillé : se termine quand le bon code est tapé, et le rend
+/// (il ouvre les clés Brocolis).
+pub async fn lock_screen() -> String {
     let host = h("div.lock-screen").el();
     let _ = document().body().expect("body").append_child(&host);
-    let d = Deferred::<bool>::new();
+    let d = Deferred::<String>::new();
     let s = d.sender();
     let fails = Rc::new(Cell::new(0u32));
     let until = Rc::new(Cell::new(0.0f64));
@@ -187,7 +190,7 @@ pub async fn lock_screen() {
                 if verify(&pin).await {
                     pad.destroy();
                     host.remove();
-                    s.send(Some(true));
+                    s.send(Some(pin));
                 } else {
                     fails.set(fails.get() + 1);
                     if fails.get() >= 5 {
@@ -202,5 +205,5 @@ pub async fn lock_screen() {
         },
     );
     let _ = host.append_child(&pad.el);
-    d.wait().await;
+    d.wait().await.unwrap_or_default()
 }

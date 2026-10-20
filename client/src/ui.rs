@@ -230,12 +230,16 @@ pub async fn boot() {
     sounds::unlock();
     boot_step("Préparation de vos discussions…");
     if core::has_account().await {
+        let mut pin = None;
         if lock::has_pin().await {
             replace(&root(), Child::None);
-            lock::lock_screen().await;
+            pin = Some(lock::lock_screen().await);
             with(|u| u.lock = true);
         }
         start_core().await;
+        if let Some(pin) = pin {
+            core::unlock_brocolis(&pin).await;
+        }
         mount();
     } else {
         welcome().await;
@@ -311,8 +315,9 @@ fn auto_lock() {
 async fn lock_now() {
     let body = document().body().expect("body");
     toggle_class(&body, "locked", true);
-    lock::lock_screen().await;
+    let pin = lock::lock_screen().await;
     toggle_class(&body, "locked", false);
+    core::unlock_brocolis(&pin).await;
 }
 
 // ----- Le squelette ----------------------------------------------------------------

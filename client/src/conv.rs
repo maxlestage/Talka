@@ -1147,6 +1147,7 @@ fn content(m: &Message) -> El {
                 )
                 .child(icon("download"))
         }
+        "brokey" => crate::brocoli::key_card(m),
         "contact" => {
             let code = m.code.clone();
             let name = m.name.clone();
@@ -1605,7 +1606,7 @@ fn snippet(m: &Message) -> String {
         return core::preview(m);
     }
     match m.kind.as_str() {
-        "image" | "voice" | "file" | "contact" => core::preview(m),
+        "image" | "voice" | "file" | "contact" | "brokey" => core::preview(m),
         _ => crate::jetons::masked(&m.text).chars().take(140).collect(),
     }
 }

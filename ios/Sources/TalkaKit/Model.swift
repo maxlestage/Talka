@@ -238,14 +238,17 @@ public struct BrocolisKey: Codable, Equatable, Identifiable, Sendable {
     public var name = ""
     /// 32 octets en base64.
     public var key = ""
+    /// Remplacée par une clé neuve : elle ouvre encore les anciens messages,
+    /// mais ne chiffre plus rien.
+    public var retired = false
 
-    public init(id: String, name: String, key: String) {
-        self.id = id; self.name = name; self.key = key
+    public init(id: String, name: String, key: String, retired: Bool = false) {
+        self.id = id; self.name = name; self.key = key; self.retired = retired
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = c.v(.id, ""); name = c.v(.name, ""); key = c.v(.key, "")
+        id = c.v(.id, ""); name = c.v(.name, ""); key = c.v(.key, ""); retired = c.v(.retired, false)
     }
 }
 

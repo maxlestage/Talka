@@ -82,3 +82,77 @@ final class BrocolisTokenTests: XCTestCase {
         XCTAssertFalse(m.summonsBrocoli(me: "WGSEAJNSZJ"))
     }
 }
+
+// Le partage d'une clé par Talka, son acceptation, son renouvellement : la
+// clé ne reste jamais dans les messages gardés, et la neuve remplace
+// l'ancienne des deux côtés. (Des tests `async`, comme WatchTests.)
+@MainActor
+final class BrocolisEngineTests: XCTestCase {
+    func phone() -> Engine {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-bro-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Léa", avatar: "")
+        return Engine(store: store, server: URL(string: "http://localhost:1")!)
+    }
+
+    func testFingerprintMatchesTheBrowser() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "vectors", withExtension: "json"))
+        let all = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let v = try XCTUnwrap(all["brocolis"] as? [String: Any])
+        let k1 = try XCTUnwrap((v["keys"] as? [[String: String]])?.first?["key"])
+        XCTAssertEqual(Brocolis.fingerprint(k1), v["fingerprint_k1"] as? String)
+        XCTAssertNil(Brocolis.fingerprint("pas une clé"))
+    }
+
+    func testSharingKeepsNoKeyInTheMessages() async throws {
+        let e = phone()
+        let chat = e.ensureDirectChat("K7Q2MX9PRT")
+        let k = try e.addBrocolisKey(name: "Nous", pasted: Brocolis.generateKey())
+        let m = try XCTUnwrap(e.shareBrocolisKey(chat.id, keyId: k.id))
+        XCTAssertEqual(m.kind, "brokey")
+        let stored = try XCTUnwrap(e.store.message(chat.id, m.id))
+        XCTAssertEqual(stored.data, "", "la clé ne reste pas dans les messages")
+        XCTAssertEqual(stored.code, k.id)
+        XCTAssertEqual(e.sharedKey(of: stored), k)
+        XCTAssertFalse(stored.bro, "une clé partagée ne se scelle pas")
+        XCTAssertEqual(Engine.preview(stored), "🥦 Clé Brocolis « Nous »")
+    }
+
+    func testAcceptingARenewedKeyRetiresTheOldOne() async throws {
+        let e = phone()
+        let chat = e.ensureDirectChat("K7Q2MX9PRT")
+        let old = try e.addBrocolisKey(name: "Nous", pasted: Brocolis.generateKey())
+        e.setChatBrocolis(chat.id, [old.id])
+        // Une clé neuve reçue, qui renouvelle l'ancienne.
+        let fresh = Brocolis.generateKey()
+        var m = Message(chat: chat.id, id: "m1", from: "K7Q2MX9PRT", at: 1,
+                        content: Content(kind: "brokey", data: fresh, name: "Nous", code: Brocolis.fingerprint(old.key)!))
+        e.store.writeMessage(m)
+        let k = try e.acceptBrocolisKey(m)
+        XCTAssertEqual(k.key, fresh)
+        XCTAssertEqual(e.chat(chat.id)?.brocolis, [k.id])
+        XCTAssertTrue(try XCTUnwrap(e.brocolisKeys.first { $0.id == old.id }).retired)
+        XCTAssertEqual(e.chatBrocolis(e.chat(chat.id)!).map(\.id), [k.id])
+        m = try XCTUnwrap(e.store.message(chat.id, "m1"))
+        XCTAssertEqual(m.data, "")
+        XCTAssertEqual(try e.acceptBrocolisKey(m), k, "accepter deux fois ne change rien")
+    }
+
+    func testRenewingReplacesTheKeyInItsChats() async throws {
+        let e = phone()
+        let chat = e.ensureDirectChat("K7Q2MX9PRT")
+        let old = try e.addBrocolisKey(name: "Nous", pasted: Brocolis.generateKey())
+        e.setChatBrocolis(chat.id, [old.id])
+        XCTAssertEqual(try e.renewBrocolisKey(old.id), 1)
+        let ids = try XCTUnwrap(e.chat(chat.id)?.brocolis)
+        XCTAssertEqual(ids.count, 1)
+        XCTAssertNotEqual(ids.first, old.id)
+        XCTAssertTrue(e.brocolisKeys.first { $0.id == old.id }!.retired)
+        // L'ancienne ouvre encore l'historique ; la neuve chiffre.
+        let sealed = Brocolis.seal("avant", keys: [Brocolis.key(base64: old.key)!])
+        XCTAssertEqual(Brocolis.open(sealed, keys: e.allBrocolisKeys).text, "avant")
+        let sent = try XCTUnwrap(e.send(chat.id, Content(text: "après")))
+        XCTAssertTrue(sent.bro)
+        XCTAssertEqual(sent.text, "après")
+    }
+}
