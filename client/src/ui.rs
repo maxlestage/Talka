@@ -65,6 +65,29 @@ pub fn color_of(code: &str) -> &'static str {
 }
 
 /// L'avatar d'un code, d'un groupe ou de soi : photo, sinon initiale colorée.
+/// L'avatar d'un contact avec sa pastille : verte s'il est en ligne, grise
+/// sinon. Ni pour un groupe, ni pour soi, ni pour un contact bloqué, ni si
+/// la pastille est désactivée dans les réglages.
+pub fn avatar_presence(id: &str, size: u32) -> Element {
+    let shown = core::settings().presence_dot
+        && id != core::my_code()
+        && !core::is_group(id)
+        && !core::blocked(id);
+    if !shown {
+        return avatar(id, size);
+    }
+    let online = matches!(core::presence(id), Some((true, _)));
+    h("span.avatar-wrap")
+        .child(avatar(id, size))
+        .child(
+            h("span.presence-dot")
+                .class_if("on", online)
+                .attr("role", "img")
+                .attr("aria-label", if online { "En ligne" } else { "Hors ligne" }),
+        )
+        .el()
+}
+
 pub fn avatar(id: &str, size: u32) -> Element {
     let px = format!("{size}px");
     let font = format!("{}px", (size as f64 * 0.42).round());
@@ -347,6 +370,10 @@ pub fn event(e: Ev) {
         Ev::Presence(code) => {
             if conv::current().as_deref() == Some(code.as_str()) {
                 conv::refresh_header();
+            }
+            // La pastille de la liste des discussions.
+            if core::settings().presence_dot {
+                queue_side();
             }
         }
         Ev::Typing(id) => {
@@ -867,7 +894,7 @@ fn chat_item(chat: &Chat) -> Element {
             "active",
             conv::current().as_deref() == Some(chat.id.as_str()),
         )
-        .child(avatar(&chat.id, 49))
+        .child(avatar_presence(&chat.id, 49))
         .child(
             h("div.chat-item-main")
                 .child(
@@ -2939,6 +2966,18 @@ pub async fn open_settings() {
                     "Vos contacts ne voient plus quand vous êtes connecté",
                     s.hide_online,
                     |v| spawn(core::save_settings(move |s| s.hide_online = v)),
+                ))
+                .child(toggle(
+                    "Pastille « en ligne »",
+                    "Un point vert sur l'avatar des contacts connectés, gris sinon",
+                    s.presence_dot,
+                    |v| {
+                        spawn(async move {
+                            core::save_settings(move |s| s.presence_dot = v).await;
+                            queue_side();
+                            conv::refresh_header();
+                        })
+                    },
                 ))
                 .child(setting(
                     "lock",
