@@ -156,3 +156,27 @@ final class BrocolisEngineTests: XCTestCase {
         XCTAssertEqual(sent.text, "après")
     }
 }
+
+// Une clé protégée par une phrase secrète : le vecteur commun avec le
+// navigateur et l'app Brocolis (iOS, Android).
+final class BrocolisProtectedKeyTests: XCTestCase {
+    func testMatchesTheSharedVector() throws {
+        let raw = Data((0..<32).map { UInt8($0) })
+        let token = try XCTUnwrap(Brocolis.protectKey(raw: raw, phrase: "brocoli vert 2026",
+                                                      salt: Data(repeating: 0x11, count: 16), nonce: Data(repeating: 0x22, count: 12)))
+        XCTAssertEqual(token, "[[BROCOLIS-CLE:v1:ERERERERERERERERERERESIiIiIiIiIiIiIiIsq57j18BXkqq/4VdIw82nQqzrax9Cfn2mfUJjWH8l327NAf2rWaSYCJh3BfGH4eWA==]]")
+        XCTAssertEqual(Brocolis.unprotectKey("Voici : \(token) !", phrase: "brocoli vert 2026"), raw.base64EncodedString())
+        XCTAssertNil(Brocolis.unprotectKey(token, phrase: "brocoli vert 2025"))
+    }
+
+    func testNeedsAPhraseAndHidesTheKey() throws {
+        let k = Brocolis.generateKey()
+        XCTAssertNil(Brocolis.protectKey(k, phrase: "court"))
+        let token = try XCTUnwrap(Brocolis.protectKey(k, phrase: "une phrase longue"))
+        XCTAssertTrue(Brocolis.hasProtectedKey(token))
+        XCTAssertFalse(token.contains(k))
+        XCTAssertEqual(Brocolis.unprotectKey(token, phrase: "une phrase longue"), k)
+        XCTAssertNil(Brocolis.unprotectKey(token.replacingOccurrences(of: "v1:", with: "v1:AAAA"), phrase: "une phrase longue"))
+        XCTAssertNil(Brocolis.findKey(in: token), "un jeton protégé n'est pas une clé en clair")
+    }
+}
