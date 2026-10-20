@@ -381,9 +381,13 @@ public struct OutItem: Codable, Equatable, Sendable {
     public var chat = ""
     public var msgId = ""
     public var seq: Double = 0
+    /// Le démarrage du relais qui a accepté ce message (`ready.boot`) : il est
+    /// gardé jusqu'à l'accusé de réception, et renvoyé si le relais a
+    /// redémarré entre-temps. Vide : pas encore parti.
+    public var boot = ""
 
     enum CodingKeys: String, CodingKey {
-        case id, to, payload, chat, seq
+        case id, to, payload, chat, seq, boot
         case msgId = "msg_id"
     }
 
@@ -394,7 +398,7 @@ public struct OutItem: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.v(.id, ""); to = c.v(.to, ""); payload = c.v(.payload, ""); chat = c.v(.chat, "")
-        msgId = c.v(.msgId, ""); seq = c.v(.seq, 0)
+        msgId = c.v(.msgId, ""); seq = c.v(.seq, 0); boot = c.v(.boot, "")
     }
 }
 

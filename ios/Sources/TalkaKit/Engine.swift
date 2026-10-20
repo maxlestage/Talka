@@ -346,11 +346,27 @@ public final class Engine {
         repeat {
             flushAgain = false
             let items = store.all("outbox", as: OutItem.self).sorted { $0.seq < $1.seq }
-            for item in items {
+            let boot = relay.boot
+            for var item in items {
                 guard relay.state == .online else { return }
+                // Déjà accepté par le relais : on attend l'accusé de réception,
+                // sauf si le relais a redémarré depuis (sa boîte aux lettres,
+                // en mémoire, est perdue) : alors on renvoie.
+                if !item.boot.isEmpty {
+                    if !stillUnconfirmed(item) {
+                        store.remove("outbox", item.id)
+                        continue
+                    }
+                    if item.boot == boot || boot.isEmpty { continue }
+                }
                 switch await sendNow(item, live: false) {
                 case .ok:
-                    store.remove("outbox", item.id)
+                    if !item.msgId.isEmpty, !boot.isEmpty {
+                        item.boot = boot
+                        store.write("outbox", item.id, item)
+                    } else {
+                        store.remove("outbox", item.id)
+                    }
                     if !item.msgId.isEmpty { markSent(item.chat, item.msgId, item.to) }
                 case .failed(let e) where e == "size" || e == "code":
                     store.remove("outbox", item.id)
@@ -367,6 +383,14 @@ public final class Engine {
                 }
             }
         } while flushAgain
+    }
+
+    /// Un message accepté par le relais attend-il encore l'accusé de réception
+    /// de ce destinataire ? Au-delà de 30 jours (la durée des boîtes aux
+    /// lettres), on n'insiste plus.
+    func stillUnconfirmed(_ item: OutItem) -> Bool {
+        guard let m = store.message(item.chat, item.msgId) else { return false }
+        return !m.deleted && !m.deliveredTo.contains(item.to) && nowMs() - m.at < 30 * dayMs
     }
 
     func markSent(_ chat: String, _ id: String, _ to: String) {
@@ -732,6 +756,8 @@ public final class Engine {
                 if !m.deliveredTo.contains(from) { m.deliveredTo.append(from) }
                 if st == "read", !m.readBy.contains(from) { m.readBy.append(from) }
                 store.writeMessage(m)
+                // Bien arrivé : plus besoin de le garder pour un renvoi.
+                store.remove("outbox", "\(id):\(from)")
             }
             bump(c.id)
         case let .react(id, emoji):
