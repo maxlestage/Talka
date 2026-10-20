@@ -5,12 +5,14 @@
 //! - [`crypto`] : les codes, les clés et le chiffrement — compilé aussi hors
 //!   du navigateur, pour les tests du serveur ;
 //! - [`model`] : ce que garde l'appareil et ce qui voyage, chiffré ;
-//! - le reste n'existe que dans le navigateur : la mémoire (`store`,
-//!   IndexedDB), le relais (`net`), la logique (`core`), l'interface (`ui`,
+//! - [`rows`] : ces données dans Memoire ORM (testé aussi hors du navigateur) ;
+//! - le reste n'existe que dans le navigateur : la mémoire (`store`, Memoire
+//!   gardé dans IndexedDB), le relais (`net`), la logique (`core`), l'interface (`ui`,
 //!   `conv`), les appels WebRTC (`calls`), le site (`site`).
 
 pub mod crypto;
 pub mod model;
+pub mod rows;
 
 #[cfg(target_arch = "wasm32")]
 mod calls;
