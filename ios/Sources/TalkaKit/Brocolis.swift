@@ -37,6 +37,16 @@ public enum Brocolis {
         return text.components(separatedBy: separators).first { key(base64: $0) != nil }
     }
 
+    /// L'empreinte d'une clé, à comparer de vive voix (`AB12-CD34-EF56-7890`) :
+    /// les 8 premiers octets de son SHA-256, comme le navigateur.
+    public static func fingerprint(_ keyBase64: String) -> String? {
+        guard let raw = Data(base64Encoded: keyBase64.trimmingCharacters(in: .whitespacesAndNewlines)), raw.count == 32 else {
+            return nil
+        }
+        let hex = SHA256.hash(data: raw).prefix(8).map { String(format: "%02X", $0) }.joined()
+        return stride(from: 0, to: hex.count, by: 4).map { String(hex.dropFirst($0).prefix(4)) }.joined(separator: "-")
+    }
+
     /// Une nouvelle clé, en base64.
     public static func generateKey() -> String {
         SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }.base64EncodedString()

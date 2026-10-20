@@ -212,7 +212,7 @@ pub async fn start() {
     let settings: Settings = store::read("kv", "settings").await.unwrap_or_default();
     let contacts: Vec<Contact> = store::all("contacts").await;
     let chats: Vec<Chat> = store::all("chats").await;
-    let brocolis: Vec<BrocolisKey> = store::read("kv", "brocolis").await.unwrap_or_default();
+    let brocolis = load_brocolis().await;
     let hidden = settings.hide_online;
     with(|s| {
         s.brocolis = brocolis;
@@ -435,17 +435,51 @@ pub async fn update_chat(id: &str, f: impl FnOnce(&mut Chat)) {
 }
 
 // ----- Brocolis 🥦 ----------------------------------------------------------
+//
+// Les clés de l'app Brocolis, gardées dans `kv/brocolis` ; avec un code de
+// verrouillage, chiffrées par lui dans `kv/brocolis_sealed` (PBKDF2 →
+// AES-256-GCM) et ouvertes au déverrouillage. En attendant, les jetons
+// reçus restent scellés, et s'ouvrent au déverrouillage.
+
+/// La clé qui scelle `kv/brocolis_sealed` (tirée du code), et son sel.
+#[derive(Clone)]
+struct KeyLock {
+    key: [u8; 32],
+    salt: String,
+}
+
+thread_local! {
+    static KEY_LOCK: RefCell<Option<KeyLock>> = const { RefCell::new(None) };
+    /// Les clés sont scellées et pas encore ouvertes.
+    static KEYS_LOCKED: Cell<bool> = const { Cell::new(false) };
+}
+
+const KEYS_LOCKED_MSG: &str = "Déverrouillez Talka pour utiliser vos clés Brocolis.";
+/// Le texte qu'affiche une version de Talka qui ne connaît pas les clés partagées.
+const SHARED_KEY_FALLBACK: &str = "🥦 Clé Brocolis partagée : mettez Talka à jour pour l'ajouter.";
+
+async fn load_brocolis() -> Vec<BrocolisKey> {
+    if store::read::<crypto::SealedKeys>("kv", "brocolis_sealed")
+        .await
+        .is_some()
+    {
+        KEYS_LOCKED.with(|l| l.set(true));
+        return Vec::new();
+    }
+    store::read("kv", "brocolis").await.unwrap_or_default()
+}
 
 pub fn brocolis_keys() -> Vec<BrocolisKey> {
     with(|s| s.brocolis.clone())
 }
 
-/// Les clés qui chiffrent ce qui part dans `c` (celles qui existent encore).
+/// Les clés qui chiffrent ce qui part dans `c` (celles qui existent encore,
+/// et pas celles qu'on a renouvelées).
 pub fn chat_brocolis(c: &Chat) -> Vec<BrocolisKey> {
     with(|s| {
         s.brocolis
             .iter()
-            .filter(|k| c.brocolis.contains(&k.id))
+            .filter(|k| !k.retired && c.brocolis.contains(&k.id))
             .cloned()
             .collect()
     })
@@ -462,7 +496,11 @@ fn seal_text(c: &Chat, text: &str) -> String {
 }
 
 /// Scelle le texte et la citation de `content` ; `true` si le texte l'a été.
+/// Une clé partagée ne se scelle pas : elle voyage dans le chiffrement de Talka.
 fn seal_content(c: &Chat, content: &mut Content) -> bool {
+    if content.kind == "brokey" {
+        return false;
+    }
     let sealed = seal_text(c, &content.text);
     let bro = sealed != content.text;
     content.text = sealed;
@@ -502,17 +540,97 @@ fn open_message(m: &mut Message) -> bool {
 
 async fn save_brocolis() {
     let keys = brocolis_keys();
-    store::write("kv", "brocolis", &keys).await;
+    let json = serde_json::to_string(&keys).unwrap_or_default();
+    match KEY_LOCK.with(|l| l.borrow().clone()) {
+        Some(lock) => {
+            if let Some(sealed) = crypto::seal_keys(&lock.key, &lock.salt, &json) {
+                store::write("kv", "brocolis_sealed", &sealed).await;
+                store::remove("kv", "brocolis").await;
+            }
+        }
+        None => {
+            store::write("kv", "brocolis", &keys).await;
+            store::remove("kv", "brocolis_sealed").await;
+        }
+    }
     emit(Ev::Settings);
 }
 
+/// Au déverrouillage : ouvre les clés scellées par le code (et scelle celles
+/// qui ne l'étaient pas encore), puis les messages qu'elles déverrouillent.
+pub async fn unlock_brocolis(pin: &str) {
+    if let Some(sealed) = store::read::<crypto::SealedKeys>("kv", "brocolis_sealed").await {
+        let Some(salt) = crypto::unb64(&sealed.salt) else {
+            return;
+        };
+        let key = crypto::pin_key(pin, &salt);
+        let Some(keys) = crypto::open_keys(&key, &sealed)
+            .and_then(|json| serde_json::from_str::<Vec<BrocolisKey>>(&json).ok())
+        else {
+            return;
+        };
+        KEY_LOCK.with(|l| {
+            *l.borrow_mut() = Some(KeyLock {
+                key,
+                salt: sealed.salt,
+            })
+        });
+        KEYS_LOCKED.with(|l| l.set(false));
+        with(|s| s.brocolis = keys);
+        emit(Ev::Settings);
+        reopen_messages().await;
+    } else if KEY_LOCK.with(|l| l.borrow().is_none()) {
+        protect_brocolis(Some(pin)).await;
+    }
+}
+
+/// Le code de verrouillage change : les clés sont scellées par le nouveau
+/// (ou gardées sans code, s'il est retiré).
+pub async fn protect_brocolis(pin: Option<&str>) {
+    if KEYS_LOCKED.with(Cell::get) {
+        return;
+    }
+    let lock = pin.map(|pin| {
+        let salt = crypto::random_bytes(16);
+        KeyLock {
+            key: crypto::pin_key(pin, &salt),
+            salt: crypto::b64(&salt),
+        }
+    });
+    KEY_LOCK.with(|l| *l.borrow_mut() = lock);
+    save_brocolis().await;
+}
+
+/// Les clés en clair, pour la sauvegarde (elle-même chiffrée par son mot de
+/// passe) : elle s'ouvre ainsi sur un autre appareil, iPhone compris.
+pub fn brocolis_for_backup() -> Option<Value> {
+    if KEYS_LOCKED.with(Cell::get) {
+        return None;
+    }
+    let json = serde_json::to_string(&brocolis_keys()).ok()?;
+    Some(Value::Array(vec![
+        Value::String("brocolis".into()),
+        Value::String(json),
+    ]))
+}
+
+fn check_unlocked() -> Result<(), &'static str> {
+    if KEYS_LOCKED.with(Cell::get) {
+        Err(KEYS_LOCKED_MSG)
+    } else {
+        Ok(())
+    }
+}
+
 /// Ajoute une clé (collée seule, ou dans l'invitation de l'app Brocolis),
-/// puis ouvre les messages déjà reçus qu'elle déverrouille.
+/// puis ouvre les messages déjà reçus qu'elle déverrouille. Une clé déjà là
+/// est renvoyée telle quelle.
 pub async fn add_brocolis_key(name: &str, pasted: &str) -> Result<BrocolisKey, &'static str> {
+    check_unlocked()?;
     let key =
         jetons::find_key(pasted).ok_or("Ce n'est pas une clé Brocolis (32 octets en base64).")?;
-    if brocolis_keys().iter().any(|k| k.key == key) {
-        return Err("Cette clé est déjà enregistrée.");
+    if let Some(k) = brocolis_keys().into_iter().find(|k| k.key == key) {
+        return Ok(k);
     }
     let n = brocolis_keys().len() + 1;
     let name = name.trim();
@@ -524,6 +642,7 @@ pub async fn add_brocolis_key(name: &str, pasted: &str) -> Result<BrocolisKey, &
             name.chars().take(40).collect()
         },
         key,
+        retired: false,
     };
     with(|s| s.brocolis.push(k.clone()));
     save_brocolis().await;
@@ -533,7 +652,7 @@ pub async fn add_brocolis_key(name: &str, pasted: &str) -> Result<BrocolisKey, &
 
 pub async fn rename_brocolis_key(id: &str, name: &str) {
     let name: String = name.trim().chars().take(40).collect();
-    if name.is_empty() {
+    if name.is_empty() || check_unlocked().is_err() {
         return;
     }
     with(|s| {
@@ -547,6 +666,9 @@ pub async fn rename_brocolis_key(id: &str, name: &str) {
 /// Oublie une clé : les discussions qu'elle chiffrait n'en ont plus besoin.
 /// Les messages déjà ouverts le restent.
 pub async fn remove_brocolis_key(id: &str) {
+    if check_unlocked().is_err() {
+        return;
+    }
     with(|s| s.brocolis.retain(|k| k.id != id));
     save_brocolis().await;
     for c in chats()
@@ -555,6 +677,138 @@ pub async fn remove_brocolis_key(id: &str) {
     {
         update_chat(&c.id, |c| c.brocolis.retain(|x| x != id)).await;
     }
+}
+
+/// Renouvelle une clé : une neuve, du même nom, la remplace dans toutes ses
+/// discussions et y est envoyée par Talka ; l'ancienne garde l'historique
+/// lisible mais ne chiffre plus rien. Renvoie le nombre de discussions.
+pub async fn renew_brocolis_key(id: &str) -> Result<usize, &'static str> {
+    check_unlocked()?;
+    let old = brocolis_keys()
+        .into_iter()
+        .find(|k| k.id == id)
+        .ok_or("Clé introuvable.")?;
+    let fresh = BrocolisKey {
+        id: crypto::random_id(6),
+        name: old.name.clone(),
+        key: jetons::generate_key(),
+        retired: false,
+    };
+    with(|s| {
+        if let Some(k) = s.brocolis.iter_mut().find(|k| k.id == id) {
+            k.retired = true;
+            k.name = format!("{} (ancienne)", old.name);
+        }
+        s.brocolis.push(fresh.clone());
+    });
+    save_brocolis().await;
+    let using: Vec<Chat> = chats()
+        .into_iter()
+        .filter(|c| c.brocolis.iter().any(|x| x == id))
+        .collect();
+    for c in &using {
+        let fresh_id = fresh.id.clone();
+        update_chat(&c.id, |c| {
+            for x in c.brocolis.iter_mut().filter(|x| *x == id) {
+                *x = fresh_id.clone();
+            }
+        })
+        .await;
+        share_brocolis_key(&c.id, &fresh.id, Some(&old)).await;
+    }
+    Ok(using.len())
+}
+
+/// Envoie une clé dans une discussion, par le chiffrement de bout en bout de
+/// Talka : plus besoin de la copier-coller ailleurs.
+///
+/// Sur le fil, `data` porte la clé et `code` l'empreinte de celle qu'elle
+/// remplace (un renouvellement). L'appareil, lui, ne garde jamais la clé
+/// dans ses messages une fois qu'elle est dans ses clés (scellées par le
+/// code) : `data` est vidé et `code` désigne la clé (son `id`).
+pub async fn share_brocolis_key(
+    chat_id: &str,
+    key_id: &str,
+    replaces: Option<&BrocolisKey>,
+) -> Option<Message> {
+    let k = brocolis_keys().into_iter().find(|k| k.id == key_id)?;
+    let mut m = send_message(
+        chat_id,
+        Content {
+            kind: "brokey".into(),
+            text: SHARED_KEY_FALLBACK.into(),
+            data: k.key,
+            name: k.name,
+            code: replaces
+                .and_then(|r| jetons::fingerprint(&r.key))
+                .unwrap_or_default(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    forget_shared_key(&mut m, &k.id).await;
+    Some(m)
+}
+
+async fn forget_shared_key(m: &mut Message, key_id: &str) {
+    m.data.clear();
+    m.code = key_id.to_owned();
+    store::write_message(m).await;
+    emit(Ev::Messages(m.chat.clone()));
+}
+
+/// La clé d'une bulle « clé partagée », si elle est dans vos clés.
+pub fn shared_key_of(m: &Message) -> Option<BrocolisKey> {
+    brocolis_keys().into_iter().find(|k| {
+        if m.data.is_empty() {
+            k.id == m.code
+        } else {
+            k.key == m.data
+        }
+    })
+}
+
+/// Ajoute une clé reçue dans une discussion et l'y active ; si elle en
+/// renouvelle une, l'ancienne n'y chiffre plus (elle garde l'historique).
+pub async fn accept_brocolis_key(chat_id: &str, m: &Message) -> Result<BrocolisKey, &'static str> {
+    if m.data.is_empty() {
+        return shared_key_of(m).ok_or("Cette clé a été oubliée.");
+    }
+    let k = add_brocolis_key(&m.name, &m.data).await?;
+    let old = (!m.code.is_empty())
+        .then(|| {
+            brocolis_keys()
+                .into_iter()
+                .find(|o| o.id != k.id && jetons::fingerprint(&o.key).as_deref() == Some(&m.code))
+        })
+        .flatten();
+    if let Some(old) = &old {
+        with(|s| {
+            if let Some(o) = s.brocolis.iter_mut().find(|o| o.id == old.id)
+                && !o.retired
+            {
+                o.retired = true;
+                o.name = format!("{} (ancienne)", o.name);
+            }
+        });
+        save_brocolis().await;
+    }
+    if let Some(c) = chat(chat_id) {
+        let mut ids: Vec<String> = c
+            .brocolis
+            .iter()
+            .filter(|x| old.as_ref().is_none_or(|o| &o.id != *x))
+            .cloned()
+            .collect();
+        if !ids.contains(&k.id) {
+            ids.push(k.id.clone());
+        }
+        set_chat_brocolis(chat_id, ids).await;
+    }
+    if let Some(mut stored) = get_message(chat_id, &m.id).await {
+        forget_shared_key(&mut stored, &k.id).await;
+    }
+    Ok(k)
 }
 
 /// Les clés qui chiffrent ce qui part dans une discussion (vide : aucune).
@@ -628,6 +882,7 @@ pub fn preview(m: &Message) -> String {
                 &m.name
             }
         ),
+        "brokey" => format!("🥦 Clé Brocolis « {} »", m.name),
         _ => jetons::masked(&m.text).into_owned(),
     }
 }
@@ -1496,12 +1751,17 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             if get_message(&c.id, &id).await.is_some() {
                 return; // déjà reçu
             }
-            let kind =
-                if ["text", "image", "voice", "file", "contact"].contains(&content.kind.as_str()) {
-                    content.kind
-                } else {
-                    "text".into()
-                };
+            // Une clé Brocolis partagée n'en est une que si elle est valide.
+            let shared_key =
+                content.kind == "brokey" && jetons::key_from_b64(&content.data).is_some();
+            let kind = if ["text", "image", "voice", "file", "contact"]
+                .contains(&content.kind.as_str())
+                || shared_key
+            {
+                content.kind
+            } else {
+                "text".into()
+            };
             let at = at.min(ts + 60_000.0);
             let mut m = Message {
                 chat: c.id.clone(),
@@ -1777,7 +2037,20 @@ pub async fn clear_calls() {
 // ----- Sauvegarde ------------------------------------------------------------
 
 pub async fn export_backup(password: &str) -> Option<String> {
-    let data = serde_json::json!({ "app": "talka", "at": now(), "data": store::dump().await });
+    let mut dump = store::dump().await;
+    // Les clés Brocolis y vont en clair (la sauvegarde a son mot de passe) :
+    // scellées par le code de cet appareil, elles ne s'ouvriraient pas ailleurs.
+    if let Some(row) = brocolis_for_backup()
+        && let Some(kv) = dump.get_mut("kv").and_then(Value::as_array_mut)
+    {
+        kv.retain(|r| {
+            r.get(0)
+                .and_then(Value::as_str)
+                .is_none_or(|k| k != "brocolis" && k != "brocolis_sealed")
+        });
+        kv.push(row);
+    }
+    let data = serde_json::json!({ "app": "talka", "at": now(), "data": dump });
     let backup = crypto::encrypt_backup(password, &data.to_string())?;
     serde_json::to_string(&backup).ok()
 }

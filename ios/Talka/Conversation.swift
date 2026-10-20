@@ -750,6 +750,8 @@ struct MessageRow: View {
             VoiceBubble(message: m)
         case "file":
             FileBubble(message: m)
+        case "brokey":
+            BrocolisKeyCard(engine: e, message: m)
         case "contact":
             ContactBubble(engine: e, message: m)
         default:
