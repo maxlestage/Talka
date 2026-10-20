@@ -425,6 +425,19 @@ mod tests {
     }
 
     #[test]
+    fn presence_dot_is_on_by_default_even_in_old_settings() {
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark","hide_online":true}"#).unwrap();
+        assert!(old.presence_dot);
+        assert!(old.hide_online);
+        let off = Settings {
+            presence_dot: false,
+            ..Settings::default()
+        };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(!back.presence_dot);
+    }
+
+    #[test]
     fn fold_ignores_case_and_accents() {
         assert_eq!(fold("École Où Ça"), "ecole ou ca");
         assert!(fold("Rendez-vous à la Crêperie").contains(&fold("creperie")));
