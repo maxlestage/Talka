@@ -29,6 +29,8 @@ struct ConversationView: View {
     @State private var search: String?
     /// Le message vers lequel faire défiler (bandeau de l'épingle).
     @State private var jumpTo: String?
+    /// Le choix des clés Brocolis 🥦 de la discussion.
+    @State private var choosingBrocolis = false
     /// La pluie de brocolis en cours (l'œuf de Pâques 🥦).
     @State private var brocolis: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -166,6 +168,10 @@ struct ConversationView: View {
                         Button { showInfo = true } label: {
                             Label(chat.group ? "Infos du groupe" : "Infos du contact", systemImage: "info.circle")
                         }
+                        Button { choosingBrocolis = true } label: {
+                            Label(chat.brocolis.isEmpty ? "Chiffrer avec Brocolis 🥦" : "Brocolis 🥦 : \(e.chatBrocolis(chat).map(\.name).joined(separator: ", "))",
+                                  systemImage: "lock.shield")
+                        }
                     } label: {
                         Image(systemName: "ellipsis")
                     }
@@ -237,6 +243,7 @@ struct ConversationView: View {
                 } pick: { code in forward(e, m, to: code) }
             }
             .sheet(item: $info) { m in MessageInfoSheet(engine: e, chat: chat, message: m) }
+            .sheet(isPresented: $choosingBrocolis) { BrocolisChatSheet(chatId: chatId) }
             .fullScreenCover(item: $viewing) { m in ImageViewer(engine: e, message: m) }
             .confirmationDialog("Supprimer le message ?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                                 titleVisibility: .visible, presenting: deleting) { m in
@@ -297,7 +304,7 @@ struct ConversationView: View {
                     Image(systemName: "pin.fill").foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(e.displayName(m.from)).font(.caption.bold())
-                        Text(m.kind == "text" ? m.text : Engine.preview(m))
+                        Text(m.kind == "text" ? Brocolis.masked(m.text) : Engine.preview(m))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -425,7 +432,7 @@ struct ConversationView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(editing != nil ? "Modifier le message" : e.displayName(m.from))
                                 .font(.caption.bold()).foregroundStyle(Color.talkaGreen)
-                            Text(m.kind == "text" ? m.text : Engine.preview(m)).font(.caption).lineLimit(2).foregroundStyle(.secondary)
+                            Text(m.kind == "text" ? Brocolis.masked(m.text) : Engine.preview(m)).font(.caption).lineLimit(2).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button {
@@ -472,7 +479,7 @@ struct ConversationView: View {
                                 .background(.regularMaterial, in: .circle)
                         }
                         .accessibilityLabel("Joindre")
-                        TextField("Message", text: $text, axis: .vertical)
+                        TextField(chat.brocolis.isEmpty ? "Message" : "Message chiffré par Brocolis 🥦", text: $text, axis: .vertical)
                             .lineLimit(1...6)
                             .focused($focused)
                             .padding(.horizontal, 12)
@@ -672,7 +679,7 @@ struct MessageRow: View {
                         RoundedRectangle(cornerRadius: 2).fill(Avatar.color(r.from)).frame(width: 4)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(e.displayName(r.from)).font(.caption.bold()).foregroundStyle(Avatar.color(r.from))
-                            Text(r.text).font(.caption).lineLimit(2).foregroundStyle(.secondary)
+                            Text(Brocolis.masked(r.text)).font(.caption).lineLimit(2).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 0)
                     }
@@ -704,6 +711,7 @@ struct MessageRow: View {
             HStack(spacing: 3) {
                 Spacer(minLength: 0)
                 if m.starred { Image(systemName: "star.fill").font(.caption2) }
+                if m.bro, !m.deleted { Text("🥦").font(.caption2).accessibilityLabel("Chiffré aussi par Brocolis") }
                 if m.exp != nil { Image(systemName: "timer").font(.caption2) }
                 if m.edited, !m.deleted { Text("modifié").font(.caption2) }
                 Text(Dates.clock(m.at)).font(.caption2)

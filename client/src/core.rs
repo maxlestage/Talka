@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use crate::crypto::{self, Identity};
 use crate::dom::{self, now, spawn};
+use crate::jetons;
 use crate::model::*;
 use crate::net::{self, Ack, State};
 use crate::store;
@@ -65,6 +66,7 @@ struct St {
     presence: HashMap<String, (bool, Option<f64>)>,
     typing: HashMap<String, HashMap<String, i32>>,
     active: Option<String>,
+    brocolis: Vec<BrocolisKey>,
 }
 
 thread_local! {
@@ -210,8 +212,10 @@ pub async fn start() {
     let settings: Settings = store::read("kv", "settings").await.unwrap_or_default();
     let contacts: Vec<Contact> = store::all("contacts").await;
     let chats: Vec<Chat> = store::all("chats").await;
+    let brocolis: Vec<BrocolisKey> = store::read("kv", "brocolis").await.unwrap_or_default();
     let hidden = settings.hide_online;
     with(|s| {
+        s.brocolis = brocolis;
         s.me = Some(identity.clone());
         s.profile = profile;
         s.settings = settings;
@@ -430,6 +434,152 @@ pub async fn update_chat(id: &str, f: impl FnOnce(&mut Chat)) {
     }
 }
 
+// ----- Brocolis 🥦 ----------------------------------------------------------
+
+pub fn brocolis_keys() -> Vec<BrocolisKey> {
+    with(|s| s.brocolis.clone())
+}
+
+/// Les clés qui chiffrent ce qui part dans `c` (celles qui existent encore).
+pub fn chat_brocolis(c: &Chat) -> Vec<BrocolisKey> {
+    with(|s| {
+        s.brocolis
+            .iter()
+            .filter(|k| c.brocolis.contains(&k.id))
+            .cloned()
+            .collect()
+    })
+}
+
+fn raw_keys(keys: &[BrocolisKey]) -> Vec<jetons::Key> {
+    keys.iter()
+        .filter_map(|k| jetons::key_from_b64(&k.key))
+        .collect()
+}
+
+fn seal_text(c: &Chat, text: &str) -> String {
+    jetons::seal(text, &raw_keys(&chat_brocolis(c)))
+}
+
+/// Scelle le texte et la citation de `content` ; `true` si le texte l'a été.
+fn seal_content(c: &Chat, content: &mut Content) -> bool {
+    let sealed = seal_text(c, &content.text);
+    let bro = sealed != content.text;
+    content.text = sealed;
+    if let Some(r) = content.reply.as_mut() {
+        r.text = seal_text(c, &r.text);
+    }
+    bro
+}
+
+/// Ouvre les jetons de `text` avec toutes vos clés.
+pub fn open_brocolis(text: &str) -> jetons::Opened {
+    jetons::open(text, &raw_keys(&brocolis_keys()))
+}
+
+/// Ouvre les jetons d'un message et de sa citation ; `true` si l'un l'a été.
+fn open_message(m: &mut Message) -> bool {
+    let mut changed = false;
+    if jetons::has_token(&m.text) {
+        let o = open_brocolis(&m.text);
+        if o.opened > 0 {
+            m.text = o.text;
+            m.bro = true;
+            changed = true;
+        }
+    }
+    if let Some(r) = m.reply.as_mut()
+        && jetons::has_token(&r.text)
+    {
+        let o = open_brocolis(&r.text);
+        if o.opened > 0 {
+            r.text = o.text;
+            changed = true;
+        }
+    }
+    changed
+}
+
+async fn save_brocolis() {
+    let keys = brocolis_keys();
+    store::write("kv", "brocolis", &keys).await;
+    emit(Ev::Settings);
+}
+
+/// Ajoute une clé (collée seule, ou dans l'invitation de l'app Brocolis),
+/// puis ouvre les messages déjà reçus qu'elle déverrouille.
+pub async fn add_brocolis_key(name: &str, pasted: &str) -> Result<BrocolisKey, &'static str> {
+    let key =
+        jetons::find_key(pasted).ok_or("Ce n'est pas une clé Brocolis (32 octets en base64).")?;
+    if brocolis_keys().iter().any(|k| k.key == key) {
+        return Err("Cette clé est déjà enregistrée.");
+    }
+    let n = brocolis_keys().len() + 1;
+    let name = name.trim();
+    let k = BrocolisKey {
+        id: crypto::random_id(6),
+        name: if name.is_empty() {
+            format!("Clé {n}")
+        } else {
+            name.chars().take(40).collect()
+        },
+        key,
+    };
+    with(|s| s.brocolis.push(k.clone()));
+    save_brocolis().await;
+    reopen_messages().await;
+    Ok(k)
+}
+
+pub async fn rename_brocolis_key(id: &str, name: &str) {
+    let name: String = name.trim().chars().take(40).collect();
+    if name.is_empty() {
+        return;
+    }
+    with(|s| {
+        if let Some(k) = s.brocolis.iter_mut().find(|k| k.id == id) {
+            k.name = name;
+        }
+    });
+    save_brocolis().await;
+}
+
+/// Oublie une clé : les discussions qu'elle chiffrait n'en ont plus besoin.
+/// Les messages déjà ouverts le restent.
+pub async fn remove_brocolis_key(id: &str) {
+    with(|s| s.brocolis.retain(|k| k.id != id));
+    save_brocolis().await;
+    for c in chats()
+        .into_iter()
+        .filter(|c| c.brocolis.iter().any(|x| x == id))
+    {
+        update_chat(&c.id, |c| c.brocolis.retain(|x| x != id)).await;
+    }
+}
+
+/// Les clés qui chiffrent ce qui part dans une discussion (vide : aucune).
+pub async fn set_chat_brocolis(chat_id: &str, ids: Vec<String>) {
+    update_chat(chat_id, |c| c.brocolis = ids).await;
+    emit(Ev::Messages(chat_id.to_owned()));
+}
+
+/// Les messages gardés avec des jetons qu'une nouvelle clé peut ouvrir.
+async fn reopen_messages() {
+    for c in chats() {
+        let mut any = false;
+        for mut m in store::messages_of(&c.id, usize::MAX).await {
+            if open_message(&mut m) {
+                store::write_message(&m).await;
+                any = true;
+            }
+        }
+        if any {
+            refresh_last(&c.id).await;
+            emit(Ev::Messages(c.id.clone()));
+        }
+    }
+}
+
 pub async fn delete_chat(id: &str) {
     store::delete_messages_of(id).await;
     store::remove("chats", id).await;
@@ -459,7 +609,8 @@ pub fn preview(m: &Message) -> String {
         return "⏳ Capsule temporelle".into();
     }
     match m.kind.as_str() {
-        "image" => format!("📷 {}", if m.text.is_empty() { "Photo" } else { &m.text }),
+        "image" if m.text.is_empty() => "📷 Photo".into(),
+        "image" => format!("📷 {}", jetons::masked(&m.text)),
         "voice" => format!("🎙️ Message vocal ({})", dom::fmt_dur(m.dur)),
         "file" => format!(
             "📄 {}",
@@ -477,7 +628,7 @@ pub fn preview(m: &Message) -> String {
                 &m.name
             }
         ),
-        _ => m.text.clone(),
+        _ => jetons::masked(&m.text).into_owned(),
     }
 }
 
@@ -691,8 +842,11 @@ fn envelope(chat: &Chat, body: Body) -> Wire {
 }
 
 /// Envoie un message dans une discussion.
-pub async fn send_message(chat_id: &str, content: Content) -> Option<Message> {
+pub async fn send_message(chat_id: &str, mut content: Content) -> Option<Message> {
     let c = chat(chat_id)?;
+    // Brocolis 🥦 : le texte part scellé ; l'appareil garde le clair.
+    let plain = content.clone();
+    let bro = seal_content(&c, &mut content);
     let id = crypto::random_id(12);
     let at = net::server_now();
     let to: Vec<String> = recipients_of(&c)
@@ -710,24 +864,27 @@ pub async fn send_message(chat_id: &str, content: Content) -> Option<Message> {
             "pending".into()
         },
         to: to.clone(),
-        kind: content.kind.clone(),
-        text: content.text.clone(),
-        data: content.data.clone(),
-        name: content.name.clone(),
-        mime: content.mime.clone(),
-        size: content.size,
-        dur: content.dur,
-        w: content.w,
-        h: content.h,
-        code: content.code.clone(),
-        reply: content.reply.clone(),
-        fwd: content.fwd,
-        open_at: content.open_at,
+        kind: plain.kind,
+        text: plain.text,
+        data: plain.data,
+        name: plain.name,
+        mime: plain.mime,
+        size: plain.size,
+        dur: plain.dur,
+        w: plain.w,
+        h: plain.h,
+        code: plain.code,
+        reply: plain.reply,
+        fwd: plain.fwd,
+        open_at: plain.open_at,
+        bro,
         ..Default::default()
     };
     if c.timer > 0 {
         m.exp = Some(at + c.timer as f64 * 1000.0);
     }
+    // Un jeton collé (clavier Brocolis) s'affiche ouvert, s'il est pour vous.
+    open_message(&mut m);
     store_message(&m, true).await;
     // Le nom choisi voyage avec le message : un membre de groupe qui ne vous
     // connaît pas voit « ~Alice » plutôt qu'un code.
@@ -796,6 +953,8 @@ pub async fn edit_message(chat_id: &str, msg_id: &str, text: &str) {
     }
     m.text = text.to_owned();
     m.edited = true;
+    let sealed = seal_text(&c, text);
+    m.bro = sealed != text;
     store::write_message(&m).await;
     refresh_last(chat_id).await;
     emit(Ev::Messages(chat_id.to_owned()));
@@ -803,7 +962,7 @@ pub async fn edit_message(chat_id: &str, msg_id: &str, text: &str) {
         &c,
         Body::Edit {
             id: msg_id.to_owned(),
-            text: text.to_owned(),
+            text: sealed,
         },
         false,
     )
@@ -1372,6 +1531,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             if let Some(ttl) = wire.ttl {
                 m.exp = Some(at + ttl as f64 * 1000.0);
             }
+            open_message(&mut m);
             if let Some(mut sender) = contact(from)
                 && sender.profile_name.is_empty()
                 && !pn.is_empty()
@@ -1461,7 +1621,10 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             if m.from != from || m.deleted {
                 return;
             }
-            m.text = text.chars().take(65_536).collect();
+            let text: String = text.chars().take(65_536).collect();
+            let o = open_brocolis(&text);
+            m.bro = o.opened > 0;
+            m.text = o.text;
             m.edited = true;
             store::write_message(&m).await;
             refresh_last(&c.id).await;

@@ -1,57 +1,77 @@
 {
   "a": {
-    "code": "5WPP4SFUJY",
+    "code": "LYQ529STE4",
     "created_at": 1700000000000.0,
-    "dh": "BK5tQt58wLsYSCicbxF00DVDm3o19tIGGkSUUHLXa+DUQtgp2SqDVusOlw3kFQvC+vKC6uzT7dCNVRJ3mG3dN9E=",
-    "dh_priv": "TBENg3DN3VTnPiiDtQqAg+gIwQy5VwznL61YCkT3NbE=",
-    "sign": "BGgj2pRKHFXnJ+ssmOisw2PrdvLBUZU33FJw43G3xvRhpM+rIOaZ6LwkM+FNaYSxAPuq+0zv0vKPQaK7Oq5QLuw=",
-    "sign_priv": "T9PiqVW2gcd4eWRYcdCF79H9xN3xY2C4vIsCVvh3fKg="
+    "dh": "BAH+wzCN7nu9bwl2AY7LtzBZkWFtUH1yTPfnmpSepruIb6WmnX6cHGS/szWgSkH4C++YHJdVhXwldqnzo7DmieE=",
+    "dh_priv": "C96TcIKnG9Tc5xNdCI7Vklk8bJzDNpwSOKsI1UOW0Ow=",
+    "sign": "BDxb1DDYDS1i/HJM3VLqLPQtmjTXAjEQiL+9KNHFxKExPmOloc9RE8ZA4c3IpsoiawmqE++YbpB6muLLrTlh0PQ=",
+    "sign_priv": "TLHVjMs+lEygW/V+HI6j2v6KJeLLE0qKaRiQ35stkto="
   },
   "b": {
-    "code": "KZE76BRA35",
+    "code": "YA3MUBMRN3",
     "created_at": 1700000000000.0,
-    "dh": "BO2l6nNU4SvYQTdVO2Zx4td6yK1jgQ2Zym7SR6apyzOjmZU0uiSEBHpKrddtGlBVJxjyyIiyYFW/BzSjddKBVHY=",
-    "dh_priv": "o2nobqWHoMKpKJo8xVF2yQWNt5GYVR7TNIEWZUVVVcc=",
-    "sign": "BEUP5ZetekKkkJgY+3zMhQ8We0aXl0megF9g7N6a1SRcFk+OGFQ56hilRBUlTbDgqt6LZJssfC7sDP6rrPI9/BY=",
-    "sign_priv": "ZD6lUo/OwRDVXvk2M+38mIiFdGKzWTZh/DiDjcJ3buA="
+    "dh": "BDQUlTG6B5gKDQm1j8rvqKaKM1G+EGfSC6DX3oi6VYXezCHB1JIqA1RFqiZw5clMOCoJLIlgKWDh7WtRtO5XOwk=",
+    "dh_priv": "esdjP0XjrZ2pUVhTnNWm4Y00UOtwmO+lOAO8PgR+xY0=",
+    "sign": "BCsNNHBznZ9PSJi/+gH9gUmCFFxHB+0fsUHJ+uSOZX+KnnBJzCCAnrhTtn1OEfxddU1eIjTkBCNBjf+NXGJ6Xkc=",
+    "sign_priv": "fMsDFf8+beCrbl1zMYO3v1MSSCh5GpXFte2rwWOPuZI="
   },
   "backup": {
     "file": {
-      "data": "+M1hQkkqkDOIB0U9VvplI0pRZD2ZxQQzV2aQW2VmAFBqmMR7NRT7Fn72QiBsqtJZVf3DhjkgGG45vOWzWeaUiizAx+k6FzPI1ImOtNnjYqjkLfk82MH3xYf25zRBwN3J1x4AqOA/QYDCq03jLPiKwMXQJ1bxTtaHSEu1F2j5TXMpTfirGvb5LzrzZZgrE7MQwyuqYG/2pi4/xhRe7Ukg4OrN46uK9rBROyK3bFs8lrNnM9kVkGhOtFicf9K0+jOsKejiATYcXXMgBtc2dDyWz+x3NoZZG4PnoGudlILIDyInRDZR4IcKWKM0FqeLpHxmBDsHUVakAJho9OB9+LoGOUMBdvqC9Le5pi49uAmiZnWsp2zQUT82YxpDV4HT+Wq9KNoMAgyKgVedIc9iYqHrAaCTJjZLdefdaQxZODtnMfaKsKczbvWXnHezqBvnCdexHEEI59ZS3U2PN/SDUtBx9AuUQp03H4ES7NKLkx7XML2J0W3orNeiW2jR+3F/fUPhNAnmKFRbJUI0og1fBswmV37Of8PrpQ8vRjVFwnOy2w5o9uTHTPYn+Dhj5QMsgIucIAQ/Xos3TVtAbKposgQpay81NRw+bQ==",
-      "iv": "zXOIkRAZqEEMZSGu",
-      "salt": "eVvQWZOeBbcbvedLE9xTVA==",
+      "data": "JH7kyuWI5UDq30eVYnSYbmf7ksrSA4ih9YZ2HrMRgPafyNJV9XppCQtXh2oyeB8t7QYbNyZDoQhescpVACnwsr9OFg2m/4M5nnYj9bnlPBfybfDFlC6eIDaaGRlBtxxj/OifjJNIxzUn31ukDoDFfig5L/t+WdhhmGbJ6jUdDSUFm5ohMDzJLHmUQR80iG2VVGDX/9oArraInKOVskUIareu9wZG84DQB6CEHo9bgTdTE5kjiTNubiy92ZvMLibt/BTq1jq91W/35OqcWl22HtQXuyHMYY7yalqvYbMQxvn48cptBFs4Z8Xx56MmI7yYrd8+7Mf3zFstTqw6HJQbNVoVpjTkLTMfet7BVcXyJsIQQQyu2MS+kynaGFygicbO6NbG1DnHYrLrP9BPqD3avEp9iceUHzNakb51Hj4kElMffhq8OVnG4nlpUqPGMIMKeoN5JM5e1DHyaFg0CAWax12+tkGeyv9d0cSVD3n7YfVpXZ700vPD/P30uv/alL6JsYFMtMjMJfE5ZTKD7g1YY1lOCbqgnon95n8Jnso62j8T6MRqD9WUEVzaFNggkuCA7Pkyw0Fcw0reziCQTXuNBW6/Xj+twg==",
+      "iv": "2diGb3jZsZYl0tP4",
+      "salt": "xzO4iFW3rEz9M3PyIhPsrg==",
       "talka": 2
     },
     "password": "motdepasse",
-    "plain": "{\"app\":\"talka\",\"at\":1.0,\"data\":{\"kv\":[[\"identity\",\"{\\\"code\\\":\\\"5WPP4SFUJY\\\",\\\"sign\\\":\\\"BGgj2pRKHFXnJ+ssmOisw2PrdvLBUZU33FJw43G3xvRhpM+rIOaZ6LwkM+FNaYSxAPuq+0zv0vKPQaK7Oq5QLuw=\\\",\\\"dh\\\":\\\"BK5tQt58wLsYSCicbxF00DVDm3o19tIGGkSUUHLXa+DUQtgp2SqDVusOlw3kFQvC+vKC6uzT7dCNVRJ3mG3dN9E=\\\",\\\"sign_priv\\\":\\\"T9PiqVW2gcd4eWRYcdCF79H9xN3xY2C4vIsCVvh3fKg=\\\",\\\"dh_priv\\\":\\\"TBENg3DN3VTnPiiDtQqAg+gIwQy5VwznL61YCkT3NbE=\\\",\\\"created_at\\\":1700000000000.0}\"]]}}"
+    "plain": "{\"app\":\"talka\",\"at\":1.0,\"data\":{\"kv\":[[\"identity\",\"{\\\"code\\\":\\\"LYQ529STE4\\\",\\\"sign\\\":\\\"BDxb1DDYDS1i/HJM3VLqLPQtmjTXAjEQiL+9KNHFxKExPmOloc9RE8ZA4c3IpsoiawmqE++YbpB6muLLrTlh0PQ=\\\",\\\"dh\\\":\\\"BAH+wzCN7nu9bwl2AY7LtzBZkWFtUH1yTPfnmpSepruIb6WmnX6cHGS/szWgSkH4C++YHJdVhXwldqnzo7DmieE=\\\",\\\"sign_priv\\\":\\\"TLHVjMs+lEygW/V+HI6j2v6KJeLLE0qKaRiQ35stkto=\\\",\\\"dh_priv\\\":\\\"C96TcIKnG9Tc5xNdCI7Vklk8bJzDNpwSOKsI1UOW0Ow=\\\",\\\"created_at\\\":1700000000000.0}\"]]}}"
+  },
+  "brocolis": {
+    "keys": [
+      {
+        "id": "k1",
+        "key": "YlwRIj9TmfwUYEqB/6GS/GUyuN2VB66fD6OwJw1zLgs=",
+        "name": "Bob"
+      },
+      {
+        "id": "k2",
+        "key": "Ie2Z71cbvIw+OLOnnmIdfTenOUIxKShDsFQhDH5C7Uw=",
+        "name": "Travail"
+      }
+    ],
+    "marked": "On se voit [[BROCOLIS:v1:Zl5Xu9M1Wzx0yAmA59F9HE+JwOl/YfyDCA+Jh92FZVgYzT4=]] demain",
+    "marked_plain": "On se voit au parc demain",
+    "v1": "[[BROCOLIS:v1:Z79eJvwQ2PJp9YwgtfM7LU7nIAGFabrNVgzQrmMgFQfV7nGCTbQQHx5Go7HU65f4gK87V0vD9Q==]]",
+    "v1_plain": "Le code du portail est 4521",
+    "v2": "[[BROCOLIS:v2:AQLhyuWytzLhfuOn9+zfZ/RejL26pVVR3xMcJanUx5GG59G0qeNEgzm3s1JiyhpC5V9CnLmiKjA52JKbCR1pe2KxBtayx6dJNV9ExNOFLXsqUom8YpKTpcAaI4E9IM23RdQzdduU5QKJZxV76l6FA2QAq+0N58O1ttbXbjmAwlIEEmseEKeehrvisOrkb9txVZMfPvc/hf+XSVMNqInhYr/9]]",
+    "v2_plain": "À tous 🥦"
   },
   "challenge": {
     "nonce": "abc",
-    "sig": "vCbVElyQ1GGRNVZmHxXAgPzuPjrPr0tIb3NmIINkUzJ8uWkBM/k8YDwbwkcAF6NJNVa+0Rck8cABo7tTEYR+LQ=="
+    "sig": "HPKsknWr6LdJwsrbz26UGs+iaoV2SnfMKLs8dPBwhPFum0hcjsWsrlDzI0ZO4yfz0k1ZReRqU/1pCzV8mGVSUA=="
   },
   "code_of_empty": "WGSEAJNSZJ",
   "pin": {
     "hash": {
-      "hash": "47Z/vCDNC+QBFueH3gql7uDIolCYlRNi+asQsY3y3xA=",
-      "salt": "T7PgnplA8myOD39yVV9DZQ=="
+      "hash": "7ZxbWmYwKiYUebPKNJxbyW9dXudZFPSdXpyymGAlNu0=",
+      "salt": "S7kMGxGUTpfLFAHCMCWYGA=="
     },
     "pin": "2580"
   },
-  "plain": "{\"k\":\"msg\",\"id\":\"m1\",\"at\":1700000000123.0,\"pn\":\"Léa\",\"kind\":\"text\",\"text\":\"Salut 👋 *Talka*\",\"data\":\"\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":0,\"h\":0,\"code\":\"\",\"reply\":{\"id\":\"m0\",\"from\":\"5WPP4SFUJY\",\"text\":\"avant\"},\"fwd\":false,\"grp\":{\"id\":\"g1\",\"name\":\"Les amis\",\"members\":[\"5WPP4SFUJY\",\"KZE76BRA35\"],\"admins\":[\"5WPP4SFUJY\"],\"avatar\":\"\",\"v\":3},\"ttl\":86400}",
-  "safety": "30611 37675 20828 62602 30825 43679 36547 26091 02961 55441 45665 22547",
-  "sealed_a_to_b": "fHLBCE2AfImIJcg489bmq/RiCDUNfko7+zL5Yz9NYnQxx4aFgZgCkO6v1NPV+pASd+jjM7SB8nG/fJxdiwqZ6o1qIInScHBg6Kwdydn2uhTDMn/Ez36CVvH3Xd3QbKVFHs4drHvCfTHGdesWf1f22UBzsLlUoCH/BmaFjRd6eaicEBtFf4d17akYtXP2kDSP+BA8QoYTs+wYn2vKumzUs+/H76lUOtTM200dNsgwFtgLYdyktdqjkWbFzr3wmd6tA/BVQkm+TCfbWoA4urRgmvDiIwsjdNORZOtkj/X/7quj07pjoI0H4RVEROUcpeizWb/AgahkPhNobRmzjnLyHySAXhTL0LS0a7aU7NqKnuaTWKeoZ8eJrd1oJRMC2Yxf9+tj62d7oWLNr0QKdtIqiEW6OytnsHr92PtFOCf/60VqNQ68eFC82HvA6eVv12wjAaWVhFP0PWGHkpBjInQSsDIrW3fhUuk1IcrqL0CqKE4JvvIcMiKp+aKal4ALH2TQloKKGHiIiBI=",
+  "plain": "{\"k\":\"msg\",\"id\":\"m1\",\"at\":1700000000123.0,\"pn\":\"Léa\",\"kind\":\"text\",\"text\":\"Salut 👋 *Talka*\",\"data\":\"\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":0,\"h\":0,\"code\":\"\",\"reply\":{\"id\":\"m0\",\"from\":\"LYQ529STE4\",\"text\":\"avant\"},\"fwd\":false,\"grp\":{\"id\":\"g1\",\"name\":\"Les amis\",\"members\":[\"LYQ529STE4\",\"YA3MUBMRN3\"],\"admins\":[\"LYQ529STE4\"],\"avatar\":\"\",\"v\":3},\"ttl\":86400}",
+  "safety": "47847 07401 61920 15083 02425 34061 55745 44897 47634 63957 14994 21617",
+  "sealed_a_to_b": "dL/P2oyPyu9mnAOCy3cFaBUU9PY5NbGXSHPEqLHaz1/v2wggEkW0n4/ys342s9ry25RYMUl56hYnj85jlxc6cItlF8kIOjFrTGzbWSa4V1CAgS92vLMlbeIzvogARPGV/ybUM4HajQfwnPUeZW9PfiBjX37a2PIOCNWL61BpnmSkJp1JyK17xuUncPDFRtJl9v+z3vT82U2n2K7cuAcjZ8wRpoHuZiAXV5lM6q1FKbopMIZcntvVQkL+5/BfCGBvFikNymPkhyRhJuzQcYkZQm77CYIyHT592LUaAWFywmHU/QhKpCAyzScOaKgGo9xGgvWTaleNlWFMaebPDhHx8vz0l/89/MV5frfisHSVRM2Zp406GQxG82tc+20QYkpFsbUZeYUEEQYlBtPzCdqkT7iUI1nAjLb43gtWSqfxQ8XARv7HCak0yXCMe4tTLzup30OyKS8ULuh/GFgO4D98jUn2BP2sVfeV0LDDuLZXQqEV45GYGlhYx6+h/doQjYA2RGTfekiw8Q8=",
   "store": {
-    "call": "{\"id\":\"c1\",\"peer\":\"KZE76BRA35\",\"video\":true,\"incoming\":true,\"at\":1.0,\"dur\":42.0,\"missed\":false}",
-    "chat": "{\"id\":\"g:g1\",\"group\":true,\"name\":\"Les amis\",\"avatar\":\"\",\"members\":[\"5WPP4SFUJY\",\"KZE76BRA35\"],\"admins\":[],\"created_by\":\"\",\"created_at\":0.0,\"last_at\":0.0,\"unread\":0,\"marked_unread\":false,\"pinned\":false,\"archived\":false,\"muted\":false,\"timer\":0,\"draft\":\"\",\"wallpaper\":\"\",\"left\":false,\"v\":0,\"last\":{\"id\":\"m1\",\"from\":\"5WPP4SFUJY\",\"text\":\"📷 Photo\",\"at\":1.0,\"kind\":\"image\"},\"has_exp\":false,\"pin_msg\":\"\"}",
-    "contact": "{\"code\":\"KZE76BRA35\",\"name\":\"Bob\",\"profile_name\":\"\",\"about\":\"\",\"avatar\":\"\",\"sign\":\"BEUP5ZetekKkkJgY+3zMhQ8We0aXl0megF9g7N6a1SRcFk+OGFQ56hilRBUlTbDgqt6LZJssfC7sDP6rrPI9/BY=\",\"dh\":\"BO2l6nNU4SvYQTdVO2Zx4td6yK1jgQ2Zym7SR6apyzOjmZU0uiSEBHpKrddtGlBVJxjyyIiyYFW/BzSjddKBVHY=\",\"blocked\":false,\"saved\":true,\"added_at\":0.0,\"profile_v\":0,\"sent_profile_v\":0}",
-    "message": "{\"chat\":\"KZE76BRA35\",\"id\":\"m1\",\"from\":\"5WPP4SFUJY\",\"at\":1.0,\"kind\":\"image\",\"text\":\"\",\"data\":\"data:image/jpeg;base64,AAAA\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":4,\"h\":3,\"code\":\"\",\"reply\":null,\"fwd\":false,\"status\":\"\",\"to\":[\"KZE76BRA35\"],\"sent_to\":[\"KZE76BRA35\"],\"delivered_to\":[],\"read_by\":[],\"reactions\":{\"KZE76BRA35\":\"👍\"},\"edited\":false,\"deleted\":false,\"starred\":false,\"exp\":2.0,\"read_by_me\":false}",
-    "outbox": "{\"id\":\"m1:X\",\"to\":\"KZE76BRA35\",\"payload\":\"{\\\"k\\\":\\\"msg\\\",\\\"id\\\":\\\"m1\\\",\\\"at\\\":1700000000123.0,\\\"pn\\\":\\\"Léa\\\",\\\"kind\\\":\\\"text\\\",\\\"text\\\":\\\"Salut 👋 *Talka*\\\",\\\"data\\\":\\\"\\\",\\\"name\\\":\\\"\\\",\\\"mime\\\":\\\"\\\",\\\"size\\\":0.0,\\\"dur\\\":0.0,\\\"w\\\":0,\\\"h\\\":0,\\\"code\\\":\\\"\\\",\\\"reply\\\":{\\\"id\\\":\\\"m0\\\",\\\"from\\\":\\\"5WPP4SFUJY\\\",\\\"text\\\":\\\"avant\\\"},\\\"fwd\\\":false,\\\"grp\\\":{\\\"id\\\":\\\"g1\\\",\\\"name\\\":\\\"Les amis\\\",\\\"members\\\":[\\\"5WPP4SFUJY\\\",\\\"KZE76BRA35\\\"],\\\"admins\\\":[\\\"5WPP4SFUJY\\\"],\\\"avatar\\\":\\\"\\\",\\\"v\\\":3},\\\"ttl\\\":86400}\",\"chat\":\"KZE76BRA35\",\"msg_id\":\"m1\",\"seq\":1.0,\"boot\":\"B00T\"}",
+    "call": "{\"id\":\"c1\",\"peer\":\"YA3MUBMRN3\",\"video\":true,\"incoming\":true,\"at\":1.0,\"dur\":42.0,\"missed\":false}",
+    "chat": "{\"id\":\"g:g1\",\"group\":true,\"name\":\"Les amis\",\"avatar\":\"\",\"members\":[\"LYQ529STE4\",\"YA3MUBMRN3\"],\"admins\":[],\"created_by\":\"\",\"created_at\":0.0,\"last_at\":0.0,\"unread\":0,\"marked_unread\":false,\"pinned\":false,\"archived\":false,\"muted\":false,\"timer\":0,\"draft\":\"\",\"wallpaper\":\"\",\"left\":false,\"v\":0,\"last\":{\"id\":\"m1\",\"from\":\"LYQ529STE4\",\"text\":\"📷 Photo\",\"at\":1.0,\"kind\":\"image\"},\"has_exp\":false,\"pin_msg\":\"\",\"brocolis\":[\"k1\"]}",
+    "contact": "{\"code\":\"YA3MUBMRN3\",\"name\":\"Bob\",\"profile_name\":\"\",\"about\":\"\",\"avatar\":\"\",\"sign\":\"BCsNNHBznZ9PSJi/+gH9gUmCFFxHB+0fsUHJ+uSOZX+KnnBJzCCAnrhTtn1OEfxddU1eIjTkBCNBjf+NXGJ6Xkc=\",\"dh\":\"BDQUlTG6B5gKDQm1j8rvqKaKM1G+EGfSC6DX3oi6VYXezCHB1JIqA1RFqiZw5clMOCoJLIlgKWDh7WtRtO5XOwk=\",\"blocked\":false,\"saved\":true,\"added_at\":0.0,\"profile_v\":0,\"sent_profile_v\":0}",
+    "message": "{\"chat\":\"YA3MUBMRN3\",\"id\":\"m1\",\"from\":\"LYQ529STE4\",\"at\":1.0,\"kind\":\"image\",\"text\":\"\",\"data\":\"data:image/jpeg;base64,AAAA\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":4,\"h\":3,\"code\":\"\",\"reply\":null,\"fwd\":false,\"status\":\"\",\"to\":[\"YA3MUBMRN3\"],\"sent_to\":[\"YA3MUBMRN3\"],\"delivered_to\":[],\"read_by\":[],\"reactions\":{\"YA3MUBMRN3\":\"👍\"},\"edited\":false,\"deleted\":false,\"starred\":false,\"exp\":2.0,\"read_by_me\":false,\"bro\":true}",
+    "outbox": "{\"id\":\"m1:X\",\"to\":\"YA3MUBMRN3\",\"payload\":\"{\\\"k\\\":\\\"msg\\\",\\\"id\\\":\\\"m1\\\",\\\"at\\\":1700000000123.0,\\\"pn\\\":\\\"Léa\\\",\\\"kind\\\":\\\"text\\\",\\\"text\\\":\\\"Salut 👋 *Talka*\\\",\\\"data\\\":\\\"\\\",\\\"name\\\":\\\"\\\",\\\"mime\\\":\\\"\\\",\\\"size\\\":0.0,\\\"dur\\\":0.0,\\\"w\\\":0,\\\"h\\\":0,\\\"code\\\":\\\"\\\",\\\"reply\\\":{\\\"id\\\":\\\"m0\\\",\\\"from\\\":\\\"LYQ529STE4\\\",\\\"text\\\":\\\"avant\\\"},\\\"fwd\\\":false,\\\"grp\\\":{\\\"id\\\":\\\"g1\\\",\\\"name\\\":\\\"Les amis\\\",\\\"members\\\":[\\\"LYQ529STE4\\\",\\\"YA3MUBMRN3\\\"],\\\"admins\\\":[\\\"LYQ529STE4\\\"],\\\"avatar\\\":\\\"\\\",\\\"v\\\":3},\\\"ttl\\\":86400}\",\"chat\":\"YA3MUBMRN3\",\"msg_id\":\"m1\",\"seq\":1.0,\"boot\":\"B00T\"}",
     "profile": "{\"name\":\"Léa\",\"about\":\"Salut\",\"avatar\":\"\",\"v\":1}",
     "settings": "{\"theme\":\"auto\",\"read_receipts\":true,\"hide_online\":false,\"presence_dot\":true,\"notify\":false,\"sound\":true,\"enter_sends\":true,\"wallpaper\":\"doodle\",\"font_size\":15,\"lock_after\":0,\"server\":\"\"}",
-    "status": "{\"owner\":\"KZE76BRA35\",\"id\":\"s1\",\"kind\":\"text\",\"text\":\"Vacances\",\"bg\":\"\",\"data\":\"\",\"at\":1.0,\"seen\":false,\"viewers\":{}}"
+    "status": "{\"owner\":\"YA3MUBMRN3\",\"id\":\"s1\",\"kind\":\"text\",\"text\":\"Vacances\",\"bg\":\"\",\"data\":\"\",\"at\":1.0,\"seen\":false,\"viewers\":{}}"
   },
   "wires": [
-    "{\"k\":\"msg\",\"id\":\"m1\",\"at\":1700000000123.0,\"pn\":\"Léa\",\"kind\":\"text\",\"text\":\"Salut 👋 *Talka*\",\"data\":\"\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":0,\"h\":0,\"code\":\"\",\"reply\":{\"id\":\"m0\",\"from\":\"5WPP4SFUJY\",\"text\":\"avant\"},\"fwd\":false,\"grp\":{\"id\":\"g1\",\"name\":\"Les amis\",\"members\":[\"5WPP4SFUJY\",\"KZE76BRA35\"],\"admins\":[\"5WPP4SFUJY\"],\"avatar\":\"\",\"v\":3},\"ttl\":86400}",
+    "{\"k\":\"msg\",\"id\":\"m1\",\"at\":1700000000123.0,\"pn\":\"Léa\",\"kind\":\"text\",\"text\":\"Salut 👋 *Talka*\",\"data\":\"\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":0,\"h\":0,\"code\":\"\",\"reply\":{\"id\":\"m0\",\"from\":\"LYQ529STE4\",\"text\":\"avant\"},\"fwd\":false,\"grp\":{\"id\":\"g1\",\"name\":\"Les amis\",\"members\":[\"LYQ529STE4\",\"YA3MUBMRN3\"],\"admins\":[\"LYQ529STE4\"],\"avatar\":\"\",\"v\":3},\"ttl\":86400}",
     "{\"k\":\"receipt\",\"st\":\"read\",\"ids\":[\"m1\",\"m2\"],\"g\":\"g1\"}",
     "{\"k\":\"react\",\"id\":\"m1\",\"emoji\":\"❤️\"}",
     "{\"k\":\"edit\",\"id\":\"m1\",\"text\":\"modifié\"}",
