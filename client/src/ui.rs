@@ -110,6 +110,37 @@ fn ring(el: Element, seen: bool) -> Element {
 
 // ----- Le démarrage --------------------------------------------------------------
 
+/// Un autre onglet a pris la main (voir `tabs`).
+pub fn inactive() {
+    crate::conv::close();
+    replace(
+        &root(),
+        h("div.welcome").child(
+            h("div.welcome-card")
+                .child(
+                    h("img")
+                        .attr("src", asset("logo.svg"))
+                        .attr("alt", "")
+                        .attr("width", "72")
+                        .attr("height", "72"),
+                )
+                .child(h("h1").text("Talka est ouvert dans un autre onglet"))
+                .child(h("p.muted").text(
+                    "Un seul onglet à la fois garde vos messages à jour. Continuez dans l'autre onglet, ou reprenez ici.",
+                ))
+                .child(
+                    h("button.btn.primary")
+                        .attr("type", "button")
+                        .text("Utiliser ici")
+                        .click(|| {
+                            let _ = window().location().reload();
+                        }),
+                ),
+        ),
+    );
+    toggle_class(&root(), "boot", false);
+}
+
 fn fatal(text: &str) {
     replace(
         &root(),
@@ -164,6 +195,7 @@ fn boot_step(text: &str) {
 
 /// Démarre l'application : verrouillage, accueil, ou discussions.
 pub async fn boot() {
+    crate::tabs::claim().await;
     boot_step("Lecture de vos messages…");
     if store::open().await.is_err() {
         fatal(
