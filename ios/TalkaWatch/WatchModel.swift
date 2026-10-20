@@ -19,6 +19,9 @@ final class WatchModel: NSObject {
     override init() {
         super.init()
         snapshot = WatchLink.decode(WatchSnapshot.self, UserDefaults.standard.data(forKey: Self.savedKey))
+        // Les complications partent du dernier résumé gardé, même s'il n'a
+        // pas changé depuis (une mise à jour de l'app, par exemple).
+        updateWidgets()
         session?.delegate = self
         session?.activate()
     }
@@ -28,9 +31,12 @@ final class WatchModel: NSObject {
     }
 
     func receive(_ data: Data?) {
-        guard let s = WatchLink.decode(WatchSnapshot.self, data), s != snapshot else { return }
-        snapshot = s
-        UserDefaults.standard.set(data, forKey: Self.savedKey)
+        guard let s = WatchLink.decode(WatchSnapshot.self, data) else { return }
+        if s != snapshot {
+            snapshot = s
+            UserDefaults.standard.set(data, forKey: Self.savedKey)
+        }
+        // Toujours : les complications n'avaient peut-être encore rien.
         updateWidgets()
     }
 

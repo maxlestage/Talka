@@ -261,15 +261,21 @@ public struct Content: Codable, Equatable, Sendable {
     public var code = ""
     public var reply: Reply?
     public var fwd = false
+    /// Une capsule temporelle : à ouvrir à cette heure (ms). Absent sinon ;
+    /// les versions qui ne la connaissent pas affichent le message.
+    public var openAt: Double?
 
     enum CodingKeys: String, CodingKey {
         case kind, text, data, name, mime, size, dur, w, h, code, reply, fwd
+        case openAt = "open_at"
     }
 
     public init(kind: String = "text", text: String = "", data: String = "", name: String = "", mime: String = "",
-                size: Double = 0, dur: Double = 0, w: Int = 0, h: Int = 0, code: String = "", reply: Reply? = nil, fwd: Bool = false) {
+                size: Double = 0, dur: Double = 0, w: Int = 0, h: Int = 0, code: String = "", reply: Reply? = nil, fwd: Bool = false,
+                openAt: Double? = nil) {
         self.kind = kind; self.text = text; self.data = data; self.name = name; self.mime = mime
         self.size = size; self.dur = dur; self.w = w; self.h = h; self.code = code; self.reply = reply; self.fwd = fwd
+        self.openAt = openAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -277,6 +283,7 @@ public struct Content: Codable, Equatable, Sendable {
         kind = c.v(.kind, "text"); text = c.v(.text, ""); data = c.v(.data, ""); name = c.v(.name, "")
         mime = c.v(.mime, ""); size = c.v(.size, 0); dur = c.v(.dur, 0); w = c.v(.w, 0); h = c.v(.h, 0)
         code = c.v(.code, ""); reply = c.v(.reply, nil); fwd = c.v(.fwd, false)
+        openAt = c.v(.openAt, nil)
     }
 
     /// Seulement ce qui n'est pas vide (le navigateur complète avec les
@@ -295,6 +302,7 @@ public struct Content: Codable, Equatable, Sendable {
         if !code.isEmpty { try c.encode(code, forKey: .code) }
         try c.encodeIfPresent(reply, forKey: .reply)
         if fwd { try c.encode(fwd, forKey: .fwd) }
+        try c.encodeIfPresent(openAt, forKey: .openAt)
     }
 }
 
@@ -329,9 +337,12 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     public var starred = false
     public var exp: Double?
     public var readByMe = false
+    /// Une capsule temporelle : scellée jusqu'à cette heure (ms).
+    public var openAt: Double?
 
     enum CodingKeys: String, CodingKey {
         case chat, id, from, at, kind, text, data, name, mime, size, dur, w, h, code, reply, fwd, status, to, reactions, edited, deleted, starred, exp
+        case openAt = "open_at"
         case sentTo = "sent_to"
         case deliveredTo = "delivered_to"
         case readBy = "read_by"
@@ -342,7 +353,16 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         self.chat = chat; self.id = id; self.from = from; self.at = at
         kind = content.kind; text = content.text; data = content.data; name = content.name; mime = content.mime
         size = content.size; dur = content.dur; w = content.w; h = content.h; code = content.code
-        reply = content.reply; fwd = content.fwd
+        reply = content.reply; fwd = content.fwd; openAt = content.openAt
+    }
+
+    /// Une capsule temporelle (scellée ou déjà ouverte).
+    public var isCapsule: Bool { (openAt ?? 0) > 0 }
+
+    /// Une capsule encore scellée pour son destinataire ; l'auteur, lui,
+    /// voit toujours ce qu'il a écrit.
+    public func sealed(for me: String, now: Double = nowMs()) -> Bool {
+        (openAt ?? 0) > now && from != me
     }
 
     public init(from decoder: Decoder) throws {
@@ -354,13 +374,15 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         sentTo = c.v(.sentTo, []); deliveredTo = c.v(.deliveredTo, []); readBy = c.v(.readBy, [])
         reactions = c.v(.reactions, [:]); edited = c.v(.edited, false); deleted = c.v(.deleted, false)
         starred = c.v(.starred, false); exp = c.v(.exp, nil); readByMe = c.v(.readByMe, false)
+        openAt = c.v(.openAt, nil)
     }
 
     /// `chat|id` : la clé dans le stockage.
     public var key: String { "\(chat)|\(id)" }
 
     public var content: Content {
-        Content(kind: kind, text: text, data: data, name: name, mime: mime, size: size, dur: dur, w: w, h: h, code: code, reply: reply, fwd: fwd)
+        Content(kind: kind, text: text, data: data, name: name, mime: mime, size: size, dur: dur, w: w, h: h, code: code, reply: reply, fwd: fwd,
+                openAt: openAt)
     }
 
     public enum Tick: String, Sendable { case pending, sent, delivered, read, failed }

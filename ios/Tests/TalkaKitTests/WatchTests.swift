@@ -68,6 +68,15 @@ final class WatchTests: XCTestCase {
         XCTAssertTrue(e.watchSnapshot().chats[0].readOnly)
         XCTAssertFalse(e.perform(WatchAction(.send, chat: c.id, text: "bloqué")))
 
+        // Une capsule : lisible par son auteur sur la montre.
+        let capsule = try XCTUnwrap(e.send(c.id, Content(text: "Plus tard", openAt: nowMs() + 3_600_000)))
+        XCTAssertEqual(e.watchMessage(capsule, group: false).text, "Plus tard")
+        var theirs = capsule
+        theirs.from = "WGSEAJNSZJ"
+        XCTAssertEqual(e.watchMessage(theirs, group: false).text, "⏳ Capsule temporelle")
+        theirs.openAt = nowMs() - 1
+        XCTAssertEqual(e.watchMessage(theirs, group: false).text, "Plus tard")
+
         let data = try XCTUnwrap(WatchLink.encode(WatchAction(.refresh)))
         XCTAssertEqual(WatchLink.decode(WatchAction.self, data)?.kind, .refresh)
     }
@@ -128,5 +137,32 @@ final class WidgetDataTests: XCTestCase {
         let old = #"{"name":"Léa","online":true,"chats":[]}"#.data(using: .utf8)!
         let s = try XCTUnwrap(WatchLink.decode(WatchSnapshot.self, old))
         XCTAssertNil(s.hidden)
+    }
+}
+
+/// La capsule temporelle : scellée pour le destinataire, jamais pour
+/// l'auteur ; le champ voyage comme le navigateur l'écrit (`open_at`).
+@MainActor
+final class CapsuleTests: XCTestCase {
+    func testSealedOnlyForTheRecipientUntilItOpens() async throws {
+        let wire = #"{"kind":"text","text":"Joyeux anniversaire","open_at":5000}"#
+        let content = try XCTUnwrap(JSON.decode(Content.self, wire))
+        XCTAssertEqual(content.openAt, 5000)
+        let m = Message(chat: "A", id: "1", from: "LEA", at: 1000, content: content)
+        XCTAssertTrue(m.isCapsule)
+        XCTAssertTrue(m.sealed(for: "CLEMENT", now: 4999))
+        XCTAssertFalse(m.sealed(for: "CLEMENT", now: 5000))
+        XCTAssertFalse(m.sealed(for: "LEA", now: 2000))
+        XCTAssertEqual(Engine.preview(m), "⏳ Capsule temporelle")
+        // Stocké et relu à l'identique.
+        XCTAssertEqual(JSON.decode(Message.self, JSON.encode(m))?.openAt, 5000)
+    }
+
+    func testOrdinaryMessagesDoNotCarryTheField() async {
+        let plain = Content(text: "Salut")
+        XCTAssertFalse(JSON.encode(plain).contains("open_at"))
+        let m = Message(chat: "A", id: "1", from: "LEA", at: 1, content: plain)
+        XCTAssertFalse(m.isCapsule)
+        XCTAssertFalse(JSON.encode(m).contains("open_at"))
     }
 }

@@ -277,6 +277,18 @@ enum Dates {
         }
     }
 
+    /// Un jour, passé ou à venir : « aujourd'hui », « demain », « hier »,
+    /// « lundi » (dans la semaine), « le 3 mars 2026 ».
+    static func when(_ ms: Double) -> String {
+        switch daysAgo(ms) {
+        case 0: "aujourd'hui"
+        case 1: "hier"
+        case -1: "demain"
+        case -6..<7: day.string(from: date(ms))
+        default: "le \(long.string(from: date(ms)))"
+        }
+    }
+
     static func sameDay(_ a: Double, _ b: Double) -> Bool {
         Calendar.current.isDate(date(a), inSameDayAs: date(b))
     }

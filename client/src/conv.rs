@@ -687,8 +687,12 @@ async fn render(initial: bool) {
         }
         let mut prev: Option<&Message> = None;
         let mut shown = 0;
+        let (me, t) = (core::my_code(), now());
         for m in &list {
-            if !q.is_empty() && !crate::model::fold(&format!("{} {}", m.text, m.name)).contains(&q)
+            // La recherche ne trouve pas ce qu'une capsule scellée cache.
+            if !q.is_empty()
+                && (m.sealed_for(&me, t)
+                    || !crate::model::fold(&format!("{} {}", m.text, m.name)).contains(&q))
             {
                 continue;
             }
@@ -793,7 +797,7 @@ async fn render_pin(chat_id: &str) {
     scope("conv-pin", || match pinned {
         Some(m) => {
             let (id, chat) = (m.id.clone(), m.chat.clone());
-            let text = if m.kind == "text" {
+            let text = if m.kind == "text" && !m.sealed_for(&core::my_code(), now()) {
                 m.text.clone()
             } else {
                 core::preview(&m)
@@ -960,6 +964,105 @@ fn voice_player(m: &Message) -> El {
         )
 }
 
+// ----- Les capsules temporelles -----
+
+/// « dans 2 j 4 h », « dans 12 min », « dans 40 s ».
+fn countdown(open_at: f64) -> String {
+    let s = ((open_at - now()) / 1000.0).ceil().max(0.0) as u64;
+    let (d, h, m) = (s / 86_400, s % 86_400 / 3600, s % 3600 / 60);
+    if d > 0 {
+        format!("dans {d} j {h} h")
+    } else if h > 0 {
+        format!("dans {h} h {m:02}")
+    } else if m > 0 {
+        format!("dans {m} min")
+    } else {
+        format!("dans {s} s")
+    }
+}
+
+/// Le bandeau d'une capsule : pour l'auteur, quand elle s'ouvrira ; une fois
+/// ouverte, quand elle a été écrite.
+fn capsule_band(m: &Message) -> Option<El> {
+    if !m.is_capsule() || m.deleted || m.sealed_for(&core::my_code(), now()) {
+        return None;
+    }
+    let text = if m.open_at > now() {
+        format!(
+            "⏳ Scellée · s'ouvre {} à {}",
+            when_day(m.open_at),
+            time(m.open_at)
+        )
+    } else {
+        format!(
+            "⏳ Capsule écrite {} · ouverte {}",
+            when_day(m.at),
+            when_day(m.open_at)
+        )
+    };
+    Some(h("div.capsule-band").text(text))
+}
+
+/// Une capsule encore scellée : l'enveloppe, et le temps qu'il reste.
+fn sealed(m: &Message) -> El {
+    start_capsule_tick();
+    h("div.capsule")
+        .attr("data-open-at", m.open_at.to_string())
+        .child(h("div.capsule-seal").attr("aria-hidden", "true").text("✉️"))
+        .child(h("div.capsule-title").text("Capsule temporelle"))
+        .child(h("div.capsule-count").text(format!("S'ouvre {}", countdown(m.open_at))))
+        .child(h("div.capsule-date").text(format!(
+            "{} à {}",
+            cap(&when_day(m.open_at)),
+            time(m.open_at)
+        )))
+}
+
+thread_local! {
+    static CAPSULE_TICK: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Une fois par seconde : les comptes à rebours des capsules affichées, et
+/// l'ouverture de celles dont l'heure est venue.
+fn start_capsule_tick() {
+    if CAPSULE_TICK.with(|t| t.replace(true)) {
+        return;
+    }
+    let tick = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(|| {
+        let Ok(list) = document().query_selector_all("[data-open-at]") else {
+            return;
+        };
+        let mut opened = false;
+        for i in 0..list.length() {
+            let Some(node) = list
+                .item(i)
+                .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+            else {
+                continue;
+            };
+            let at: f64 = node
+                .get_attribute("data-open-at")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0);
+            if at <= now() {
+                opened = true;
+            } else if let Ok(Some(c)) = node.query_selector(".capsule-count") {
+                c.set_text_content(Some(&format!("S'ouvre {}", countdown(at))));
+            }
+        }
+        if opened {
+            queue_render();
+        }
+    });
+    let _ = web_sys::window()
+        .expect("fenêtre")
+        .set_interval_with_callback_and_timeout_and_arguments_0(
+            tick.as_ref().unchecked_ref(),
+            1000,
+        );
+    tick.forget();
+}
+
 fn content(m: &Message) -> El {
     if m.deleted {
         return h("div.text.deleted").text(if m.from == core::my_code() {
@@ -1119,7 +1222,12 @@ fn bubble(m: &Message, prev: Option<&Message>, chat: Option<&Chat>) -> Element {
         } else {
             m.reply.as_ref().map(quote)
         })
-        .child(content(m))
+        .child(capsule_band(m))
+        .child(if m.sealed_for(&core::my_code(), now()) {
+            sealed(m)
+        } else {
+            content(m)
+        })
         .child(
             h("div.meta")
                 .child(m.starred.then(|| h("span.star").text("★")))
@@ -1258,12 +1366,14 @@ fn message_menu(m: &Message, at: At) {
     let m6 = m.clone();
     let m7 = m.clone();
     let text = m.text.clone();
-    let can_edit = mine && m.kind == "text" && now() - m.at < 15.0 * 60_000.0;
-    let media = matches!(m.kind.as_str(), "image" | "file" | "voice");
+    let can_edit = mine && m.kind == "text" && !m.is_capsule() && now() - m.at < 15.0 * 60_000.0;
+    // Une capsule scellée ne se copie, ne se transfère ni ne s'enregistre.
+    let sealed = m.sealed_for(&core::my_code(), now());
+    let media = !sealed && matches!(m.kind.as_str(), "image" | "file" | "voice");
     let menu_el = menu(
         vec![
             item("reply", "Répondre", move || start_reply(&m1)),
-            if m.text.is_empty() {
+            if m.text.is_empty() || sealed {
                 None
             } else {
                 item("copy", "Copier", move || {
@@ -1271,9 +1381,13 @@ fn message_menu(m: &Message, at: At) {
                     spawn(async move { copy(&t, "Copié").await })
                 })
             },
-            item("forward", "Transférer", move || {
-                spawn(forward_dialog(m2.clone()))
-            }),
+            if sealed {
+                None
+            } else {
+                item("forward", "Transférer", move || {
+                    spawn(forward_dialog(m2.clone()))
+                })
+            },
             item(
                 "star",
                 if m.starred {
@@ -1463,6 +1577,9 @@ async fn forward_dialog(m: Message) {
 }
 
 fn snippet(m: &Message) -> String {
+    if m.sealed_for(&core::my_code(), now()) {
+        return core::preview(m);
+    }
     match m.kind.as_str() {
         "image" | "voice" | "file" | "contact" => core::preview(m),
         _ => m.text.chars().take(140).collect(),
@@ -1752,6 +1869,7 @@ fn render_composer(focus_it: bool) {
                             })
                         }),
                         item("person", "Contact", share_contact),
+                        item("hourglass", "Capsule temporelle", compose_capsule),
                     ],
                     At::El(bb.clone()),
                 );
@@ -1906,6 +2024,124 @@ async fn send_file(file: web_sys::File) {
         },
     )
     .await;
+}
+
+/// `AAAA-MM-JJTHH:MM`, l'heure locale d'un champ `datetime-local`.
+fn local_input(ts: f64) -> String {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ts));
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}",
+        d.get_full_year(),
+        d.get_month() + 1,
+        d.get_date(),
+        d.get_hours(),
+        d.get_minutes()
+    )
+}
+
+/// Une heure locale (`h`:00), `days` jours après aujourd'hui.
+fn at_hour(days: u32, h: u32) -> f64 {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(now()));
+    d.set_date(d.get_date() + days);
+    d.set_hours(h);
+    d.set_minutes(0);
+    d.set_seconds(0);
+    d.set_milliseconds(0);
+    d.get_time()
+}
+
+/// Écrire une capsule temporelle : un message scellé jusqu'à l'heure choisie.
+fn compose_capsule() {
+    let Some(chat_id) = current() else { return };
+    let text = h("textarea.field")
+        .attr("rows", "4")
+        .attr("maxlength", "4000")
+        .attr("placeholder", "Ce que vous voulez qu'on lise plus tard…")
+        .attr("aria-label", "Message de la capsule")
+        .el();
+    let when = h("input.field")
+        .attr("type", "datetime-local")
+        .attr("aria-label", "Heure d'ouverture")
+        .attr("min", local_input(now() + 60_000.0))
+        .prop("value", local_input(at_hour(1, 9)))
+        .el();
+    let err = h("p.error").el();
+    let (t, w, e) = (text.clone(), when.clone(), err.clone());
+    let next_year = {
+        let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(now()));
+        js_sys::Date::new_with_year_month_day(d.get_full_year() + 1, 0, 1).get_time()
+    };
+    let presets: Vec<(&str, f64)> = vec![
+        ("Dans 1 heure", now() + 3_600_000.0),
+        ("Demain 9 h", at_hour(1, 9)),
+        ("Dans une semaine", at_hour(7, 9)),
+        ("Au Nouvel An", next_year),
+        ("Dans un an", at_hour(365, 9)),
+    ];
+    modal(
+        "Capsule temporelle",
+        move |_| {
+            let chips = h("div.capsule-presets").children(presets.iter().map(|(label, ts)| {
+                let (w, ts) = (w.clone(), *ts);
+                h("button.chip")
+                    .attr("type", "button")
+                    .text(*label)
+                    .click(move || set_value(&w, &local_input(ts)))
+            }));
+            h("div.stack")
+                .child(h("p.muted").text(
+                    "Un message scellé : il part maintenant, mais ne s'ouvre qu'à l'heure choisie. \
+                     Jusque-là, on ne voit qu'une enveloppe et un compte à rebours.",
+                ))
+                .child(t.clone())
+                .child(h("label.muted.small").text("S'ouvre le"))
+                .child(w.clone())
+                .child(chips)
+                .child(e.clone())
+                .into()
+        },
+        ModalOpts {
+            actions: vec![
+                action("Annuler", "ghost", |m| m.close()),
+                action("Sceller et envoyer", "primary", move |m| {
+                    let body = value(&text).trim().to_owned();
+                    let open_at =
+                        js_sys::Date::new(&wasm_bindgen::JsValue::from_str(&value(&when)))
+                            .get_time();
+                    if body.is_empty() {
+                        err.set_text_content(Some("Écrivez le message de la capsule."));
+                        return;
+                    }
+                    if !open_at.is_finite() || open_at < now() + 60_000.0 {
+                        err.set_text_content(Some("Choisissez une heure d'ouverture à venir."));
+                        return;
+                    }
+                    if open_at > now() + core::CAPSULE_MAX_MS {
+                        err.set_text_content(Some(
+                            "Une capsule s'ouvre au plus tard dans dix ans.",
+                        ));
+                        return;
+                    }
+                    m.close();
+                    let chat_id = chat_id.clone();
+                    spawn(async move {
+                        core::send_message(
+                            &chat_id,
+                            Content {
+                                kind: "text".into(),
+                                text: body,
+                                open_at,
+                                ..Default::default()
+                            },
+                        )
+                        .await;
+                        toast("Capsule scellée ⏳");
+                    });
+                }),
+            ],
+            ..Default::default()
+        },
+    );
 }
 
 fn share_contact() {
