@@ -981,16 +981,6 @@ fn countdown(open_at: f64) -> String {
     }
 }
 
-/// « aujourd'hui », « hier », « lundi », « le 3 mars 2026 ».
-fn when_day(ts: f64) -> String {
-    let d = day_label(ts);
-    if d.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-        format!("le {d}")
-    } else {
-        d.to_lowercase()
-    }
-}
-
 /// Le bandeau d'une capsule : pour l'auteur, quand elle s'ouvrira ; une fois
 /// ouverte, quand elle a été écrite.
 fn capsule_band(m: &Message) -> Option<El> {

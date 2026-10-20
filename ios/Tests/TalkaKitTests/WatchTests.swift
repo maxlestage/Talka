@@ -130,3 +130,30 @@ final class WidgetDataTests: XCTestCase {
         XCTAssertNil(s.hidden)
     }
 }
+
+/// La capsule temporelle : scellée pour le destinataire, jamais pour
+/// l'auteur ; le champ voyage comme le navigateur l'écrit (`open_at`).
+@MainActor
+final class CapsuleTests: XCTestCase {
+    func testSealedOnlyForTheRecipientUntilItOpens() async throws {
+        let wire = #"{"kind":"text","text":"Joyeux anniversaire","open_at":5000}"#
+        let content = try XCTUnwrap(JSON.decode(Content.self, wire))
+        XCTAssertEqual(content.openAt, 5000)
+        let m = Message(chat: "A", id: "1", from: "LEA", at: 1000, content: content)
+        XCTAssertTrue(m.isCapsule)
+        XCTAssertTrue(m.sealed(for: "CLEMENT", now: 4999))
+        XCTAssertFalse(m.sealed(for: "CLEMENT", now: 5000))
+        XCTAssertFalse(m.sealed(for: "LEA", now: 2000))
+        XCTAssertEqual(Engine.preview(m), "⏳ Capsule temporelle")
+        // Stocké et relu à l'identique.
+        XCTAssertEqual(JSON.decode(Message.self, JSON.encode(m))?.openAt, 5000)
+    }
+
+    func testOrdinaryMessagesDoNotCarryTheField() async {
+        let plain = Content(text: "Salut")
+        XCTAssertFalse(JSON.encode(plain).contains("open_at"))
+        let m = Message(chat: "A", id: "1", from: "LEA", at: 1, content: plain)
+        XCTAssertFalse(m.isCapsule)
+        XCTAssertFalse(JSON.encode(m).contains("open_at"))
+    }
+}

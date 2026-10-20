@@ -690,6 +690,24 @@ pub fn day_label(ts: f64) -> String {
     }
 }
 
+/// Un jour, passé ou à venir : « aujourd'hui », « demain », « hier »,
+/// « lundi » (dans la semaine), « le 3 mars 2026 ».
+pub fn when_day(ts: f64) -> String {
+    let d = date(ts);
+    match days_ago(ts) {
+        0 => "aujourd'hui".into(),
+        1 => "hier".into(),
+        -1 => "demain".into(),
+        n if (-6..7).contains(&n) => DAYS[d.get_day() as usize].into(),
+        _ => format!(
+            "le {} {} {}",
+            d.get_date(),
+            MONTHS[d.get_month() as usize],
+            d.get_full_year()
+        ),
+    }
+}
+
 /// L'heure d'un élément de liste : `14:05`, « Hier », « Lundi », `03/03/26`.
 pub fn list_time(ts: f64) -> String {
     match days_ago(ts) {
