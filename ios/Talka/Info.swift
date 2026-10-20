@@ -133,11 +133,39 @@ struct WallpaperPicker: View {
 
     var body: some View {
         if let e = model.engine {
-            Picker(selection: Binding(get: { e.chat(chatId)?.wallpaper ?? "" }, set: { v in e.updateChat(chatId) { $0.wallpaper = v } })) {
-                Text("Par défaut").tag("")
-                ForEach(wallpapers, id: \.0) { Text($0.1).tag($0.0) }
-            } label: {
-                Label("Fond d'écran", systemImage: "photo")
+            WallpaperRows(value: Binding(get: { e.chat(chatId)?.wallpaper ?? "" }, set: { v in e.updateChat(chatId) { $0.wallpaper = v } }),
+                          allowDefault: true)
+        }
+    }
+}
+
+/// Le choix d'un fond d'écran : un des fonds de Talka, ou une photo de la
+/// galerie (réduite, gardée sur l'appareil en adresse `data:`, jamais
+/// envoyée) — la même valeur que dans le navigateur.
+struct WallpaperRows: View {
+    @Binding var value: String
+    var allowDefault = false
+    @State private var photo: PhotosPickerItem?
+
+    var body: some View {
+        Picker(selection: Binding(get: { value.hasPrefix("data:") ? "photo" : value }, set: { if $0 != "photo" { value = $0 } })) {
+            if allowDefault { Text("Par défaut").tag("") }
+            ForEach(wallpapers, id: \.0) { Text($0.1).tag($0.0) }
+            if value.hasPrefix("data:") { Text("Ma photo").tag("photo") }
+        } label: {
+            Label("Fond d'écran", systemImage: "paintpalette")
+        }
+        PhotosPicker(selection: $photo, matching: .images) {
+            Label(value.hasPrefix("data:") ? "Changer la photo de fond (galerie)" : "Une photo de la galerie en fond", systemImage: "photo.on.rectangle")
+        }
+        .onChange(of: photo) { _, item in
+            guard let item else { return }
+            photo = nil
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self), let ui = UIImage(data: data),
+                      let (url, _, _) = ui.compressed(max: 1280, quality: 0.78)
+                else { return }
+                value = url
             }
         }
     }

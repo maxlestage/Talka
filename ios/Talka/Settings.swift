@@ -63,9 +63,7 @@ struct SettingsTab: View {
                             Text("Clair").tag("light")
                             Text("Sombre").tag("dark")
                         }
-                        Picker("Fond des discussions", selection: setting(e, \.wallpaper)) {
-                            ForEach(wallpapers, id: \.0) { Text($0.1).tag($0.0) }
-                        }
+                        WallpaperRows(value: setting(e, \.wallpaper))
                         Stepper("Taille du texte : \(e.settings.fontSize)", value: setting(e, \.fontSize), in: 12...22)
                     }
                     Section {
