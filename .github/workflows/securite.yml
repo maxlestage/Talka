@@ -1,0 +1,32 @@
+# Les dépendances Rust au crible de RustSec (failles connues) : à chaque
+# changement de Cargo.lock, et chaque semaine (une faille peut être publiée
+# sans que rien ne change ici). Voir docs/SECURITE.md, §3.6.
+name: Sécurité
+
+on:
+  push:
+    branches: [master]
+    paths: ["**/Cargo.lock", "**/Cargo.toml", ".github/workflows/securite.yml"]
+  pull_request:
+    paths: ["**/Cargo.lock", "**/Cargo.toml", ".github/workflows/securite.yml"]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Installer cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Serveur et navigateur
+        run: cargo audit
+      - name: Outils (xtask)
+        working-directory: xtask
+        run: cargo audit
