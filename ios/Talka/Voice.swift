@@ -72,8 +72,19 @@ final class VoiceRecorder {
 @Observable
 final class VoicePlayer: NSObject, AVAudioPlayerDelegate {
     var playing = false
+    /// La vitesse de lecture : 1×, 1,5× ou 2×, comme dans le navigateur.
+    var speed: Float = 1
     @ObservationIgnored var player: AVAudioPlayer?
     @ObservationIgnored var web: WKWebView?
+
+    /// 1× → 1,5× → 2× → 1×, appliquée aussitôt, même pendant la lecture.
+    func nextSpeed() {
+        speed = speed < 1.4 ? 1.5 : speed < 1.9 ? 2 : 1
+        player?.rate = speed
+        web?.evaluateJavaScript("document.querySelector('audio').playbackRate = \(speed)")
+    }
+
+    var speedLabel: String { speed == 1.5 ? "1,5×" : speed == 2 ? "2×" : "1×" }
 
     func toggle(_ data: Data?, mime: String) {
         if playing { return stop() }
@@ -82,6 +93,8 @@ final class VoicePlayer: NSObject, AVAudioPlayerDelegate {
         try? AVAudioSession.sharedInstance().setActive(true)
         if let p = try? AVAudioPlayer(data: data), p.duration > 0 {
             p.delegate = self
+            p.enableRate = true
+            p.rate = speed
             player = p
             playing = p.play()
             return
@@ -108,6 +121,7 @@ final class VoicePlayer: NSObject, AVAudioPlayerDelegate {
             <audio src="data:\(safeMime);base64,\(data.base64EncodedString())" autoplay></audio>
             <script>
               const a = document.querySelector('audio');
+              a.playbackRate = \(speed);
               a.onended = a.onerror = () => webkit.messageHandlers.ended.postMessage(1);
             </script>
             """
