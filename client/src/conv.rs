@@ -28,6 +28,7 @@ struct Conv {
     list: Option<Element>,
     down: Option<Element>,
     search_bar: Option<Element>,
+    pin_bar: Option<Element>,
     banner: Option<Element>,
     composer: Option<Element>,
     head: Option<Element>,
@@ -400,6 +401,7 @@ pub async fn open(chat_id: &str, host: &Element) {
         .child(icon("arrowdown"))
         .el();
     let search_bar = h("div.conv-search.hidden").el();
+    let pin_bar = h("div.pin-bar").el();
     let banner = h("div.conv-banner").el();
     let composer = h("div.composer-wrap").el();
     let head = scope("conv-head", || header(&chat));
@@ -412,6 +414,7 @@ pub async fn open(chat_id: &str, host: &Element) {
         h("div.conv")
             .child(head.clone())
             .child(search_bar.clone())
+            .child(pin_bar.clone())
             .child(banner.clone())
             .child(
                 h("div.messages-wrap")
@@ -427,6 +430,7 @@ pub async fn open(chat_id: &str, host: &Element) {
             list: Some(list),
             down: Some(down),
             search_bar: Some(search_bar),
+            pin_bar: Some(pin_bar),
             banner: Some(banner),
             composer: Some(composer),
             head: Some(head),
@@ -599,6 +603,7 @@ async fn render(initial: bool) {
     let Some(list_el) = el(|c| c.list.clone()) else {
         return;
     };
+    render_pin(&chat_id).await;
     let chat = core::chat(&chat_id);
     let has_more = all.len() > limit;
     let t = now();
@@ -710,19 +715,61 @@ fn quote(r: &Reply) -> El {
         } else {
             &r.text
         }))
-        .click(move || {
-            let Some(list) = el(|c| c.list.clone()) else {
-                return;
+        .click(move || jump_to(&id))
+}
+
+/// Amène un message au milieu de l'écran et le fait clignoter.
+fn jump_to(id: &str) {
+    let Some(list) = el(|c| c.list.clone()) else {
+        return;
+    };
+    match query_in(&list, &format!("[data-id=\"{id}\"]")) {
+        Some(target) => {
+            center_on(&target, true);
+            toggle_class(&target, "flash", true);
+            timer(1200, move || toggle_class(&target, "flash", false));
+        }
+        None => toast("Message introuvable (plus ancien que ceux affichés ?)"),
+    }
+}
+
+/// Le bandeau du message épinglé, sous l'en-tête.
+async fn render_pin(chat_id: &str) {
+    let Some(bar) = el(|c| c.pin_bar.clone()) else {
+        return;
+    };
+    let pinned = core::pinned_message(chat_id).await;
+    scope("conv-pin", || match pinned {
+        Some(m) => {
+            let (id, chat) = (m.id.clone(), m.chat.clone());
+            let text = if m.kind == "text" {
+                m.text.clone()
+            } else {
+                core::preview(&m)
             };
-            match query_in(&list, &format!("[data-id=\"{id}\"]")) {
-                Some(target) => {
-                    center_on(&target, true);
-                    toggle_class(&target, "flash", true);
-                    timer(1200, move || toggle_class(&target, "flash", false));
-                }
-                None => toast("Message introuvable"),
-            }
-        })
+            replace(
+                &bar,
+                h("div.pin-row")
+                    .child(
+                        h("button.pin-open")
+                            .attr("type", "button")
+                            .attr("aria-label", "Aller au message épinglé")
+                            .child(icon("pin"))
+                            .child(
+                                h("span.pin-text")
+                                    .child(h("strong").text(who(&m.from)))
+                                    .child(h("span").text(text)),
+                            )
+                            .click(move || jump_to(&id)),
+                    )
+                    .child(icon_button("close", "Désépingler", move || {
+                        let c = chat.clone();
+                        spawn(async move { core::set_pin(&c, "").await })
+                    })),
+            );
+        }
+        None => replace(&bar, Child::None),
+    });
 }
 
 fn voice_player(m: &Message) -> El {
@@ -1188,6 +1235,18 @@ fn message_menu(m: &Message, at: At) {
                     spawn(async move { core::toggle_star(&c, &i).await })
                 },
             ),
+            {
+                let pinned = core::chat(&m.chat).is_some_and(|c| c.pin_msg == m.id);
+                let (c, i) = (m.chat.clone(), m.id.clone());
+                item(
+                    "pin",
+                    if pinned { "Désépingler" } else { "Épingler" },
+                    move || {
+                        let (c, i) = (c.clone(), if pinned { String::new() } else { i.clone() });
+                        spawn(async move { core::set_pin(&c, &i).await })
+                    },
+                )
+            },
             if can_edit {
                 item("edit", "Modifier", move || start_edit(&m4))
             } else {

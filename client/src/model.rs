@@ -104,6 +104,9 @@ pub struct Chat {
     pub v: u64,
     pub last: Option<Last>,
     pub has_exp: bool,
+    /// Le message épinglé en haut de la discussion (pour soi : il n'est pas
+    /// envoyé aux autres). Vide : aucun.
+    pub pin_msg: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
