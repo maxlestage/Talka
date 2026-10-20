@@ -517,6 +517,23 @@ fn render_side() {
                     item("group", "Nouveau groupe", || spawn(open_new_group())),
                     item("person", "Ajouter un contact", || open_add_contact("", "")),
                     item("star", "Messages favoris", || spawn(open_starred())),
+                    if core::chats()
+                        .iter()
+                        .any(|c| c.unread > 0 || c.marked_unread)
+                    {
+                        item("check", "Tout marquer comme lu", || {
+                            spawn(async {
+                                let n = core::mark_all_read().await;
+                                toast(if n > 1 {
+                                    format!("{n} discussions marquées comme lues")
+                                } else {
+                                    "Discussion marquée comme lue".into()
+                                });
+                            })
+                        })
+                    } else {
+                        None
+                    },
                     item("archive", "Discussions archivées", || {
                         with(|u| u.archived = true);
                         switch_tab("chats");
