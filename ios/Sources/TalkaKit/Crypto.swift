@@ -128,6 +128,13 @@ public struct Identity: Codable, Equatable, Sendable {
         else { return "" }
         return b64(sig.rawRepresentation)
     }
+
+    /// Signe un message (ECDSA P-256, SHA-256) : `r ‖ s` en base64, comme
+    /// `Identity::sign` du navigateur ; vide si la clé est illisible.
+    public func sign(_ message: Data) -> String {
+        guard let key = signKey, let sig = try? key.signature(for: message) else { return "" }
+        return b64(sig.rawRepresentation)
+    }
 }
 
 public enum TalkaCrypto {

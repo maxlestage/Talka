@@ -60,16 +60,19 @@ Avec un contact qui a la mise à jour, chaque message part en plus dans une
 **session à double cliquet** (une clé neuve par message, effacée aussitôt
 utilisée), établie en **hybride X25519 + ML-KEM-768** : le protocole v3 de
 [`docs/SECURITE.md`](docs/SECURITE.md), avec son implémentation de référence
-(`brocolis-proto`, voir [`client/src/v3.rs`](client/src/v3.rs)).
+(`brocolis-proto`, voir [`client/src/v3.rs`](client/src/v3.rs)) ; sur
+l'iPhone, son portage Swift vérifié octet pour octet (`BrocolisProto`, voir
+[`ios/Sources/TalkaKit/V3.swift`](ios/Sources/TalkaKit/V3.swift)) : un
+iPhone et un navigateur à jour discutent en sessions à double cliquet.
 
-- chaque navigateur a un appareil v3 (clés X25519, Ed25519, ML-KEM-768),
+- chaque navigateur (et chaque iPhone) a un appareil v3 (clés X25519, Ed25519, ML-KEM-768),
   dont les clés pré-signées changent chaque semaine ; son **paquet de clés
   est signé par la clé du code** et publié sur le relais. Un paquet n'est
   accepté que si cette signature vérifie avec les clés dont le code est
   l'empreinte : rien de plus à comparer que le code ;
 - le jeton v3 voyage **dans** l'enveloppe chiffrée habituelle : le relais ne
   voit aucune différence ; avec un contact qui n'a pas publié de paquet
-  (l'iPhone, pour l'instant), l'ancien format, exactement ;
+  (une version d'avant v3), l'ancien format, exactement ;
 - l'état des sessions est écrit dans IndexedDB avec le message qu'il a
   ouvert, et rien ne part avant qu'il y soit ; il ne va pas dans la
   sauvegarde (restauré en retard, il reprendrait des clés déjà servies) :
@@ -77,7 +80,8 @@ utilisée), établie en **hybride X25519 + ML-KEM-768** : le protocole v3 de
 - un document de plus de 200 Kio (photo lourde, vocal, fichier) dépasse ce
   que porte un jeton v3 : il part dans l'ancien format ;
 - la fiche du contact dit « 🔐 Session à double cliquet (post-quantique) »,
-  « (classique) », ou « Ancien chiffrement ».
+  « (classique) », ou « Ancien chiffrement » ; un iPhone d'avant iOS 26 (pas
+  de ML-KEM dans CryptoKit) n'ouvre que des sessions classiques.
 
 Comme tout est dans le navigateur, **Réglages → Exporter une sauvegarde
 chiffrée** produit un fichier protégé par mot de passe (PBKDF2 + AES-GCM), à

@@ -9,7 +9,9 @@
 // navigateur s'importe sur l'iPhone, et inversement.
 //
 // Ce qui a été lu est gardé en mémoire (les messages, décodés, discussion par
-// discussion) ; chaque écriture part aussitôt dans SQLite.
+// discussion) ; chaque écriture part aussitôt dans SQLite. Un lot
+// (`transaction`) rend plusieurs écritures atomiques : un message reçu et
+// l'état de session v3 qui l'a ouvert.
 
 import Foundation
 #if canImport(SQLite3)
@@ -28,6 +30,8 @@ public final class Store: @unchecked Sendable {
     var rows: [String: [String: String]] = [:]
     /// discussion → identifiant → message (chargé à la demande).
     var messages: [String: [String: Message]] = [:]
+    /// La profondeur des lots ouverts (`transaction`).
+    var depth = 0
 
     public init(directory: URL) {
         dir = directory
@@ -124,10 +128,36 @@ public final class Store: @unchecked Sendable {
     }
 
     public func write<T: Encodable>(_ store: String, _ key: String, _ value: T) {
-        let json = JSON.encode(value)
+        writeRaw(store, key, JSON.encode(value))
+    }
+
+    /// Le JSON gardé tel quel (l'état v3, qui a son propre format).
+    public func readRaw(_ store: String, _ key: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return rows[store]?[key]
+    }
+
+    public func writeRaw(_ store: String, _ key: String, _ json: String) {
         lock.lock(); defer { lock.unlock() }
         rows[store, default: [:]][key] = json
         put(store, key, json)
+    }
+
+    /// Les écritures de `body` dans une seule transaction SQLite : toutes ou
+    /// aucune, même si l'application s'arrête au milieu. Les lots s'emboîtent
+    /// (seul le plus extérieur valide).
+    public func transaction<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        if depth == 0 { exec("BEGIN IMMEDIATE") }
+        depth += 1
+        lock.unlock()
+        defer {
+            lock.lock()
+            depth -= 1
+            if depth == 0, !exec("COMMIT") { exec("ROLLBACK") }
+            lock.unlock()
+        }
+        return try body()
     }
 
     public func remove(_ store: String, _ key: String) {

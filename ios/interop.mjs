@@ -68,6 +68,11 @@ await page.waitForSelector(".bubble.out .reactions", { timeout: 60000 });
 console.log("• réaction 👍 de l'iPhone reçue");
 await until("lu par l'iPhone", async () => (await page.getAttribute(".msg-row.out:last-child .tick", "class"))?.includes("read"));
 console.log("• ✓✓ bleus : l'iPhone a lu");
+// La fiche de l'iPhone : une session à double cliquet, post-quantique (v3).
+await page.click(".conv-title");
+await page.waitForSelector("text=Session à double cliquet (post-quantique)", { timeout: 15000 });
+console.log("• fiche de l'iPhone : 🔐 session à double cliquet (post-quantique)");
+await page.click('.modal button[aria-label="Fermer"]');
 // Le groupe créé sur l'iPhone.
 await page.click('button[aria-label="Retour"]').catch(() => {});
 await page.waitForSelector(".chat-item:has-text('iPhone et navigateur')", { timeout: 60000 });

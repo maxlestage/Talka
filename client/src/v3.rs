@@ -18,7 +18,8 @@
 //!   jeton `[[BROCOLIS:v3:…]]`), puis ce jeton part dans l'enveloppe Talka
 //!   habituelle ([`crypto::seal`], les deux codes en données associées) : le
 //!   relais ne voit aucune différence. Sans paquet ni session (un contact qui
-//!   n'a pas la mise à jour, l'iPhone actuel), l'ancien format, exactement.
+//!   n'a pas la mise à jour), l'ancien format, exactement. L'iPhone parle le
+//!   même protocole (`ios/Sources/TalkaKit/V3.swift`, `tests/ios_v3.rs`).
 //! - **Réception** : une enveloppe dont le contenu est un jeton v3 passe par
 //!   la session (ou [`Device::accept`] pour un premier message). Un rejeu est
 //!   ignoré sans bruit.

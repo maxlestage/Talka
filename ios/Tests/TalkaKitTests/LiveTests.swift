@@ -49,6 +49,12 @@ final class LiveTests: XCTestCase {
         let got = try XCTUnwrap(b.messages(a.me.code).last)
         XCTAssertEqual(got.text, "Bonjour depuis l'iPhone 📱")
         XCTAssertEqual(b.displayName(a.me.code), "~Alice", "le profil a suivi")
+        // Deux iPhones à jour : une session à double cliquet (v3) ; avec un
+        // relais d'avant v3, l'ancien format (sans attendre le paquet).
+        let protection = await b.protection(a.me.code)
+        let v3 = a.relay.relayV3 == true
+        XCTAssertEqual(protection, v3 ? .ratchet(pq: V3.postQuantum) : .legacy)
+        XCTAssertEqual(a.v3?.hasSession(b.me.code), v3)
 
         // ✓✓ puis ✓✓ bleus.
         try await wait("distribué") { a.store.message(b.me.code, sent.id)?.tick == .delivered }
