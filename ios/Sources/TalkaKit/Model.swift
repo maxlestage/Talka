@@ -200,9 +200,12 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public var hasExp = false
     /// Le message épinglé en haut de la discussion, pour soi (vide : aucun).
     public var pinMsg = ""
+    /// Les clés Brocolis 🥦 (leurs `id`) qui chiffrent ce qui part dans cette
+    /// discussion, en plus de Talka. Vide : désactivé.
+    public var brocolis: [String] = []
 
     enum CodingKeys: String, CodingKey {
-        case id, group, name, avatar, members, admins, unread, pinned, archived, muted, timer, draft, wallpaper, left, v, last
+        case id, group, name, avatar, members, admins, unread, pinned, archived, muted, timer, draft, wallpaper, left, v, last, brocolis
         case createdBy = "created_by"
         case createdAt = "created_at"
         case lastAt = "last_at"
@@ -225,7 +228,27 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
         markedUnread = c.v(.markedUnread, false); pinned = c.v(.pinned, false); archived = c.v(.archived, false)
         muted = c.v(.muted, false); timer = c.v(.timer, 0); draft = c.v(.draft, ""); wallpaper = c.v(.wallpaper, "")
         left = c.v(.left, false); v = c.v(.v, 0); last = c.v(.last, nil); hasExp = c.v(.hasExp, false)
-        pinMsg = c.v(.pinMsg, "")
+        pinMsg = c.v(.pinMsg, ""); brocolis = c.v(.brocolis, [])
+    }
+}
+
+/// Une clé de Brocolis 🥦, partagée avec ses proches dans l'app Brocolis.
+public struct BrocolisKey: Codable, Equatable, Identifiable, Sendable {
+    public var id = ""
+    public var name = ""
+    /// 32 octets en base64.
+    public var key = ""
+    /// Remplacée par une clé neuve : elle ouvre encore les anciens messages,
+    /// mais ne chiffre plus rien.
+    public var retired = false
+
+    public init(id: String, name: String, key: String, retired: Bool = false) {
+        self.id = id; self.name = name; self.key = key; self.retired = retired
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.v(.id, ""); name = c.v(.name, ""); key = c.v(.key, ""); retired = c.v(.retired, false)
     }
 }
 
@@ -339,9 +362,11 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     public var readByMe = false
     /// Une capsule temporelle : scellée jusqu'à cette heure (ms).
     public var openAt: Double?
+    /// Arrivé ou parti chiffré par Brocolis 🥦 (et ouvert sur cet appareil).
+    public var bro = false
 
     enum CodingKeys: String, CodingKey {
-        case chat, id, from, at, kind, text, data, name, mime, size, dur, w, h, code, reply, fwd, status, to, reactions, edited, deleted, starred, exp
+        case chat, id, from, at, kind, text, data, name, mime, size, dur, w, h, code, reply, fwd, status, to, reactions, edited, deleted, starred, exp, bro
         case openAt = "open_at"
         case sentTo = "sent_to"
         case deliveredTo = "delivered_to"
@@ -370,6 +395,8 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     /// se trahit pas.
     public func summonsBrocoli(me: String, now: Double = nowMs()) -> Bool {
         guard kind == "text", !deleted, !sealed(for: me, now: now) else { return false }
+        // Pas un jeton Brocolis resté scellé : il ne dit rien de ce qu'il cache.
+        let text = Brocolis.masked(text).replacingOccurrences(of: "🔒🥦", with: "")
         return text.contains("🥦")
             || text.range(of: "brocoli", options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
@@ -383,7 +410,7 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         sentTo = c.v(.sentTo, []); deliveredTo = c.v(.deliveredTo, []); readBy = c.v(.readBy, [])
         reactions = c.v(.reactions, [:]); edited = c.v(.edited, false); deleted = c.v(.deleted, false)
         starred = c.v(.starred, false); exp = c.v(.exp, nil); readByMe = c.v(.readByMe, false)
-        openAt = c.v(.openAt, nil)
+        openAt = c.v(.openAt, nil); bro = c.v(.bro, false)
     }
 
     /// `chat|id` : la clé dans le stockage.

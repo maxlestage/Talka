@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 use talka_web::crypto::{self, Identity};
+use talka_web::jetons;
 use talka_web::model::*;
 
 fn main() {
@@ -133,10 +134,12 @@ fn main() {
         sent_to: vec![b.code.clone()],
         reactions,
         exp: Some(2.0),
+        bro: true,
         ..Default::default()
     };
     let chat = Chat {
         id: "g:g1".into(),
+        brocolis: vec!["k1".into()],
         group: true,
         name: "Les amis".into(),
         members: vec![a.code.clone(), b.code.clone()],
@@ -184,7 +187,25 @@ fn main() {
         boot: "B00T".into(),
     };
 
+    // Brocolis 🥦 : des jetons du navigateur, que l'iPhone doit ouvrir.
+    let (k1, k2) = (jetons::generate_key(), jetons::generate_key());
+    let keys = [k1.as_str(), k2.as_str()].map(|k| jetons::key_from_b64(k).unwrap());
+    let brocolis = json!({
+        "keys": [
+            { "id": "k1", "name": "Bob", "key": k1 },
+            { "id": "k2", "name": "Travail", "key": k2 },
+        ],
+        "v1": jetons::seal("Le code du portail est 4521", &keys[..1]),
+        "v1_plain": "Le code du portail est 4521",
+        "v2": jetons::seal("À tous 🥦", &keys),
+        "v2_plain": "À tous 🥦",
+        "marked": jetons::seal("On se voit ((au parc)) demain", &keys[1..]),
+        "marked_plain": "On se voit au parc demain",
+        "fingerprint_k1": jetons::fingerprint(&k1),
+    });
+
     let vectors = json!({
+        "brocolis": brocolis,
         "code_of_empty": crypto::code_of(&[], &[]),
         "a": a,
         "b": b,

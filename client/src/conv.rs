@@ -167,6 +167,7 @@ fn chat_menu(chat: &Chat, at: At) {
     let direct = !chat.group;
     let saved = core::contact(&chat.id).is_some_and(|c| c.saved);
     let blocked = core::blocked(&chat.id);
+    let i9 = chat.clone();
     let (i1, i2, i3, i4, i5, i6, i7, i8) = (
         chat.id.clone(),
         chat.clone(),
@@ -193,6 +194,15 @@ fn chat_menu(chat: &Chat, at: At) {
             ),
             item("search", "Rechercher", toggle_search),
             item("timer", "Messages éphémères", move || timer_dialog(&i2)),
+            item(
+                "lock",
+                if chat.brocolis.is_empty() {
+                    "Chiffrer avec Brocolis 🥦".to_owned()
+                } else {
+                    format!("Brocolis 🥦 : {}", brocolis_names(chat))
+                },
+                move || crate::brocoli::chat_dialog(&i9),
+            ),
             item(
                 if chat.muted { "bell" } else { "belloff" },
                 if chat.muted {
@@ -253,6 +263,15 @@ fn chat_menu(chat: &Chat, at: At) {
         ],
         at,
     );
+}
+
+/// Les noms des clés Brocolis qui chiffrent cette discussion.
+fn brocolis_names(chat: &Chat) -> String {
+    core::chat_brocolis(chat)
+        .iter()
+        .map(|k| k.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 async fn toggle_block(code: String) {
@@ -766,9 +785,9 @@ fn quote(r: &Reply) -> El {
                 .text(who(&r.from)),
         )
         .child(h("span").text(if r.text.is_empty() {
-            "Message"
+            "Message".into()
         } else {
-            &r.text
+            crate::jetons::masked(&r.text)
         }))
         .click(move || jump_to(&id))
 }
@@ -1128,6 +1147,7 @@ fn content(m: &Message) -> El {
                 )
                 .child(icon("download"))
         }
+        "brokey" => crate::brocoli::key_card(m),
         "contact" => {
             let code = m.code.clone();
             let name = m.name.clone();
@@ -1231,6 +1251,11 @@ fn bubble(m: &Message, prev: Option<&Message>, chat: Option<&Chat>) -> Element {
         .child(
             h("div.meta")
                 .child(m.starred.then(|| h("span.star").text("★")))
+                .child((m.bro && !m.deleted).then(|| {
+                    h("span.bro")
+                        .attr("title", "Chiffré aussi par Brocolis 🥦")
+                        .text("🥦")
+                }))
                 .child(
                     m.exp
                         .map(|_| h("span").attr("title", "Message éphémère").text("⏳")),
@@ -1581,8 +1606,8 @@ fn snippet(m: &Message) -> String {
         return core::preview(m);
     }
     match m.kind.as_str() {
-        "image" | "voice" | "file" | "contact" => core::preview(m),
-        _ => m.text.chars().take(140).collect(),
+        "image" | "voice" | "file" | "contact" | "brokey" => core::preview(m),
+        _ => crate::jetons::masked(&m.text).chars().take(140).collect(),
     }
 }
 
@@ -1655,7 +1680,7 @@ fn autosize(ta: &HtmlTextAreaElement) {
     let _ = ta.style().set_property("height", &format!("{hgt}px"));
 }
 
-fn render_composer(focus_it: bool) {
+pub fn render_composer(focus_it: bool) {
     let (Some(id), Some(host)) = (current(), el(|c| c.composer.clone())) else {
         return;
     };
@@ -1687,7 +1712,14 @@ fn render_composer(focus_it: bool) {
         let old = textarea().map(|t| t.value());
         let ta: HtmlTextAreaElement = h("textarea")
             .attr("rows", "1")
-            .attr("placeholder", "Message")
+            .attr(
+                "placeholder",
+                if chat.brocolis.is_empty() {
+                    "Message"
+                } else {
+                    "Message chiffré par Brocolis 🥦"
+                },
+            )
             .attr("aria-label", "Message")
             .attr("maxlength", "20000")
             .el()

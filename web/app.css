@@ -3306,3 +3306,37 @@ body.locked .lock-screen {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Brocolis 🥦 : la marque des messages chiffrés aussi par Brocolis. */
+.meta .bro {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.bro-key {
+  font-size: 22px;
+}
+
+.bro-row.retired {
+  opacity: 0.6;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.bro-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+  padding: 4px 2px;
+}
+
+.bro-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

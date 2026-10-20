@@ -333,9 +333,79 @@ pub fn decrypt_backup(password: &str, file: &Backup) -> Result<String, &'static 
     String::from_utf8(pt).map_err(|_| bad)
 }
 
+// ----- Les clés Brocolis, scellées par le code de verrouillage --------------
+
+/// Plus lent que la vérification du code : c'est lui qui protège les clés
+/// au repos.
+pub const BROCOLIS_ROUNDS: u32 = 300_000;
+const BROCOLIS_AD: &[u8] = b"talka-brocolis-keys";
+
+/// Les clés Brocolis de l'appareil, chiffrées par le code de verrouillage :
+/// PBKDF2-SHA256 → AES-256-GCM (`data` : nonce ‖ chiffré ‖ tag).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SealedKeys {
+    pub salt: String,
+    pub data: String,
+}
+
+pub fn pin_key(pin: &str, salt: &[u8]) -> [u8; 32] {
+    pbkdf2(pin, salt, BROCOLIS_ROUNDS)
+}
+
+pub fn seal_keys(key: &[u8; 32], salt: &str, plain: &str) -> Option<SealedKeys> {
+    let nonce = random_bytes(12);
+    let ct = Aes256Gcm::new_from_slice(key)
+        .ok()?
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: plain.as_bytes(),
+                aad: BROCOLIS_AD,
+            },
+        )
+        .ok()?;
+    Some(SealedKeys {
+        salt: salt.to_owned(),
+        data: b64(&[nonce, ct].concat()),
+    })
+}
+
+pub fn open_keys(key: &[u8; 32], sealed: &SealedKeys) -> Option<String> {
+    let data = unb64(&sealed.data)?;
+    if data.len() < 12 + 16 {
+        return None;
+    }
+    let (nonce, ct) = data.split_at(12);
+    let pt = Aes256Gcm::new_from_slice(key)
+        .ok()?
+        .decrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: ct,
+                aad: BROCOLIS_AD,
+            },
+        )
+        .ok()?;
+    String::from_utf8(pt).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brocolis_keys_open_only_with_the_right_pin() {
+        let salt = random_bytes(16);
+        let key = pin_key("2580", &salt);
+        let sealed = seal_keys(&key, &b64(&salt), "[{\"id\":\"k1\"}]").unwrap();
+        assert!(!sealed.data.contains("k1"));
+        assert_eq!(
+            open_keys(&key, &sealed).as_deref(),
+            Some("[{\"id\":\"k1\"}]")
+        );
+        assert_eq!(open_keys(&pin_key("0000", &salt), &sealed), None);
+    }
 
     #[test]
     fn code_vector() {
