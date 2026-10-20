@@ -220,19 +220,90 @@ a {
 
 /* ----- Démarrage ----- */
 
+/* L'écran de chargement : le logo qui respire, une barre qui avance, l'étape. */
 .boot {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 10px;
+  padding: 24px 16px;
+  min-height: 100%;
+  text-align: center;
   color: var(--muted);
-  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.boot-logo {
+  border-radius: 22%;
+  box-shadow: 0 12px 30px rgba(14, 107, 99, 0.28);
+  animation: boot-breathe 1.8s ease-in-out infinite;
+}
+
+.boot-name {
+  margin: 6px 0 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.boot-bar {
+  position: relative;
+  width: min(180px, 60vw);
+  height: 4px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.boot-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: #0e6b63;
+  animation: boot-slide 1.2s ease-in-out infinite;
+}
+
+.boot-step {
+  margin: 4px 0 0;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.boot-note {
+  margin: 0;
+  max-width: 30ch;
+  font-size: 13px;
 }
 
 @keyframes pulse {
   50% {
     opacity: 0.55;
+  }
+}
+
+@keyframes boot-breathe {
+  50% {
+    transform: scale(0.94);
+    opacity: 0.85;
+  }
+}
+
+@keyframes boot-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-logo,
+  .boot-bar span {
+    animation: none;
   }
 }
 

@@ -470,18 +470,34 @@ pub fn app_shell(site: &Site) -> Page {
         .plain()
         .head(head_tags(site, "app"))
         .stylesheet(site.url(&assets::url("app.css")))
+        // L'écran de chargement, affiché dès la première image, avant le
+        // module WebAssembly : l'application le remplace une fois prête, et
+        // y écrit l'étape en cours (`#boot-step`).
         .body(
             div()
                 .id("root")
                 .class("boot")
+                .attr("role", "status")
+                .attr("aria-live", "polite")
                 .child(
                     img()
+                        .class("boot-logo")
                         .attr("src", site.url("/logo.svg"))
                         .attr("alt", "")
-                        .attr("width", "72")
-                        .attr("height", "72"),
+                        .attr("width", "88")
+                        .attr("height", "88"),
                 )
-                .child(p().text("Talka")),
+                .child(p().class("boot-name").text("Talka"))
+                .child(div().class("boot-bar").child(span()))
+                .child(
+                    p().id("boot-step")
+                        .class("boot-step")
+                        .text("Ouverture de Talka…"),
+                )
+                .child(
+                    p().class("boot-note")
+                        .text("Vos messages restent sur cet appareil, chiffrés de bout en bout."),
+                ),
         )
         .body(
             noscript().text("Talka a besoin de JavaScript (pour charger son module WebAssembly)."),

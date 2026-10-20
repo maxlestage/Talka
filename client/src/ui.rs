@@ -155,8 +155,16 @@ fn pending_invite() -> Option<String> {
     normalize(&code)
 }
 
+/// L'étape affichée par l'écran de chargement (tant qu'il est là).
+fn boot_step(text: &str) {
+    if let Some(el) = by_id("boot-step") {
+        el.set_text_content(Some(text));
+    }
+}
+
 /// Démarre l'application : verrouillage, accueil, ou discussions.
 pub async fn boot() {
+    boot_step("Lecture de vos messages…");
     if store::open().await.is_err() {
         fatal(
             "Ce navigateur ne permet pas à Talka de garder vos messages (IndexedDB). Essayez une version récente de Chrome, Firefox, Safari ou Edge, hors navigation privée.",
@@ -165,6 +173,7 @@ pub async fn boot() {
     }
     let invite = pending_invite();
     sounds::unlock();
+    boot_step("Préparation de vos discussions…");
     if core::has_account().await {
         if lock::has_pin().await {
             replace(&root(), Child::None);
