@@ -104,6 +104,17 @@ pub enum Opened {
     Failed(Failure),
 }
 
+/// Faut-il réparer la session (l'oublier et renvoyer notre profil) ? Seulement
+/// quand elle est **perdue** : session inconnue, ou clé pré-signée déjà
+/// oubliée. Un déchiffrement raté sur une session connue est un rejeu (le
+/// relais peut renvoyer un vieux message, y compris d'une chaîne plus
+/// ancienne que celles que la session retient) ou une falsification : on
+/// l'ignore. Sinon, quiconque rejoue un vieux message forcerait une remise à
+/// zéro de la session.
+pub fn needs_repair(e: &Erreur) -> bool {
+    matches!(e, Erreur::SessionInconnue | Erreur::CleInconnue)
+}
+
 /// Pourquoi une enveloppe n'a pas pu être ouverte.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Failure {
@@ -451,6 +462,43 @@ mod tests {
     fn recv(to: &mut Side, from: &Side, s: &Sealed) -> Opened {
         to.engine
             .open(&to.id, &from.id.code, &from.id.dh, &s.body, 2_000)
+    }
+
+    #[test]
+    fn an_old_replayed_message_never_resets_the_session() {
+        // Un message d'une chaîne plus vieille que celles que la session
+        // retient (16 cliquets), rejoué par le relais : refusé, sans
+        // réparation (sinon rejouer suffirait à faire tomber la session).
+        let (mut a, mut b) = (side(), side());
+        let first = send(&mut a, &b, true, "{\"k\":\"bonjour\"}");
+        assert!(matches!(recv(&mut b, &a, &first), Opened::V3(_)));
+        let old = send(&mut a, &b, false, "{\"k\":\"vieux\"}");
+        assert!(matches!(recv(&mut b, &a, &old), Opened::V3(_)));
+        for i in 0..20 {
+            let r = send(&mut b, &a, false, &format!("{{\"r\":{i}}}"));
+            assert!(matches!(recv(&mut a, &b, &r), Opened::V3(_)));
+            let m = send(&mut a, &b, false, &format!("{{\"m\":{i}}}"));
+            assert!(matches!(recv(&mut b, &a, &m), Opened::V3(_)));
+        }
+        match recv(&mut b, &a, &old) {
+            Opened::Replay => {}
+            Opened::Failed(Failure::V3(e)) => assert!(!needs_repair(&e), "{e}"),
+            other => panic!("{other:?}"),
+        }
+        // La session tient toujours.
+        let after = send(&mut a, &b, false, "{\"k\":\"après\"}");
+        assert_eq!(
+            recv(&mut b, &a, &after),
+            Opened::V3("{\"k\":\"après\"}".into())
+        );
+    }
+
+    #[test]
+    fn only_a_lost_session_is_repaired() {
+        assert!(needs_repair(&Erreur::SessionInconnue));
+        assert!(needs_repair(&Erreur::CleInconnue));
+        assert!(!needs_repair(&Erreur::Dechiffrement));
+        assert!(!needs_repair(&Erreur::Rejoue));
     }
 
     #[test]
