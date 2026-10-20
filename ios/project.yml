@@ -38,9 +38,12 @@ targets:
         product: WebRTC
       # L'app de la montre, livrée dans celle de l'iPhone (dossier Watch).
       - target: TalkaWatch
+      # Les widgets (écran d'accueil, écran verrouillé).
+      - target: TalkaWidgets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maxlestage.talka
+        CODE_SIGN_ENTITLEMENTS: Shared.entitlements
         PRODUCT_NAME: Talka
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -56,9 +59,14 @@ targets:
       - path: TalkaWatch
       # Ce que l'iPhone et la montre s'échangent : le même fichier des deux côtés.
       - path: Sources/TalkaKit/WatchLink.swift
+      - path: Sources/TalkaKit/WidgetData.swift
+    dependencies:
+      # Les complications, livrées dans l'app de la montre.
+      - target: TalkaWatchWidgets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.maxlestage.talka.watchkitapp
+        CODE_SIGN_ENTITLEMENTS: Shared.entitlements
         PRODUCT_NAME: TalkaWatch
         TARGETED_DEVICE_FAMILY: "4"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -66,6 +74,36 @@ targets:
         CODE_SIGN_STYLE: Automatic
         SKIP_INSTALL: YES
         ENABLE_PREVIEWS: YES
+  # Les widgets : le même code pour l'iPhone et la montre (TalkaWidgets/).
+  TalkaWidgets:
+    type: app-extension
+    platform: iOS
+    sources: &widgetSources
+      - path: TalkaWidgets
+      - path: Sources/TalkaKit/WatchLink.swift
+      - path: Sources/TalkaKit/WidgetData.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maxlestage.talka.widgets
+        PRODUCT_NAME: TalkaWidgets
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_FILE: WidgetsSupport/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Shared.entitlements
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+  TalkaWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    sources: *widgetSources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maxlestage.talka.watchkitapp.widgets
+        PRODUCT_NAME: TalkaWatchWidgets
+        TARGETED_DEVICE_FAMILY: "4"
+        INFOPLIST_FILE: WidgetsSupport/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Shared.entitlements
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
 schemes:
   Talka:
     build:

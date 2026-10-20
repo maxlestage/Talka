@@ -28,6 +28,9 @@
 	<!-- Elle a besoin de l'iPhone : c'est lui qui a les clés et parle au relais. -->
 	<key>WKRunsIndependentlyOfCompanionApp</key>
 	<false/>
+	<!-- Le groupe de trousseau partagé avec les widgets (Shared.entitlements). -->
+	<key>TalkaKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)com.maxlestage.talka.shared</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 </dict>

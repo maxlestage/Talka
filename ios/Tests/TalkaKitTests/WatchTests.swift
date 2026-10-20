@@ -81,3 +81,52 @@ final class WatchTests: XCTestCase {
         XCTAssertEqual(watchColor("WGSEAJNSZJ"), watchColor("WGSEAJNSZJ"))
     }
 }
+
+/// Les widgets : ce qu'ils montrent, et l'adresse qu'ouvre un toucher.
+final class WidgetDataTests: XCTestCase {
+    func chat(_ id: String, unread: Int, at: Double, muted: Bool = false) -> WatchChat {
+        var c = WatchChat(id: id)
+        c.title = id
+        c.unread = unread
+        c.at = at
+        c.muted = muted
+        c.last = "dernier de \(id)"
+        return c
+    }
+
+    func testUnreadFirstThenRecentAndMutedIgnored() {
+        let s = WatchSnapshot(chats: [
+            chat("A", unread: 0, at: 50), chat("B", unread: 2, at: 10),
+            chat("C", unread: 4, at: 5, muted: true), chat("D", unread: 1, at: 20), chat("E", unread: 0, at: 40),
+        ])
+        let w = WidgetData(s, hidden: false, limit: 3)
+        XCTAssertEqual(w.unread, 3)
+        XCTAssertEqual(w.chats.map(\.id), ["D", "B", "A"])
+        XCTAssertEqual(w.summary, "3 messages non lus")
+        XCTAssertEqual(w.at, 50)
+        XCTAssertEqual(WidgetData(unread: 1).summary, "1 message non lu")
+        XCTAssertEqual(WidgetData().summary, "Aucun message non lu")
+    }
+
+    func testHiddenKeepsOnlyTheCount() {
+        let w = WidgetData(WatchSnapshot(chats: [chat("A", unread: 2, at: 1)]), hidden: true)
+        XCTAssertEqual(w.unread, 2)
+        XCTAssertTrue(w.chats.isEmpty)
+        XCTAssertTrue(w.hidden)
+    }
+
+    func testLinksRoundTrip() {
+        for id in ["WGSEAJNSZJ", "g:ab12cd"] {
+            XCTAssertEqual(WidgetData.chat(in: WidgetData.link(id)), id)
+        }
+        XCTAssertEqual(WidgetData.link().absoluteString, "talka://chats")
+        XCTAssertNil(WidgetData.chat(in: WidgetData.link()))
+        XCTAssertNil(WidgetData.chat(in: URL(string: "talka://add/WGSEAJNSZJ")!))
+    }
+
+    func testOlderSnapshotsWithoutHiddenStillDecode() throws {
+        let old = #"{"name":"Léa","online":true,"chats":[]}"#.data(using: .utf8)!
+        let s = try XCTUnwrap(WatchLink.decode(WatchSnapshot.self, old))
+        XCTAssertNil(s.hidden)
+    }
+}
