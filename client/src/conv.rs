@@ -607,7 +607,7 @@ async fn render(initial: bool) {
         .skip(if has_more { 1 } else { 0 })
         .filter(|m| m.exp.is_none_or(|e| e > t))
         .collect();
-    let q = with(|c| c.search.trim().to_lowercase());
+    let q = with(|c| crate::model::fold(c.search.trim()));
     let stick = initial || near_bottom();
     if initial {
         let n = with(|c| c.first_unread) as usize;
@@ -632,7 +632,8 @@ async fn render(initial: bool) {
         let mut prev: Option<&Message> = None;
         let mut shown = 0;
         for m in &list {
-            if !q.is_empty() && !format!("{} {}", m.text, m.name).to_lowercase().contains(&q) {
+            if !q.is_empty() && !crate::model::fold(&format!("{} {}", m.text, m.name)).contains(&q)
+            {
                 continue;
             }
             shown += 1;

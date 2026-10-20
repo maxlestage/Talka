@@ -15,7 +15,7 @@ use crate::crypto::{normalize, pretty, safety_number};
 use crate::dom::*;
 use crate::lock;
 use crate::media;
-use crate::model::{Chat, StatusItem};
+use crate::model::{Chat, StatusItem, fold};
 use crate::net::{self, State};
 use crate::sounds;
 use crate::store;
@@ -632,8 +632,7 @@ fn render_chat_list() {
     let Some(body) = with(|u| u.body.clone()) else {
         return;
     };
-    let (q, filter, archived) =
-        with(|u| (u.query.trim().to_lowercase(), u.filter.clone(), u.archived));
+    let (q, filter, archived) = with(|u| (fold(u.query.trim()), u.filter.clone(), u.archived));
     let q_code = q.replace('-', "");
     let all: Vec<Chat> = core::chats()
         .into_iter()
@@ -647,11 +646,9 @@ fn render_chat_list() {
         .filter(|c| filter != "groups" || c.group)
         .filter(|c| {
             q.is_empty()
-                || core::chat_title(c).to_lowercase().contains(&q)
+                || fold(&core::chat_title(c)).contains(&q)
                 || c.id.to_lowercase().contains(&q_code)
-                || c.last
-                    .as_ref()
-                    .is_some_and(|l| l.text.to_lowercase().contains(&q))
+                || c.last.as_ref().is_some_and(|l| fold(&l.text).contains(&q))
         })
         .collect();
     chats.sort_by(|a, b| {
@@ -686,7 +683,7 @@ fn render_chat_list() {
                 .into_iter()
                 .filter(|c| c.saved && core::chat(&c.code).is_none())
                 .filter(|c| {
-                    core::display_name(&c.code).to_lowercase().contains(&q)
+                    fold(&core::display_name(&c.code)).contains(&q)
                         || c.code.to_lowercase().contains(&q_code)
                 })
                 .map(|c| {
