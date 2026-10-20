@@ -427,7 +427,8 @@ struct ConversationView: View {
                 HStack(alignment: .bottom, spacing: 8) {
                     if recorder.recording {
                         Button { recorder.cancel() } label: { Image(systemName: "trash").font(.title3).foregroundStyle(.red) }
-                            .frame(height: 38)
+                            .frame(width: 38, height: 38)
+                            .background(.regularMaterial, in: .circle)
                             .accessibilityLabel("Annuler l'enregistrement")
                         TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
                             HStack {
@@ -437,6 +438,9 @@ struct ConversationView: View {
                             }
                         }
                         .frame(height: 38)
+                        // Lisible sur le fond, comme le champ de saisie qu'il remplace.
+                        .padding(.horizontal, 12)
+                        .background(.regularMaterial, in: .rect(cornerRadius: 20))
                     } else {
                         Menu {
                             Button { pickingPhotos = true } label: { Label("Galerie photos", systemImage: "photo.on.rectangle") }
