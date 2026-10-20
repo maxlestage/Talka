@@ -21,6 +21,8 @@ pub struct Settings {
     pub theme: String,
     pub read_receipts: bool,
     pub hide_online: bool,
+    /// La pastille verte des contacts en ligne (grise hors ligne).
+    pub presence_dot: bool,
     pub notify: bool,
     pub sound: bool,
     pub enter_sends: bool,
@@ -38,6 +40,7 @@ impl Default for Settings {
             theme: "auto".into(),
             read_receipts: true,
             hide_online: false,
+            presence_dot: true,
             notify: false,
             sound: true,
             enter_sends: true,

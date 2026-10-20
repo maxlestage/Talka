@@ -17,7 +17,7 @@ use crate::emoji::{QUICK, picker, remember};
 use crate::media::{self, MAX_FILE, Recorder};
 use crate::model::{Chat, Content, Message, Reply};
 use crate::sounds;
-use crate::ui::{avatar, color_of, open_add_contact, open_chat, open_image, open_info, pick_chats};
+use crate::ui::{avatar, avatar_presence, color_of, open_add_contact, open_chat, open_image, open_info, pick_chats};
 
 const PAGE: usize = 120;
 
@@ -118,7 +118,7 @@ fn header(chat: &Chat) -> Element {
                     let id = id.clone();
                     spawn(async move { open_info(&id).await })
                 })
-                .child(avatar(&chat.id, 40))
+                .child(avatar_presence(&chat.id, 40))
                 .child(
                     h("div.conv-names")
                         .child(h("div.conv-name").text(core::chat_title(chat)))
