@@ -29,6 +29,9 @@ struct ConversationView: View {
     @State private var search: String?
     /// Le message vers lequel faire défiler (bandeau de l'épingle).
     @State private var jumpTo: String?
+    /// La pluie de brocolis en cours (l'œuf de Pâques 🥦).
+    @State private var brocolis: UUID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focused: Bool
     @FocusState private var searchFocused: Bool
 
@@ -86,6 +89,10 @@ struct ConversationView: View {
                         guard let id else { return }
                         withAnimation(loaded ? .default : nil) { proxy.scrollTo(id, anchor: .bottom) }
                         e.markRead(chatId)
+                        // Seulement pour un message qui arrive ou part maintenant.
+                        if let m = messages.last, nowMs() - m.at < 10_000, m.summonsBrocoli(me: e.me.code) {
+                            rainBrocolis()
+                        }
                     }
                     .onAppear {
                         if let id = messages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
@@ -106,6 +113,16 @@ struct ConversationView: View {
             // Le fond couvre tout l'écran, sous la barre du haut et la zone de
             // saisie : pas de bande vide quand la photo n'a pas la bonne forme.
             .background { wallpaper(e, chat).ignoresSafeArea() }
+            .overlay {
+                if let id = brocolis {
+                    BrocoliRain()
+                        .id(id)
+                        .task(id: id) {
+                            try? await Task.sleep(for: .seconds(5))
+                            if brocolis == id { brocolis = nil }
+                        }
+                }
+            }
             .navigationBarTitleDisplayMode(.inline)
             // Une barre opaque : le nom reste lisible sur une photo de fond.
             .toolbarBackground(.visible, for: .navigationBar)
@@ -523,6 +540,12 @@ struct ConversationView: View {
         }
         text = ""
         e.updateChat(chatId) { $0.draft = "" }
+    }
+
+    func rainBrocolis() {
+        guard !reduceMotion else { return }
+        brocolis = UUID()
+        model.show("🥦 Chiffré au brocoli (et en AES-256-GCM, quand même)")
     }
 
     func send(_ e: Engine, _ content: Content) {

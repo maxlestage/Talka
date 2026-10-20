@@ -365,6 +365,15 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         (openAt ?? 0) > now && from != me
     }
 
+    /// L'œuf de Pâques 🥦, comme dans le navigateur : un texte qui contient
+    /// 🥦 ou « brocoli » fait pleuvoir des brocolis. Une capsule scellée ne
+    /// se trahit pas.
+    public func summonsBrocoli(me: String, now: Double = nowMs()) -> Bool {
+        guard kind == "text", !deleted, !sealed(for: me, now: now) else { return false }
+        return text.contains("🥦")
+            || text.range(of: "brocoli", options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         chat = c.v(.chat, ""); id = c.v(.id, ""); from = c.v(.from, ""); at = c.v(.at, 0); kind = c.v(.kind, "text")

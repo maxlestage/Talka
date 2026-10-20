@@ -15,6 +15,8 @@ pub mod model;
 pub mod rows;
 
 #[cfg(target_arch = "wasm32")]
+mod brocoli;
+#[cfg(target_arch = "wasm32")]
 mod calls;
 #[cfg(target_arch = "wasm32")]
 mod conv;
