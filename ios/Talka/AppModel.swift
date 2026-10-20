@@ -30,10 +30,29 @@ final class AppModel {
     var invite: String?
     @ObservationIgnored var hiddenAt: Date?
 
+    /// L'étape de l'écran de chargement (`nil` : Talka est prêt).
+    var loading: String? = "Ouverture de Talka…"
+
     init() {
         locked = store.read("kv", "pin", as: PinHash.self) != nil
         adoptBuiltInServer()
         if Engine.hasAccount(store) { start() }
+        Task { await finishLoading() }
+    }
+
+    /// L'écran de chargement : le temps de retrouver le relais (2,5 s au
+    /// plus : hors ligne, on montre tout de suite les discussions gardées).
+    func finishLoading() async {
+        guard let e = engine else {
+            withAnimation(.easeOut(duration: 0.3)) { loading = nil }
+            return
+        }
+        loading = "Connexion à vos contacts…"
+        let end = Date().addingTimeInterval(2.5)
+        while e.netState != .online, Date() < end {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        withAnimation(.easeOut(duration: 0.3)) { loading = nil }
     }
 
     /// Une version qui apporte un (nouveau) serveur intégré le fait adopter :
