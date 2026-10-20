@@ -800,6 +800,25 @@ pub async fn toggle_star(chat_id: &str, msg_id: &str) {
     }
 }
 
+/// Épingle un message en haut de sa discussion (ou retire l'épingle).
+pub async fn set_pin(chat_id: &str, msg_id: &str) {
+    let id = msg_id.to_owned();
+    update_chat(chat_id, move |c| c.pin_msg = id).await;
+    emit(Ev::Messages(chat_id.to_owned()));
+}
+
+/// Le message épinglé d'une discussion, s'il existe encore.
+pub async fn pinned_message(chat_id: &str) -> Option<Message> {
+    let id = chat(chat_id)?.pin_msg;
+    if id.is_empty() {
+        return None;
+    }
+    let t = now();
+    get_message(chat_id, &id)
+        .await
+        .filter(|m| !m.deleted && m.exp.is_none_or(|e| e > t))
+}
+
 pub async fn starred() -> Vec<Message> {
     let mut list: Vec<Message> = store::all::<Message>("messages")
         .await
