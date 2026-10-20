@@ -57,8 +57,8 @@ struct ConversationView: View {
                                 .font(.caption)
                                 .multilineTextAlignment(.center)
                                 .padding(10)
-                                .background(Color(light: .init(red: 1, green: 0.96, blue: 0.77, alpha: 1), dark: .init(white: 0.15, alpha: 1)),
-                                            in: .rect(cornerRadius: 8))
+                                // Translucide : le fond de la discussion reste visible.
+                                .background(.regularMaterial, in: .rect(cornerRadius: 8))
                                 .padding(.horizontal, 30)
                                 .padding(.vertical, 8)
                             ForEach(Array(messages.enumerated()), id: \.element.id) { i, m in
@@ -419,7 +419,9 @@ struct ConversationView: View {
                             .accessibilityLabel("Annuler")
                     }
                     .frame(height: 40)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 10)
+                    .background(.regularMaterial, in: .rect(cornerRadius: 12))
+                    .padding(.horizontal, 8)
                     .padding(.top, 8)
                 }
                 HStack(alignment: .bottom, spacing: 8) {
@@ -445,7 +447,8 @@ struct ConversationView: View {
                             Button { sharingContact = true } label: { Label("Contact", systemImage: "person.crop.circle") }
                             Button { composingCapsule = true } label: { Label("Capsule temporelle", systemImage: "hourglass") }
                         } label: {
-                            Image(systemName: "plus").font(.title2).frame(width: 34, height: 38)
+                            Image(systemName: "plus").font(.title3.weight(.semibold)).frame(width: 38, height: 38)
+                                .background(.regularMaterial, in: .circle)
                         }
                         .accessibilityLabel("Joindre")
                         TextField("Message", text: $text, axis: .vertical)
@@ -453,14 +456,15 @@ struct ConversationView: View {
                             .focused($focused)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
-                            .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 20))
+                            .background(.regularMaterial, in: .rect(cornerRadius: 20))
                             .onChange(of: text) { _, t in
                                 if editing == nil { e.setTyping(chatId, !t.isEmpty) }
                             }
                         // La galerie à portée de pouce, comme WhatsApp.
                         if text.isEmpty && editing == nil {
                             Button { pickingPhotos = true } label: {
-                                Image(systemName: "photo.on.rectangle").font(.title3).frame(width: 34, height: 38)
+                                Image(systemName: "photo.on.rectangle").font(.body).frame(width: 38, height: 38)
+                                    .background(.regularMaterial, in: .circle)
                             }
                             .accessibilityLabel("Envoyer une photo de la galerie")
                         }
@@ -499,7 +503,8 @@ struct ConversationView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
             }
-            .background(.bar)
+            // Transparente : la saisie flotte sur le fond de la discussion,
+            // seuls le champ et les boutons ont leur verre dépoli.
         }
     }
 
