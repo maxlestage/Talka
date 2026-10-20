@@ -120,29 +120,38 @@ struct ConversationView: View {
                             }
                             .fixedSize(horizontal: false, vertical: true)
                         }
-                        // La place laissée entre le bouton retour et les
-                        // boutons d'appel, sans passer dessous.
-                        .frame(maxWidth: 200, alignment: .leading)
+                        // Toute la place entre le bouton retour et « ⋯ » (le titre
+                        // est centré : 75 points de chaque côté pour eux), sans
+                        // passer dessous.
+                        .frame(width: max(160, UIScreen.main.bounds.width - 150), alignment: .leading)
                     }
                     .foregroundStyle(.primary)
                     .accessibilityLabel("Infos de \(e.title(chat))")
                 }
+                // Un seul bouton « ⋯ » : le nom garde toute la place.
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        withAnimation { search = search == nil ? "" : nil }
-                        searchFocused = search != nil
+                    Menu {
+                        if !chat.group, !e.blocked(chatId) {
+                            Button { Task { await model.startCall(chatId, video: true) } } label: {
+                                Label("Appel vidéo", systemImage: "video")
+                            }
+                            Button { Task { await model.startCall(chatId, video: false) } } label: {
+                                Label("Appel audio", systemImage: "phone")
+                            }
+                        }
+                        Button {
+                            withAnimation { search = search == nil ? "" : nil }
+                            searchFocused = search != nil
+                        } label: {
+                            Label(search == nil ? "Rechercher" : "Fermer la recherche", systemImage: "magnifyingglass")
+                        }
+                        Button { showInfo = true } label: {
+                            Label(chat.group ? "Infos du groupe" : "Infos du contact", systemImage: "info.circle")
+                        }
                     } label: {
-                        Image(systemName: "magnifyingglass")
+                        Image(systemName: "ellipsis")
                     }
-                    .accessibilityLabel(search == nil ? "Rechercher dans la discussion" : "Fermer la recherche")
-                }
-                if !chat.group, !e.blocked(chatId) {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button { Task { await model.startCall(chatId, video: true) } } label: { Image(systemName: "video") }
-                            .accessibilityLabel("Appel vidéo")
-                        Button { Task { await model.startCall(chatId, video: false) } } label: { Image(systemName: "phone") }
-                            .accessibilityLabel("Appel audio")
-                    }
+                    .accessibilityLabel("Plus d'options")
                 }
             }
             .toolbar(.hidden, for: .tabBar)
