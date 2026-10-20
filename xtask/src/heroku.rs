@@ -273,6 +273,7 @@ pub fn deploy() -> Result<(), String> {
     }
     let (_, info) = heroku("GET", &format!("/apps/{app}"), None)?;
     let url = info["web_url"].as_str().unwrap_or_default();
+    check_online(url)?;
     append(
         "GITHUB_STEP_SUMMARY",
         &format!("### 🚀 Relais Talka en ligne : [{url}]({url})"),
@@ -280,4 +281,37 @@ pub fn deploy() -> Result<(), String> {
     println!("En ligne : {url}");
     // Le site GitHub Pages doit connaître l'adresse du relais : on le republie.
     dispatch("pages.yml")
+}
+
+/// Le relais répond-il vraiment ? `/health`, puis la page de l'application
+/// (le navigateur compilé est rangé dans le binaire). Heroku redémarre l'app
+/// après la construction : on lui laisse jusqu'à deux minutes.
+fn check_online(url: &str) -> Result<(), String> {
+    let base = url.trim_end_matches('/');
+    for path in ["/health", "/app"] {
+        let mut last = String::new();
+        let ok = (0..24).any(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_secs(5));
+            }
+            match agent().get(&format!("{base}{path}")).call() {
+                Ok(res) if res.status().is_success() => true,
+                Ok(res) => {
+                    last = res.status().to_string();
+                    false
+                }
+                Err(e) => {
+                    last = e.to_string();
+                    false
+                }
+            }
+        });
+        if !ok {
+            return Err(format!(
+                "le relais déployé ne répond pas sur {path} ({last})"
+            ));
+        }
+        println!("{path} : OK");
+    }
+    Ok(())
 }
