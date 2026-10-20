@@ -236,8 +236,8 @@ pub fn home(site: &Site) -> Page {
                         )
                         .child(
                             p().class("muted small")
-                                .child(span().text("Aucune inscription · Aucune application à télécharger · "))
-                                .child(span().id("live-count").text("Installable sur iPhone, Android et ordinateur")),
+                                .child(span().text("Aucune inscription · Rien à télécharger dans le navigateur · "))
+                                .child(span().id("live-count").text("Aussi en app iPhone et Apple Watch")),
                         ),
                 )
                 .child(div().class("hero-phone").child(phone())),
@@ -289,7 +289,7 @@ pub fn home(site: &Site) -> Page {
             div()
                 .class("wrap")
                 .child(span().class("kicker").text("Tout ce que vous aimez"))
-                .child(h2().text("Une vraie messagerie, dans votre navigateur."))
+                .child(h2().text("Une vraie messagerie, du navigateur au poignet."))
                 .child(
                     div()
                         .class("features")
@@ -297,14 +297,18 @@ pub fn home(site: &Site) -> Page {
                         .child(feature("👥", "Groupes", "Créez un groupe, nommez-le, ajoutez des membres avec leur code. Chaque message est chiffré pour chacun."))
                         .child(feature("📹", "Appels audio et vidéo", "En direct, d'appareil à appareil (WebRTC), avec micro coupé, caméra et historique des appels."))
                         .child(feature("🎙️", "Messages vocaux", "Maintenez, parlez, envoyez. Lecture avec la durée, comme vous en avez l'habitude."))
-                        .child(feature("📷", "Photos et fichiers", "Photos compressées automatiquement, documents jusqu'à 3 Mo, légendes."))
+                        .child(feature("📷", "Photos et fichiers", "Depuis la galerie ou l'appareil photo, compressées automatiquement ; documents jusqu'à 3 Mo, légendes."))
                         .child(feature("⭕", "Statuts", "Un texte coloré ou une photo, visible par vos contacts pendant 24 heures."))
-                        .child(feature("😍", "Réactions et emojis", "Réagissez d'un geste, modifiez ou supprimez pour tout le monde, mettez en favori."))
+                        .child(feature("😍", "Réactions et emojis", "Réagissez d'un geste et voyez qui a réagi ; modifiez ou supprimez pour tout le monde, mettez en favori."))
+                        .child(feature("📌", "Messages épinglés", "Gardez l'adresse, le code ou le rendez-vous en haut de la discussion, à un toucher."))
+                        .child(feature("🔎", "Recherche", "Retrouvez un message dans une discussion, avec ou sans accents."))
                         .child(feature("⏳", "Messages éphémères", "Choisissez 24 heures, 7 jours ou 90 jours : les messages disparaissent tout seuls."))
                         .child(feature("🔐", "Code de verrouillage", "Un code à 4 ou 6 chiffres protège Talka quand vous prêtez votre appareil."))
                         .child(feature("💾", "Sauvegarde chiffrée", "Exportez tout dans un fichier protégé par mot de passe, et retrouvez-le sur un autre appareil."))
                         .child(feature("📲", "Installable", "Ajoutez Talka à l'écran d'accueil : plein écran, notifications, hors ligne."))
-                        .child(feature("🌙", "Thème clair et sombre", "Il suit votre appareil, ou choisissez. Avec des fonds d'écran pour vos discussions.")),
+                        .child(feature("🌙", "Thème clair et sombre", "Il suit votre appareil, ou choisissez. Et un fond par discussion : une couleur ou l'une de vos photos."))
+                        .child(feature("📱", "App iPhone", "Talka en app native SwiftUI, qui discute avec le navigateur : mêmes codes, mêmes groupes, même chiffrement."))
+                        .child(feature("⌚", "Apple Watch", "Lisez vos discussions au poignet, répondez en dictant, d'un emoji ou d'une réponse rapide.")),
                 ),
         );
 
@@ -317,7 +321,7 @@ pub fn home(site: &Site) -> Page {
                 .child(h2().text("Vos messages vivent chez vous. Nulle part ailleurs."))
                 .child(p().class("lead").text(
                     "Talka n'a pas de base de données. Vos discussions, contacts, photos et clés sont rangés dans la \
-                     mémoire de votre navigateur (IndexedDB). Le serveur n'est qu'un relais : il transmet des messages \
+                     mémoire de votre navigateur (Memoire ORM, sur IndexedDB) ; sur iPhone, dans une base SQLite de l'application. Le serveur n'est qu'un relais : il transmet des messages \
                      chiffrés qu'il ne sait pas lire, et les oublie dès que votre ami les a reçus.",
                 ))
                 .child(
@@ -373,7 +377,8 @@ pub fn home(site: &Site) -> Page {
                         .child(li().child(strong().text("⚡ Vitesse")).child(span().text("HTTP, WebSocket du relais")))
                         .child(li().child(strong().text("🛡️ Securite")).child(span().text("WAF, débit, CSP, HTTPS")))
                         .child(li().child(strong().text("🌿 Active")).child(span().text("pages SEO, PWA")))
-                        .child(li().child(strong().text("🦀 Navigateur")).child(span().text("Rust en WebAssembly, IndexedDB, WebRTC"))),
+                        .child(li().child(strong().text("🦀 Navigateur")).child(span().text("Rust en WebAssembly, Memoire ORM, WebRTC")))
+                        .child(li().child(strong().text("🍎 iPhone et Watch")).child(span().text("SwiftUI, SQLite, WatchConnectivity"))),
                 ),
         );
 
@@ -386,9 +391,11 @@ pub fn home(site: &Site) -> Page {
                 .child(span().class("kicker").text("Questions"))
                 .child(h2().text("Questions fréquentes"))
                 .child(faq("Faut-il un numéro de téléphone ou un e-mail ?", "Non. Talka ne vous demande qu'un nom à afficher. Votre code Talka est créé sur votre appareil et c'est lui que vous partagez."))
-                .child(faq("Où sont gardés mes messages ?", "Dans votre navigateur, sur votre appareil (IndexedDB). Talka n'a pas de base de données. Si vous effacez les données du site, vos discussions disparaissent : pensez à la sauvegarde chiffrée dans les Réglages."))
+                .child(faq("Où sont gardés mes messages ?", "Sur votre appareil : dans le navigateur (Memoire ORM, sur IndexedDB), ou dans l'app iPhone (SQLite). Talka n'a pas de base de données sur un serveur. Si vous effacez les données du site, vos discussions disparaissent : pensez à la sauvegarde chiffrée dans les Réglages."))
                 .child(faq("Et si mon ami n'est pas connecté ?", "Le relais garde le message chiffré jusqu'à ce que votre ami ouvre Talka (30 jours au plus), puis l'oublie. Vous voyez ✓ quand le message est parti, ✓✓ quand il est arrivé, ✓✓ en bleu quand il est lu."))
                 .child(faq("Puis-je utiliser Talka sur plusieurs appareils ?", "Votre identité vit sur un appareil. Pour changer d'appareil, exportez une sauvegarde chiffrée dans les Réglages et importez-la sur le nouveau."))
+                .child(faq("Y a-t-il une app iPhone et Apple Watch ?", "Oui, en bêta sur TestFlight. L'app iPhone discute avec le navigateur (mêmes codes, mêmes groupes). L'app de la montre passe par l'iPhone : elle n'a pas de clés à elle, et rien ne passe par un serveur entre les deux."))
+                .child(faq("Puis-je ouvrir Talka dans deux onglets ?", "Un seul onglet est actif à la fois, comme sur WhatsApp Web : le dernier ouvert prend la main, l'autre vous propose « Utiliser ici »."))
                 .child(faq("À quoi sert le code de verrouillage ?", "C'est un code à 4 ou 6 chiffres que vous choisissez. Il est demandé à l'ouverture de Talka, pour que personne ne lise vos discussions sur votre appareil."))
                 .child(faq("Les appels passent-ils par le serveur ?", "Non : l'audio et la vidéo vont directement d'un appareil à l'autre (WebRTC, chiffré DTLS-SRTP). Le serveur ne sert qu'à vous mettre en relation."))
                 .child(faq("Est-ce gratuit ?", "Oui. Pas d'abonnement, pas de publicité.")),
@@ -449,7 +456,7 @@ pub fn privacy(site: &Site) -> Page {
                 .class("wrap narrow legal")
                 .child(h1().text("Confidentialité"))
                 .child(p().class("lead").text("Talka est conçu pour savoir le moins de choses possible sur vous."))
-                .child(item("Pas de compte, pas de base de données", "Talka ne vous demande ni numéro, ni e-mail, ni mot de passe. Il n'y a pas de base de données : vos messages, contacts, photos, statuts et clés sont rangés dans votre navigateur (IndexedDB), sur votre appareil."))
+                .child(item("Pas de compte, pas de base de données", "Talka ne vous demande ni numéro, ni e-mail, ni mot de passe. Il n'y a pas de base de données : vos messages, contacts, photos, statuts et clés sont rangés sur votre appareil : dans votre navigateur (Memoire ORM, sur IndexedDB) ou dans l'app iPhone (SQLite, protégée par iOS). L'Apple Watch ne reçoit de l'iPhone qu'un résumé de vos discussions récentes, directement, sans passer par un serveur."))
                 .child(item("Ce que voit le relais", "Pour transmettre un message, le serveur voit le code de l'expéditeur, celui du destinataire, la taille et l'heure du message chiffré. Il ne peut pas en lire le contenu. Il garde en mémoire vive vos clés publiques (pour que vos contacts puissent vous écrire) et l'heure de votre dernière connexion. Tout cela disparaît quand le serveur redémarre."))
                 .child(item("Messages en attente", "Un message destiné à quelqu'un qui n'est pas connecté attend, chiffré, en mémoire vive, au plus 30 jours. Il est effacé dès que le destinataire confirme l'avoir reçu."))
                 .child(item("Appels", "L'audio et la vidéo passent directement d'un appareil à l'autre. Pour établir la connexion, vos appareils peuvent contacter un serveur STUN public, qui voit votre adresse IP."))
