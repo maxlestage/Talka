@@ -1071,6 +1071,21 @@ fn queue_receipt(to: &str, chat_id: &str, ids: &[String], st: &str) {
 }
 
 /// Marque une discussion comme lue (accusés de lecture bleus).
+/// Toutes les discussions non lues (archivées comprises) marquées comme
+/// lues ; les confirmations de lecture partent comme pour une seule.
+/// Renvoie le nombre de discussions concernées.
+pub async fn mark_all_read() -> usize {
+    let ids: Vec<String> = chats()
+        .into_iter()
+        .filter(|c| c.unread > 0 || c.marked_unread)
+        .map(|c| c.id)
+        .collect();
+    for id in &ids {
+        mark_read(id).await;
+    }
+    ids.len()
+}
+
 pub async fn mark_read(chat_id: &str) {
     let Some(c) = chat(chat_id) else { return };
     let me = my_code();

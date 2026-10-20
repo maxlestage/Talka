@@ -427,7 +427,8 @@ struct ConversationView: View {
                 HStack(alignment: .bottom, spacing: 8) {
                     if recorder.recording {
                         Button { recorder.cancel() } label: { Image(systemName: "trash").font(.title3).foregroundStyle(.red) }
-                            .frame(height: 38)
+                            .frame(width: 38, height: 38)
+                            .background(.regularMaterial, in: .circle)
                             .accessibilityLabel("Annuler l'enregistrement")
                         TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
                             HStack {
@@ -437,6 +438,9 @@ struct ConversationView: View {
                             }
                         }
                         .frame(height: 38)
+                        // Lisible sur le fond, comme le champ de saisie qu'il remplace.
+                        .padding(.horizontal, 12)
+                        .background(.regularMaterial, in: .rect(cornerRadius: 20))
                     } else {
                         Menu {
                             Button { pickingPhotos = true } label: { Label("Galerie photos", systemImage: "photo.on.rectangle") }
@@ -900,15 +904,23 @@ struct MessageInfoSheet: View {
 }
 
 /// Les photos de fond décodées une fois (la discussion se redessine souvent).
+/// Quelques-unes à la fois : le fond général (réglages) et celui de chaque
+/// discussion ouverte ne se chassent plus l'un l'autre à chaque affichage.
 @MainActor
 enum WallpaperCache {
-    private static var cache: (key: Int, image: UIImage)?
+    private static var cache: [(key: Int, image: UIImage)] = []
+    static let size = 4
 
     static func image(_ dataURL: String) -> UIImage? {
         let key = dataURL.hashValue
-        if let c = cache, c.key == key { return c.image }
+        if let i = cache.firstIndex(where: { $0.key == key }) {
+            let hit = cache.remove(at: i)
+            cache.append(hit)
+            return hit.image
+        }
         guard let image = UIImage.fromDataURL(dataURL) else { return nil }
-        cache = (key, image)
+        cache.append((key, image))
+        if cache.count > size { cache.removeFirst() }
         return image
     }
 }
