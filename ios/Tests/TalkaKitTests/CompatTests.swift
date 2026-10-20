@@ -142,4 +142,16 @@ final class CompatTests: XCTestCase {
         XCTAssertEqual(JSON.decode(Message.self, JSON.encode(m)), m)
         XCTAssertEqual(JSON.decode(Chat.self, JSON.encode(chat)), chat)
     }
+
+    /// L'épingle d'une discussion : la même clé que le navigateur (`pin_msg`),
+    /// absente des anciennes données.
+    func testPinnedMessageField() throws {
+        let old = try XCTUnwrap(JSON.decode(Chat.self, #"{"id":"WGSEAJNSZJ","unread":2}"#))
+        XCTAssertEqual(old.pinMsg, "")
+        var chat = old
+        chat.pinMsg = "m1"
+        let json = JSON.encode(chat)
+        XCTAssertTrue(json.contains(#""pin_msg":"m1""#))
+        XCTAssertEqual(JSON.decode(Chat.self, json)?.pinMsg, "m1")
+    }
 }

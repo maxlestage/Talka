@@ -194,6 +194,8 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public var v = 0
     public var last: Last?
     public var hasExp = false
+    /// Le message épinglé en haut de la discussion, pour soi (vide : aucun).
+    public var pinMsg = ""
 
     enum CodingKeys: String, CodingKey {
         case id, group, name, avatar, members, admins, unread, pinned, archived, muted, timer, draft, wallpaper, left, v, last
@@ -202,6 +204,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
         case lastAt = "last_at"
         case markedUnread = "marked_unread"
         case hasExp = "has_exp"
+        case pinMsg = "pin_msg"
     }
 
     public init(id: String) {
@@ -218,6 +221,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
         markedUnread = c.v(.markedUnread, false); pinned = c.v(.pinned, false); archived = c.v(.archived, false)
         muted = c.v(.muted, false); timer = c.v(.timer, 0); draft = c.v(.draft, ""); wallpaper = c.v(.wallpaper, "")
         left = c.v(.left, false); v = c.v(.v, 0); last = c.v(.last, nil); hasExp = c.v(.hasExp, false)
+        pinMsg = c.v(.pinMsg, "")
     }
 }
 

@@ -25,6 +25,8 @@ struct ConversationView: View {
     @State private var loaded = false
     /// La recherche dans la discussion (nil : fermée).
     @State private var search: String?
+    /// Le message vers lequel faire défiler (bandeau de l'épingle).
+    @State private var jumpTo: String?
     @FocusState private var focused: Bool
     @FocusState private var searchFocused: Bool
 
@@ -41,6 +43,9 @@ struct ConversationView: View {
             VStack(spacing: 0) {
                 if search != nil {
                     searchBar(found: messages.count, active: !query.isEmpty)
+                }
+                if let pinned = e.pinnedMessage(chatId) {
+                    pinBar(e, pinned)
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -83,6 +88,15 @@ struct ConversationView: View {
                     .onAppear {
                         if let id = messages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
                         loaded = true
+                    }
+                    .onChange(of: jumpTo) { _, id in
+                        guard let id else { return }
+                        if messages.contains(where: { $0.id == id }) {
+                            withAnimation { proxy.scrollTo(id, anchor: .center) }
+                        } else {
+                            model.show("Message introuvable")
+                        }
+                        jumpTo = nil
                     }
                 }
                 .background(wallpaper(e, chat).ignoresSafeArea())
@@ -220,6 +234,37 @@ struct ConversationView: View {
         .transition(.move(edge: .top).combined(with: .opacity))
     }
 
+    // MARK: Épingle
+
+    /// Le message épinglé, sous l'en-tête : le toucher y ramène.
+    func pinBar(_ e: Engine, _ m: Message) -> some View {
+        HStack(spacing: 10) {
+            Button { jumpTo = m.id } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "pin.fill").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(e.displayName(m.from)).font(.caption.bold())
+                        Text(m.kind == "text" ? m.text : Engine.preview(m))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Aller au message épinglé")
+            Button { e.setPin(chatId, "") } label: {
+                Image(systemName: "xmark").font(.caption.bold()).foregroundStyle(.secondary)
+            }
+            .accessibilityLabel("Désépingler")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
     // MARK: En-tête
 
     func subtitle(_ e: Engine, _ chat: Chat) -> String {
@@ -265,6 +310,9 @@ struct ConversationView: View {
                 Button { UIPasteboard.general.string = m.text } label: { Label("Copier", systemImage: "doc.on.doc") }
             }
             Button { forwarding = m } label: { Label("Transférer", systemImage: "arrowshape.turn.up.right") }
+            Button { e.setPin(chatId, chat.pinMsg == m.id ? "" : m.id) } label: {
+                Label(chat.pinMsg == m.id ? "Désépingler" : "Épingler", systemImage: chat.pinMsg == m.id ? "pin.slash" : "pin")
+            }
             Button { e.toggleStar(chatId, m.id) } label: {
                 Label(m.starred ? "Retirer des importants" : "Important", systemImage: m.starred ? "star.slash" : "star")
             }
