@@ -21,7 +21,7 @@ L'application iOS de Talka, en Swift et SwiftUI (iOS 17 et plus). Elle parle le 
 - **Appels audio et vidéo** (WebRTC, de pair à pair, DTLS-SRTP) : l'offre, la réponse et les candidats passent chiffrés, comme les messages. Un iPhone appelle un ordinateur.
 - **Réglages** : profil, confirmations de lecture, « en ligne » masqué, contacts bloqués, **code PIN** et Face ID, thème, taille du texte, notifications, sons, serveur, **sauvegarde chiffrée** (exporter, restaurer), tout effacer.
 
-Tout reste sur l'iPhone (fichiers protégés de l'application) : le serveur ne fait que passer des messages chiffrés, et les garde au plus 30 jours pour un destinataire hors ligne.
+Tout reste sur l'iPhone, dans une base SQLite protégée par iOS : le serveur ne fait que passer des messages chiffrés, et les garde au plus 30 jours pour un destinataire hors ligne.
 
 Les notifications sont locales : l'iPhone, qui a déchiffré le message, se prévient lui-même. Rien ne passe par Apple. En contrepartie, iOS coupe la connexion quelques instants après le passage en arrière-plan : les messages arrivent à la réouverture de Talka.
 
@@ -29,7 +29,7 @@ Les notifications sont locales : l'iPhone, qui a déchiffré le message, se pré
 
 | Dossier | Rôle |
 |---|---|
-| `Sources/TalkaKit/` | le cœur, sans interface, testé aussi sous Linux : `Crypto.swift` (codes, ECDSA et ECDH P-256, HKDF, AES-256-GCM, PIN, sauvegardes), `Model.swift` (le format des messages, identique au navigateur), `Relay.swift` et `Socket.swift` (le relais), `Store.swift`, `Engine.swift` (les discussions, groupes, accusés, actus, appels) |
+| `Sources/TalkaKit/` | le cœur, sans interface, testé aussi sous Linux : `Crypto.swift` (codes, ECDSA et ECDH P-256, HKDF, AES-256-GCM, PIN, sauvegardes), `Model.swift` (le format des messages, identique au navigateur), `Relay.swift` et `Socket.swift` (le relais), `Store.swift` (SQLite, la même table que le modèle Memoire du navigateur), `Engine.swift` (les discussions, groupes, accusés, actus, appels) |
 | `Tests/TalkaKitTests/` | les tests. `vectors.json` est produit par le code Rust du navigateur (`cargo run -p talka-web --example vectors`) : TalkaKit doit retrouver les mêmes codes et ouvrir les mêmes messages |
 | `Talka/` | l'application SwiftUI : écrans, appels, messages vocaux, verrou, icône |
 | `project.yml` | le projet Xcode, pour [XcodeGen](https://github.com/yonaskolb/XcodeGen) |
