@@ -47,6 +47,50 @@ public enum Brocolis {
         return stride(from: 0, to: hex.count, by: 4).map { String(hex.dropFirst($0).prefix(4)) }.joined(separator: "-")
     }
 
+    // ----- Une clé protégée par une phrase secrète -----
+    //
+    // Pour sortir une clé de l'iPhone sans la montrer : `[[BROCOLIS-CLE:v1:…]]`,
+    // le même format que le navigateur et l'app Brocolis. Décodé : sel (16) ‖
+    // nonce (12) ‖ AES-256-GCM(clé brute, données associées `brocolis-cle-v1`),
+    // sous PBKDF2-HMAC-SHA256(phrase, sel, 600 000 tours).
+
+    public static let keyHead = "[[BROCOLIS-CLE:v1:"
+    static let keyAD = Data("brocolis-cle-v1".utf8)
+    public static let phraseRounds = 600_000
+    /// La phrase la plus courte acceptée pour protéger une clé.
+    public static let phraseMin = 8
+
+    public static func hasProtectedKey(_ text: String) -> Bool { text.contains(keyHead) }
+
+    static func protectKey(raw: Data, phrase: String, salt: Data, nonce: Data) -> String? {
+        let key = SymmetricKey(data: TalkaCrypto.pbkdf2(phrase, salt: salt, rounds: phraseRounds))
+        guard let n = try? AES.GCM.Nonce(data: nonce),
+              let box = try? AES.GCM.seal(raw, using: key, nonce: n, authenticating: keyAD) else { return nil }
+        return keyHead + (salt + nonce + box.ciphertext + box.tag).base64EncodedString() + tail
+    }
+
+    /// Protège une clé (en base64) par une phrase secrète.
+    public static func protectKey(_ keyBase64: String, phrase: String) -> String? {
+        guard phrase.count >= phraseMin,
+              let raw = Data(base64Encoded: keyBase64.trimmingCharacters(in: .whitespacesAndNewlines)), raw.count == 32
+        else { return nil }
+        return protectKey(raw: raw, phrase: phrase, salt: randomBytes(16), nonce: randomBytes(12))
+    }
+
+    /// Retrouve la clé (en base64) d'un jeton `[[BROCOLIS-CLE:v1:…]]` collé
+    /// (seul ou dans un texte) ; nil si la phrase est fausse ou le jeton abîmé.
+    public static func unprotectKey(_ text: String, phrase: String) -> String? {
+        guard let start = text.range(of: keyHead), let end = text[start.upperBound...].range(of: tail),
+              let data = Data(base64Encoded: String(text[start.upperBound..<end.lowerBound])), data.count == 16 + 12 + 32 + 16
+        else { return nil }
+        let bytes = [UInt8](data)
+        let key = SymmetricKey(data: TalkaCrypto.pbkdf2(phrase, salt: Data(bytes[0..<16]), rounds: phraseRounds))
+        guard let box = try? AES.GCM.SealedBox(combined: Data(bytes[16...])),
+              let raw = try? AES.GCM.open(box, using: key, authenticating: keyAD), raw.count == 32
+        else { return nil }
+        return raw.base64EncodedString()
+    }
+
     /// Une nouvelle clé, en base64.
     public static func generateKey() -> String {
         SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }.base64EncodedString()
