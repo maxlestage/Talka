@@ -364,6 +364,16 @@ extension View {
     func card() -> some View {
         padding(16).background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 12))
     }
+
+    /// Le verre dépoli sur le fond de la discussion : Liquid Glass sur iOS 26,
+    /// un matériau très fin avant.
+    @ViewBuilder func frosted(in shape: some Shape) -> some View {
+        if #available(iOS 26, *) {
+            glassEffect(.regular, in: shape)
+        } else {
+            background(.ultraThinMaterial, in: shape)
+        }
+    }
 }
 
 // MARK: Appareil photo

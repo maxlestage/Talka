@@ -61,7 +61,7 @@ struct ConversationView: View {
                                 .multilineTextAlignment(.center)
                                 .padding(10)
                                 // Translucide : le fond de la discussion reste visible.
-                                .background(.regularMaterial, in: .rect(cornerRadius: 8))
+                                .frosted(in: .rect(cornerRadius: 8))
                                 .padding(.horizontal, 30)
                                 .padding(.vertical, 8)
                             ForEach(Array(messages.enumerated()), id: \.element.id) { i, m in
@@ -437,7 +437,7 @@ struct ConversationView: View {
                     }
                     .frame(height: 40)
                     .padding(.horizontal, 10)
-                    .background(.regularMaterial, in: .rect(cornerRadius: 12))
+                    .frosted(in: .rect(cornerRadius: 12))
                     .padding(.horizontal, 8)
                     .padding(.top, 8)
                 }
@@ -445,7 +445,7 @@ struct ConversationView: View {
                     if recorder.recording {
                         Button { recorder.cancel() } label: { Image(systemName: "trash").font(.title3).foregroundStyle(.red) }
                             .frame(width: 38, height: 38)
-                            .background(.regularMaterial, in: .circle)
+                            .frosted(in: .circle)
                             .accessibilityLabel("Annuler l'enregistrement")
                         TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
                             HStack {
@@ -457,7 +457,7 @@ struct ConversationView: View {
                         .frame(height: 38)
                         // Lisible sur le fond, comme le champ de saisie qu'il remplace.
                         .padding(.horizontal, 12)
-                        .background(.regularMaterial, in: .rect(cornerRadius: 20))
+                        .frosted(in: .rect(cornerRadius: 20))
                     } else {
                         Menu {
                             Button { pickingPhotos = true } label: { Label("Galerie photos", systemImage: "photo.on.rectangle") }
@@ -469,7 +469,7 @@ struct ConversationView: View {
                             Button { composingCapsule = true } label: { Label("Capsule temporelle", systemImage: "hourglass") }
                         } label: {
                             Image(systemName: "plus").font(.title3.weight(.semibold)).frame(width: 38, height: 38)
-                                .background(.regularMaterial, in: .circle)
+                                .frosted(in: .circle)
                         }
                         .accessibilityLabel("Joindre")
                         TextField("Message", text: $text, axis: .vertical)
@@ -477,7 +477,7 @@ struct ConversationView: View {
                             .focused($focused)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
-                            .background(.regularMaterial, in: .rect(cornerRadius: 20))
+                            .frosted(in: .rect(cornerRadius: 20))
                             .onChange(of: text) { _, t in
                                 if editing == nil { e.setTyping(chatId, !t.isEmpty) }
                             }
@@ -485,7 +485,7 @@ struct ConversationView: View {
                         if text.isEmpty && editing == nil {
                             Button { pickingPhotos = true } label: {
                                 Image(systemName: "photo.on.rectangle").font(.body).frame(width: 38, height: 38)
-                                    .background(.regularMaterial, in: .circle)
+                                    .frosted(in: .circle)
                             }
                             .accessibilityLabel("Envoyer une photo de la galerie")
                         }
