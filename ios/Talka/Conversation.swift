@@ -17,6 +17,7 @@ struct ConversationView: View {
     @State private var takingPhoto = false
     @State private var importingFile = false
     @State private var sharingContact = false
+    @State private var composingCapsule = false
     @State private var forwarding: Message?
     @State private var info: Message?
     @State private var deleting: Message?
@@ -39,7 +40,7 @@ struct ConversationView: View {
             let query = (search ?? "").trimmingCharacters(in: .whitespaces)
             let messages = e.messages(chatId).filter { (m: Message) -> Bool in
                 if let exp = m.exp, exp <= now { return false }
-                return query.isEmpty || Self.matches(m, query)
+                return query.isEmpty || Self.matches(m, query, me: e.me.code)
             }
             VStack(spacing: 0) {
                 if search != nil {
@@ -187,6 +188,13 @@ struct ConversationView: View {
             .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item]) { result in
                 if let url = try? result.get() { sendFile(e, url) }
             }
+            .sheet(isPresented: $composingCapsule) {
+                CapsuleComposer { body, openAt in
+                    composingCapsule = false
+                    send(e, Content(text: body, openAt: openAt))
+                    model.show("Capsule scellée ⏳")
+                }
+            }
             .sheet(isPresented: $sharingContact) {
                 ContactPicker(title: "Partager un contact") { code in
                     sharingContact = false
@@ -229,8 +237,9 @@ struct ConversationView: View {
 
     /// Comme le navigateur : le texte et le nom (fichier, contact), sans
     /// tenir compte des majuscules ni des accents.
-    static func matches(_ m: Message, _ query: String) -> Bool {
-        guard m.kind != "system", !m.deleted else { return false }
+    static func matches(_ m: Message, _ query: String, me: String) -> Bool {
+        // La recherche ne trouve pas ce qu'une capsule scellée cache.
+        guard m.kind != "system", !m.deleted, !m.sealed(for: me) else { return false }
         return "\(m.text) \(m.name)".range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
 
@@ -347,23 +356,27 @@ struct ConversationView: View {
     @ViewBuilder func menu(_ e: Engine, _ chat: Chat, _ m: Message) -> some View {
         if m.kind != "system", !m.deleted {
             let mine = m.from == e.me.code
+            // Une capsule scellée ne se copie ni ne se transfère.
+            let sealed = m.sealed(for: e.me.code)
             ControlGroup {
                 ForEach(["👍", "❤️", "😂", "😮", "😢", "🙏"], id: \.self) { emoji in
                     Button(emoji) { e.react(chatId, m.id, emoji) }
                 }
             }
             Button { reply = m; focused = true } label: { Label("Répondre", systemImage: "arrowshape.turn.up.left") }
-            if !m.text.isEmpty {
+            if !m.text.isEmpty, !sealed {
                 Button { UIPasteboard.general.string = m.text } label: { Label("Copier", systemImage: "doc.on.doc") }
             }
-            Button { forwarding = m } label: { Label("Transférer", systemImage: "arrowshape.turn.up.right") }
+            if !sealed {
+                Button { forwarding = m } label: { Label("Transférer", systemImage: "arrowshape.turn.up.right") }
+            }
             Button { e.setPin(chatId, chat.pinMsg == m.id ? "" : m.id) } label: {
                 Label(chat.pinMsg == m.id ? "Désépingler" : "Épingler", systemImage: chat.pinMsg == m.id ? "pin.slash" : "pin")
             }
             Button { e.toggleStar(chatId, m.id) } label: {
                 Label(m.starred ? "Retirer des importants" : "Important", systemImage: m.starred ? "star.slash" : "star")
             }
-            if mine, m.kind == "text", nowMs() - m.at < 15 * 60_000 {
+            if mine, m.kind == "text", !m.isCapsule, nowMs() - m.at < 15 * 60_000 {
                 Button { editing = m; text = m.text; reply = nil; focused = true } label: { Label("Modifier", systemImage: "pencil") }
             }
             if mine {
@@ -430,6 +443,7 @@ struct ConversationView: View {
                             }
                             Button { importingFile = true } label: { Label("Document", systemImage: "doc") }
                             Button { sharingContact = true } label: { Label("Contact", systemImage: "person.crop.circle") }
+                            Button { composingCapsule = true } label: { Label("Capsule temporelle", systemImage: "hourglass") }
                         } label: {
                             Image(systemName: "plus").font(.title2).frame(width: 34, height: 38)
                         }
@@ -505,7 +519,8 @@ struct ConversationView: View {
     func send(_ e: Engine, _ content: Content) {
         var c = content
         if let r = reply {
-            c.reply = Reply(id: r.id, from: r.from, text: String((r.kind == "text" ? r.text : Engine.preview(r)).prefix(160)))
+            let plain = r.kind == "text" && !r.sealed(for: e.me.code)
+            c.reply = Reply(id: r.id, from: r.from, text: String((plain ? r.text : Engine.preview(r)).prefix(160)))
             reply = nil
         }
         e.setTyping(chatId, false)
@@ -613,7 +628,7 @@ struct MessageRow: View {
 
     @ViewBuilder func bubble(_ e: Engine, _ m: Message, _ mine: Bool) -> some View {
         let size = CGFloat(e.settings.fontSize)
-        let big = m.kind == "text" && !m.deleted && m.reply == nil && onlyEmoji(m.text)
+        let big = m.kind == "text" && !m.deleted && m.reply == nil && !m.isCapsule && onlyEmoji(m.text)
         VStack(alignment: .leading, spacing: 4) {
             if chat.group, !mine, first {
                 Text(e.displayName(m.from)).font(.caption.bold()).foregroundStyle(Avatar.color(m.from))
@@ -638,7 +653,20 @@ struct MessageRow: View {
                 Label(mine ? "Vous avez supprimé ce message" : "Ce message a été supprimé", systemImage: "nosign")
                     .font(.system(size: size).italic())
                     .foregroundStyle(.secondary)
+            } else if m.sealed(for: e.me.code) {
+                // La capsule scellée : l'enveloppe et le compte à rebours,
+                // puis le message, à l'heure dite.
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    let now = ctx.date.timeIntervalSince1970 * 1000
+                    if m.sealed(for: e.me.code, now: now) {
+                        SealedCapsule(openAt: m.openAt ?? 0, now: now)
+                    } else {
+                        CapsuleBand(m: m, now: now)
+                        content(e, m, size: size, big: false)
+                    }
+                }
             } else {
+                if m.isCapsule { CapsuleBand(m: m, now: nowMs()) }
                 content(e, m, size: size, big: big)
             }
             HStack(spacing: 3) {
