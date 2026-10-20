@@ -41,6 +41,8 @@ thread_local! {
     static ROWS: RefCell<Option<Rows>> = const { RefCell::new(None) };
     static IDB: RefCell<Option<IdbDatabase>> = const { RefCell::new(None) };
     static FLUSHING: Cell<bool> = const { Cell::new(false) };
+    /// Un autre onglet a pris la main : plus aucune écriture d'ici.
+    static RELEASED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Les écritures pas encore parties vers IndexedDB, dans l'ordre.
@@ -151,6 +153,9 @@ async fn flush_now() {
 }
 
 fn enqueue(key: &str, value: Option<&str>) {
+    if RELEASED.with(Cell::get) {
+        return;
+    }
     if let Ok(mut q) = QUEUE.lock() {
         q.push((key.to_owned(), value.map(str::to_owned)));
     }
@@ -290,6 +295,13 @@ async fn legacy_dump() -> Option<Value> {
 }
 
 // ----- Ce que le reste de Talka utilise ------------------------------------------
+
+/// Un autre onglet prend la main : envoie les dernières écritures vers
+/// IndexedDB, puis n'écrit plus rien (voir `tabs`).
+pub async fn release() {
+    flush_now().await;
+    RELEASED.with(|r| r.set(true));
+}
 
 pub async fn get_raw(store: &str, key: &str) -> Option<String> {
     rows()?.get(store, key).await

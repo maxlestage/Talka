@@ -37,6 +37,8 @@ mod sounds;
 #[cfg(target_arch = "wasm32")]
 mod store;
 #[cfg(target_arch = "wasm32")]
+mod tabs;
+#[cfg(target_arch = "wasm32")]
 mod ui;
 
 /// Le point d'entrée : la page dit si elle est le site ou l'application
