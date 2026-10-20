@@ -924,6 +924,61 @@ label.list-item {
   color: var(--muted);
 }
 
+/* Les capsules temporelles : l'enveloppe scellée et son compte à rebours. */
+.capsule {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  min-width: 200px;
+  padding: 14px 18px 6px;
+  text-align: center;
+}
+
+.capsule-seal {
+  font-size: 40px;
+  line-height: 1.1;
+  animation: capsule-breathe 2.4s ease-in-out infinite;
+}
+
+.capsule-title {
+  font-weight: 600;
+}
+
+.capsule-count {
+  color: var(--green-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.capsule-date {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.capsule-band {
+  margin: 2px 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.capsule-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+@keyframes capsule-breathe {
+  50% {
+    transform: scale(1.08) rotate(-4deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .capsule-seal {
+    animation: none;
+  }
+}
+
 /* La pastille « en ligne » : verte et lumineuse, grise hors ligne. */
 .avatar-wrap {
   position: relative;
