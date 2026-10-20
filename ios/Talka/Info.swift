@@ -146,18 +146,54 @@ struct WallpaperRows: View {
     @Binding var value: String
     var allowDefault = false
     @State private var photo: PhotosPickerItem?
+    @State private var pickingPhoto = false
 
+    var isPhoto: Bool { value.hasPrefix("data:") }
+
+    var current: String {
+        if isPhoto { return "Ma photo" }
+        if value.isEmpty { return allowDefault ? "Par défaut" : "Talka" }
+        return wallpapers.first { $0.0 == value }?.1 ?? "Talka"
+    }
+
+    /// Une seule ligne : les fonds de Talka, et la photo de la galerie
+    /// (choisir, ou changer de photo) dans le même menu.
     var body: some View {
-        Picker(selection: Binding(get: { value.hasPrefix("data:") ? "photo" : value }, set: { if $0 != "photo" { value = $0 } })) {
-            if allowDefault { Text("Par défaut").tag("") }
-            ForEach(wallpapers, id: \.0) { Text($0.1).tag($0.0) }
-            if value.hasPrefix("data:") { Text("Ma photo").tag("photo") }
+        Menu {
+            Picker(selection: Binding(get: { isPhoto ? "photo" : value }, set: { if $0 != "photo" { value = $0 } })) {
+                if allowDefault { Text("Par défaut").tag("") }
+                ForEach(wallpapers, id: \.0) { Text($0.1).tag($0.0) }
+                if isPhoto { Text("Ma photo").tag("photo") }
+            } label: {
+                EmptyView()
+            }
+            .pickerStyle(.inline)
+            Divider()
+            Button { pickingPhoto = true } label: {
+                Label(isPhoto ? "Changer de photo…" : "Une photo de la galerie…", systemImage: "photo.on.rectangle")
+            }
         } label: {
-            Label("Fond d'écran", systemImage: "paintpalette")
+            HStack(spacing: 10) {
+                Label("Fond d'écran", systemImage: "paintpalette")
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 8)
+                if isPhoto, let image = WallpaperCache.image(value) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 26, height: 26)
+                        .clipShape(.rect(cornerRadius: 6))
+                        .accessibilityHidden(true)
+                }
+                Text(current).foregroundStyle(.secondary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
         }
-        PhotosPicker(selection: $photo, matching: .images) {
-            Label(value.hasPrefix("data:") ? "Changer la photo de fond (galerie)" : "Une photo de la galerie en fond", systemImage: "photo.on.rectangle")
-        }
+        .accessibilityLabel("Fond d'écran : \(current)")
+        .photosPicker(isPresented: $pickingPhoto, selection: $photo, matching: .images)
         .onChange(of: photo) { _, item in
             guard let item else { return }
             photo = nil

@@ -129,19 +129,11 @@ struct UnreadView: View {
             Label(entry.data == nil ? "Talka" : inlineText, systemImage: "bubble.left.fill")
                 .containerBackground(for: .widget) { Color.clear }
         case .accessoryRectangular:
-            VStack(alignment: .leading, spacing: 1) {
-                Label("Talka", systemImage: "bubble.left.fill")
-                    .font(.headline)
-                    .widgetAccentable()
-                if let latest {
-                    Text(latest.title).font(.caption.bold()).lineLimit(1)
-                    Text(latest.last).font(.caption).lineLimit(1).foregroundStyle(.secondary)
-                } else {
-                    Text(entry.data == nil ? "Ouvrez Talka" : data.summary).font(.caption).lineLimit(2)
+            RectangularView(entry: entry)
+                .containerBackground(for: .widget) {
+                    LinearGradient(colors: [Color(red: 0.04, green: 0.26, blue: 0.23), Color(red: 0.02, green: 0.13, blue: 0.12)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .containerBackground(for: .widget) { Color.clear }
         default:
             other
         }
@@ -179,6 +171,54 @@ struct UnreadView: View {
     }
 }
 
+/// Le rectangle (écran verrouillé, Smart Stack de la montre) : le logo,
+/// le nombre de non-lus, puis le dernier message arrivé.
+struct RectangularView: View {
+    let entry: Entry
+
+    var body: some View {
+        let data = entry.data ?? WidgetData()
+        let latest = data.hidden ? nil : data.latestUnread
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(Color.talka)
+                .frame(width: 24, height: 24)
+                .overlay {
+                    Image(systemName: "bubble.left.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .widgetAccentable()
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Talka").font(.headline).widgetAccentable()
+                    Spacer(minLength: 0)
+                    if data.unread > 0 {
+                        Text(data.unread > 99 ? "99+" : "\(data.unread)")
+                            .font(.headline.monospacedDigit())
+                            .foregroundStyle(Color.talka)
+                            .widgetAccentable()
+                    }
+                }
+                if let latest {
+                    Text(latest.title).font(.caption.weight(.semibold)).lineLimit(1)
+                    Text(latest.last).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    Text(status(data)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .combine)
+    }
+
+    func status(_ data: WidgetData) -> String {
+        if entry.data == nil { return "Vos messages s'afficheront ici" }
+        if data.unread == 0 { return "Aucun nouveau message" }
+        return data.summary
+    }
+}
+
 struct SmallView: View {
     let entry: Entry
 
@@ -196,7 +236,7 @@ struct SmallView: View {
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
-            Text(entry.data == nil ? "Ouvrez Talka" : data.unread == 1 ? "message non lu" : "messages non lus")
+            Text(data.unread == 1 ? "message non lu" : "messages non lus")
                 .font(.caption)
                 .opacity(0.85)
             if let latest {
@@ -245,7 +285,7 @@ struct RecentView: View {
             }
             if entry.data == nil {
                 Spacer()
-                Text("Ouvrez Talka pour voir vos discussions ici.")
+                Text("Vos discussions récentes s'afficheront ici.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer()

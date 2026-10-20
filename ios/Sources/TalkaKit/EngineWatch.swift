@@ -45,7 +45,9 @@ extension Engine {
         w.mine = m.from == me.code
         w.system = m.kind == "system" || m.from == "system"
         w.author = group && !w.mine && !w.system ? displayName(m.from) : ""
-        let text = Self.preview(m)
+        // Une capsule ouverte (ou écrite par soi) se lit en entier ; scellée,
+        // elle ne montre que « ⏳ Capsule temporelle ».
+        let text = m.kind == "text" && !m.deleted && !m.sealed(for: me.code) ? m.text : Self.preview(m)
         w.text = text.count > 600 ? String(text.prefix(600)) + "…" : text
         w.at = m.at
         if w.mine, !m.deleted { w.tick = m.tick.rawValue }

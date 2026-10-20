@@ -95,6 +95,18 @@ fn main() {
                 json!({ "candidate": "candidate:1 1 udp 1 10.0.0.1 9 typ host", "sdpMid": "0", "sdpMLineIndex": 0 }),
             ),
         }),
+        // Une capsule temporelle : un message scellé jusqu'à `open_at`.
+        Wire::new(Body::Msg {
+            id: "m9".into(),
+            at: 1_700_000_000_000.0,
+            pn: String::new(),
+            content: Content {
+                kind: "text".into(),
+                text: "À ouvrir plus tard".into(),
+                open_at: 1_800_000_000_000.0,
+                ..Default::default()
+            },
+        }),
     ];
     let wire_json: Vec<String> = wires
         .iter()

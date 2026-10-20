@@ -262,7 +262,7 @@ final class AppModel {
         }
         guard !chat.muted else { return }
         let who = e.displayName(message.from)
-        let text = message.kind == "text" ? message.text : Engine.preview(message)
+        let text = message.kind == "text" && !message.isCapsule ? message.text : Engine.preview(message)
         let body = chat.group ? "\(who) : \(text)" : text
         if UIApplication.shared.applicationState == .active {
             if e.settings.sound { Sounds.incoming() }
