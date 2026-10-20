@@ -603,6 +603,15 @@ public final class Engine {
     }
 
     /// Marque une discussion comme lue (accusés de lecture bleus).
+    /// Toutes les discussions non lues (archivées comprises) marquées comme
+    /// lues, comme dans le navigateur. Renvoie leur nombre.
+    @discardableResult
+    public func markAllRead() -> Int {
+        let ids = chats.values.filter { $0.unread > 0 || $0.markedUnread }.map(\.id)
+        for id in ids { markRead(id) }
+        return ids.count
+    }
+
     public func markRead(_ chat: String) {
         guard let c = chats[chat] else { return }
         var bySender: [String: [String]] = [:]
