@@ -250,7 +250,7 @@ pub fn app() -> App {
             .scope("/")
             .display("standalone")
             .lang("fr")
-            .theme_color("#008069")
+            .theme_color("#0e6b63")
             .background_color("#0b141a")
             .icon("/icons/icon-192.png", "192x192", "image/png")
             .icon("/icons/icon-512.png", "512x512", "image/png")
