@@ -364,3 +364,39 @@ final class SealedSenderTests: XCTestCase {
         XCTAssertFalse(String(data: try JSONEncoder().encode(old), encoding: .utf8)!.contains("jeton"))
     }
 }
+
+/// Les messages de plus de 3 mois s'effacent (sauf les importants).
+@MainActor
+final class KeepDaysTests: XCTestCase {
+    func testOldMessagesGoExceptStarred() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-garde-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Léa", avatar: "")
+        let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
+        XCTAssertEqual(e.settings.keepDays, 90)
+        let c = e.ensureDirectChat("WGSEAJNSZJ")
+        let now = nowMs(), day = 86_400_000.0
+        func put(_ id: String, daysAgo: Double, starred: Bool = false) {
+            var m = Message(chat: c.id, id: id, from: e.me.code, at: now - daysAgo * day, content: Content(text: id))
+            m.starred = starred
+            e.store.writeMessage(m)
+        }
+        put("vieux", daysAgo: 120)
+        put("vieux-important", daysAgo: 120, starred: true)
+        put("récent", daysAgo: 10)
+        e.sweep()
+        XCTAssertEqual(Set(e.messages(c.id).map(\.id)), ["vieux-important", "récent"])
+
+        // « Toujours » : plus rien ne part.
+        put("très-vieux", daysAgo: 1000)
+        e.saveSettings { $0.keepDays = 0 }
+        XCTAssertTrue(e.messages(c.id).contains { $0.id == "très-vieux" })
+        // 1 mois : tout ce qui dépasse s'efface aussitôt.
+        e.saveSettings { $0.keepDays = 30 }
+        XCTAssertEqual(Set(e.messages(c.id).map(\.id)), ["vieux-important", "récent"])
+
+        // Un réglage d'avant cette version : 3 mois.
+        let old = try JSONDecoder().decode(Settings.self, from: Data(#"{"theme":"dark"}"#.utf8))
+        XCTAssertEqual(old.keepDays, 90)
+    }
+}
