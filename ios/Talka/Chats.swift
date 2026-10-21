@@ -376,7 +376,10 @@ struct AddContactSheet: View {
             .sheet(isPresented: $scanning) {
                 QRScanner { text in
                     scanning = false
-                    if let c = TalkaCode.find(in: text) { code = TalkaCode.pretty(c) } else { error = "Ce QR code n'est pas un code Talka." }
+                    if let c = TalkaCode.find(in: text) {
+                        if let fp = TalkaCode.fingerprint(in: text) { model.engine?.expectFingerprint(c, fp) }
+                        code = TalkaCode.pretty(c)
+                    } else { error = "Ce QR code n'est pas un code Talka." }
                 }
                 .ignoresSafeArea()
             }

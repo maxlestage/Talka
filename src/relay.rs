@@ -71,8 +71,18 @@ const MAILBOX_MAX_BYTES: usize = 48 * 1024 * 1024;
 const TOTAL_MAX_BYTES: usize = 256 * 1024 * 1024;
 /// Un envoi : 6 Mio au plus (une photo, un vocal, un petit fichier).
 pub const MAX_BODY: usize = 6 * 1024 * 1024;
-/// Au plus 60 envois par seconde et par connexion.
+/// Au plus 60 envois (et 60 autres demandes) par seconde et par connexion.
 const SENDS_PER_SECOND: u32 = 60;
+/// Et au plus 64 Mio envoyés par minute et par connexion.
+const BYTES_PER_MINUTE: usize = 64 * 1024 * 1024;
+/// Ce qui attend de partir vers un appareil : au-delà (il ne lit plus), la
+/// connexion est coupée plutôt que de remplir la mémoire du relais.
+const OUT_QUEUE: usize = 4_096;
+/// Les connexions anonymes ouvertes en même temps, et leur durée sans envoi.
+const MAX_ANON: usize = 20_000;
+const ANON_IDLE: Duration = Duration::from_secs(120);
+/// Les réveils Web Push, tous codes confondus : 50 par seconde au plus.
+const WAKES_PER_SECOND: u32 = 50;
 /// Heroku ferme une connexion silencieuse au bout de 55 secondes.
 const PING_EVERY: Duration = Duration::from_secs(25);
 /// Les clés retenues : au plus 200 000 codes.
@@ -131,8 +141,21 @@ struct Bundle {
 
 struct Conn {
     id: u64,
-    tx: mpsc::UnboundedSender<String>,
+    tx: mpsc::Sender<String>,
     hidden: bool,
+    /// La file est pleine : la connexion se ferme.
+    overflow: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Conn {
+    /// Met un message dans la file de la connexion ; pleine, elle est
+    /// marquée pour être coupée.
+    fn send(&self, text: String) {
+        if self.tx.try_send(text).is_err() {
+            self.overflow
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -149,14 +172,21 @@ struct State {
     push: HashMap<String, Vec<crate::push::Subscription>>,
     /// code → son dernier réveil.
     woke: HashMap<String, Instant>,
+    /// Les réveils de la seconde en cours (tous codes confondus).
+    wakes: Limit,
+    /// Les connexions anonymes ouvertes.
+    anon: usize,
     next_n: u64,
     next_conn: u64,
 }
 
-/// Au plus `SENDS_PER_SECOND` envois par seconde et par connexion.
+/// Au plus `SENDS_PER_SECOND` envois par seconde et `BYTES_PER_MINUTE`
+/// octets par minute, par connexion.
 struct Limit {
     window: Instant,
     sends: u32,
+    minute: Instant,
+    bytes: usize,
 }
 
 impl Default for Limit {
@@ -164,18 +194,33 @@ impl Default for Limit {
         Limit {
             window: Instant::now(),
             sends: 0,
+            minute: Instant::now(),
+            bytes: 0,
         }
     }
 }
 
 impl Limit {
     fn allow(&mut self) -> bool {
+        self.allow_n(SENDS_PER_SECOND)
+    }
+
+    fn allow_n(&mut self, per_second: u32) -> bool {
         if self.window.elapsed() >= Duration::from_secs(1) {
             self.window = Instant::now();
             self.sends = 0;
         }
         self.sends += 1;
-        self.sends <= SENDS_PER_SECOND
+        self.sends <= per_second
+    }
+
+    fn allow_bytes(&mut self, n: usize) -> bool {
+        if self.minute.elapsed() >= Duration::from_secs(60) {
+            self.minute = Instant::now();
+            self.bytes = 0;
+        }
+        self.bytes += n;
+        self.bytes <= BYTES_PER_MINUTE
     }
 }
 
@@ -233,7 +278,7 @@ impl State {
         for (watcher, conn_id) in watchers {
             if let Some(conns) = self.online.get(watcher) {
                 for conn in conns.iter().filter(|c| c.id == *conn_id) {
-                    let _ = conn.tx.send(msg.clone());
+                    conn.send(msg.clone());
                 }
             }
         }
@@ -254,26 +299,6 @@ impl State {
             !mb.queue.is_empty()
         });
         self.total_bytes -= freed;
-        // Plus de place : les plus vieux messages, toutes boîtes confondues.
-        while self.total_bytes > TOTAL_MAX_BYTES {
-            let Some(code) = self
-                .mailboxes
-                .iter()
-                .filter_map(|(code, mb)| mb.queue.front().map(|s| (code, s.at)))
-                .min_by_key(|(_, at)| *at)
-                .map(|(code, _)| code.clone())
-            else {
-                break;
-            };
-            let mb = self.mailboxes.get_mut(&code).expect("mailbox exists");
-            if let Some(s) = mb.queue.pop_front() {
-                mb.bytes -= s.json.len();
-                self.total_bytes -= s.json.len();
-            }
-            if mb.queue.is_empty() {
-                self.mailboxes.remove(&code);
-            }
-        }
     }
 }
 
@@ -292,14 +317,28 @@ impl Relay {
         self.lock().mailboxes.values().map(|m| m.queue.len()).sum()
     }
 
+    /// Ce code est-il déjà lié à d'autres clés ? (Quelqu'un qui aurait
+    /// trouvé d'autres clés au même code de 50 bits ne prend pas sa place.)
+    fn taken(&self, code: &str, sign: &str, dh: &str) -> bool {
+        self.lock()
+            .keys
+            .get(code)
+            .is_some_and(|k| k.sign != sign || k.dh != dh)
+    }
+
     fn register(
         &self,
         code: &str,
         sign: String,
         dh: String,
         hidden: bool,
-    ) -> (u64, mpsc::UnboundedReceiver<String>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    ) -> (
+        u64,
+        mpsc::Receiver<String>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let (tx, rx) = mpsc::channel(OUT_QUEUE);
+        let overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut st = self.lock();
         st.next_conn += 1;
         let id = st.next_conn;
@@ -326,11 +365,16 @@ impl Relay {
         // ne doit pas recevoir de jetons v3 qu'il ne saurait pas lire.
         st.bundles.remove(code);
         let was_visible = st.is_visible(code);
-        st.online.entry(code.to_owned()).or_default().push(Conn {
+        let conn = Conn {
             id,
-            tx: tx.clone(),
+            tx,
             hidden,
-        });
+            overflow: overflow.clone(),
+        };
+        // Masqué : on ne garde pas non plus l'heure de sa dernière connexion.
+        if hidden {
+            st.seen.remove(code);
+        }
         if !was_visible && !hidden {
             st.notify_watchers(code);
         }
@@ -338,16 +382,19 @@ impl Relay {
         st.evict_expired();
         if let Some(mb) = st.mailboxes.get(code) {
             for s in &mb.queue {
-                let _ = tx.send(s.json.clone());
+                conn.send(s.json.clone());
             }
         }
-        (id, rx)
+        st.online.entry(code.to_owned()).or_default().push(conn);
+        (id, rx, overflow)
     }
 
     fn unregister(&self, code: &str, id: u64) {
         let mut st = self.lock();
         let was_visible = st.is_visible(code);
+        let mut was_hidden = false;
         if let Some(conns) = st.online.get_mut(code) {
+            was_hidden = conns.iter().any(|c| c.id == id && c.hidden);
             conns.retain(|c| c.id != id);
             if conns.is_empty() {
                 st.online.remove(code);
@@ -357,7 +404,8 @@ impl Relay {
             set.remove(&(code.to_owned(), id));
             !set.is_empty()
         });
-        if !st.online.contains_key(code) {
+        // « Vu à » : seulement pour qui ne se cache pas.
+        if !st.online.contains_key(code) && !was_hidden {
             st.seen.insert(code.to_owned(), now_ms());
         }
         if was_visible && !st.is_visible(code) {
@@ -376,14 +424,14 @@ impl Relay {
         body: &str,
         live: bool,
         wake: Wake,
-    ) -> (u64, bool) {
+    ) -> Result<(u64, bool), &'static str> {
         // Sans clé VAPID, personne à réveiller.
         let wake = if crate::push::vapid().is_some() {
             wake
         } else {
             Wake::No
         };
-        let (ts, online, subs) = self.store(from, to, id, body, live, &wake);
+        let (ts, online, subs) = self.store(from, to, id, body, live, &wake)?;
         if let Some(vapid) = crate::push::vapid() {
             // L'aperçu chiffré par l'expéditeur, que le navigateur ouvrira.
             let payload = match &wake {
@@ -402,7 +450,7 @@ impl Relay {
                 });
             }
         }
-        (ts, online)
+        Ok((ts, online))
     }
 
     fn store(
@@ -413,7 +461,7 @@ impl Relay {
         body: &str,
         live: bool,
         wake: &Wake,
-    ) -> (u64, bool, Vec<crate::push::Subscription>) {
+    ) -> Result<(u64, bool, Vec<crate::push::Subscription>), &'static str> {
         let ts = now_ms();
         let mut st = self.lock();
         let online = st.online.contains_key(to);
@@ -425,10 +473,25 @@ impl Relay {
                     json!({ "t": "msg", "id": id, "body": body, "ts": ts, "live": true }),
                 );
                 for conn in conns {
-                    let _ = conn.tx.send(json.clone());
+                    conn.send(json.clone());
                 }
             }
-            return (ts, online, Vec::new());
+            return Ok((ts, online, Vec::new()));
+        }
+        // Plus de place : refusé (l'expéditeur réessaiera), jamais en faisant
+        // de la place avec les messages des autres.
+        let room = |st: &State| {
+            let mb = st.mailboxes.get(to);
+            st.total_bytes + body.len() <= TOTAL_MAX_BYTES
+                && mb.is_none_or(|mb| {
+                    mb.queue.len() < MAILBOX_MAX_COUNT && mb.bytes + body.len() <= MAILBOX_MAX_BYTES
+                })
+        };
+        if !room(&st) {
+            st.evict_expired();
+            if !room(&st) {
+                return Err("full");
+            }
         }
         st.next_n += 1;
         let n = st.next_n;
@@ -438,7 +501,7 @@ impl Relay {
         );
         if let Some(conns) = st.online.get(to) {
             for conn in conns {
-                let _ = conn.tx.send(json.clone());
+                conn.send(json.clone());
             }
         }
         let size = json.len();
@@ -449,16 +512,7 @@ impl Relay {
             at: Instant::now(),
         });
         mb.bytes += size;
-        let mut freed = 0;
-        while mb.queue.len() > MAILBOX_MAX_COUNT || mb.bytes > MAILBOX_MAX_BYTES {
-            let Some(s) = mb.queue.pop_front() else { break };
-            mb.bytes -= s.json.len();
-            freed += s.json.len();
-        }
-        st.total_bytes = st.total_bytes + size - freed;
-        if st.total_bytes > TOTAL_MAX_BYTES {
-            st.evict_expired();
-        }
+        st.total_bytes += size;
         let mut subs = Vec::new();
         if *wake != Wake::No && !online && st.push.contains_key(to) {
             // Un réveil vide toutes les 20 s au plus ; avec un aperçu, chaque
@@ -469,12 +523,14 @@ impl Relay {
                 WAKE_EVERY
             };
             let recent = st.woke.get(to).is_some_and(|at| at.elapsed() < every);
-            if !recent {
+            // Et pas plus de `WAKES_PER_SECOND` en tout : le relais ne sert
+            // pas à bombarder les services de notifications.
+            if !recent && st.wakes.allow_n(WAKES_PER_SECOND) {
                 st.woke.insert(to.to_owned(), Instant::now());
                 subs = st.push[to].clone();
             }
         }
-        (ts, online, subs)
+        Ok((ts, online, subs))
     }
 
     /// L'abonnement Web Push d'un appareil de `code`.
@@ -582,9 +638,12 @@ impl Relay {
 
     fn watch(&self, watcher: &str, conn_id: u64, codes: &[String]) -> Vec<String> {
         let mut st = self.lock();
+        // `MAX_WATCH` codes suivis par connexion, en tout.
+        let me = (watcher.to_owned(), conn_id);
+        let already = st.watchers.values().filter(|s| s.contains(&me)).count();
         codes
             .iter()
-            .take(MAX_WATCH)
+            .take(MAX_WATCH.saturating_sub(already))
             .filter_map(|c| code::normalize(c))
             .map(|c| {
                 st.watchers
@@ -604,7 +663,7 @@ impl Relay {
         let body = msg["body"].as_str().unwrap_or("");
         let to = msg["to"].as_str().and_then(code::normalize);
         let field = |name: &str| msg[name].as_str().unwrap_or("");
-        let error = if !limit.allow() {
+        let error = if !limit.allow() || !limit.allow_bytes(body.len()) {
             Some("rate")
         } else if id.is_empty() || id.len() > 64 {
             Some("id")
@@ -638,8 +697,10 @@ impl Relay {
             (true, None) => Wake::Empty,
             (true, Some(a)) => Wake::Apercu(a.to_owned()),
         };
-        let (ts, online) = self.deliver(from, &to, &id, body, live, wake);
-        json!({ "t": "ack", "id": id, "ts": ts, "online": online })
+        match self.deliver(from, &to, &id, body, live, wake) {
+            Ok((ts, online)) => json!({ "t": "ack", "id": id, "ts": ts, "online": online }),
+            Err(error) => json!({ "t": "error", "id": id, "error": error }),
+        }
     }
 
     /// Une connexion anonyme : seulement des envois scellés (et `ping`).
@@ -650,6 +711,27 @@ impl Relay {
         mut tx: paquets::vitesse::ws::WebSocketSender,
         mut rx: paquets::vitesse::ws::WebSocketReceiver,
     ) {
+        let admitted = {
+            let mut st = self.lock();
+            let ok = st.anon < MAX_ANON;
+            if ok {
+                st.anon += 1;
+            }
+            ok
+        };
+        if !admitted {
+            let _ = tx.close(4003, "busy").await;
+            return;
+        }
+        self.anon_loop(&mut tx, &mut rx).await;
+        self.lock().anon -= 1;
+    }
+
+    async fn anon_loop(
+        &self,
+        tx: &mut paquets::vitesse::ws::WebSocketSender,
+        rx: &mut paquets::vitesse::ws::WebSocketReceiver,
+    ) {
         let ready = json!({ "t": "ready", "anon": true, "time": now_ms(), "boot": boot_id() });
         if tx.send(ready.to_string()).await.is_err() {
             return;
@@ -657,7 +739,12 @@ impl Relay {
         let mut limit = Limit::default();
         let mut ping = tokio::time::interval(PING_EVERY);
         ping.tick().await;
+        // Fermée au bout de `ANON_IDLE` sans envoi.
+        let mut last = Instant::now();
         loop {
+            if last.elapsed() > ANON_IDLE {
+                break;
+            }
             tokio::select! {
                 next = rx.recv() => {
                     let text = match next {
@@ -669,8 +756,11 @@ impl Relay {
                         continue;
                     };
                     let answer = match msg["t"].as_str().unwrap_or("") {
-                        "send" => self.send(None, &msg, &mut limit),
-                        "ping" => json!({ "t": "pong", "time": now_ms() }),
+                        "send" => {
+                            last = Instant::now();
+                            self.send(None, &msg, &mut limit)
+                        }
+                        "ping" if limit.allow() => json!({ "t": "pong", "time": now_ms() }),
                         _ => continue,
                     };
                     if tx.send(answer.to_string()).await.is_err() {
@@ -734,6 +824,10 @@ impl Relay {
             return;
         }
         let me = code::derive(&sign, &dh);
+        if self.taken(&me, &sign_b64, &dh_b64) {
+            let _ = tx.close(4004, "code").await;
+            return;
+        }
         let hidden = hello["hidden"].as_bool().unwrap_or(false);
         let mut ready = json!({ "t": "ready", "code": me, "time": now_ms(), "boot": boot_id(), "sealed": true });
         if let Some(vapid) = crate::push::vapid() {
@@ -743,7 +837,7 @@ impl Relay {
         if tx.send(ready).await.is_err() {
             return;
         }
-        let (conn_id, mut outbox) = self.register(&me, sign_b64, dh_b64, hidden);
+        let (conn_id, mut outbox, overflow) = self.register(&me, sign_b64, dh_b64, hidden);
 
         // Ce qui part vers l'appareil : les messages, et un ping régulier.
         let writer = tokio::spawn(async move {
@@ -772,14 +866,20 @@ impl Relay {
                 let st = relay.lock();
                 if let Some(conns) = st.online.get(&me) {
                     for conn in conns.iter().filter(|c| c.id == conn_id) {
-                        let _ = conn.tx.send(text.clone());
+                        conn.send(text.clone());
                     }
                 }
             }
         };
 
         let mut limit = Limit::default();
+        // Les autres demandes (clés, paquets, présence…) : 60 par seconde.
+        let mut asks = Limit::default();
         while let Some(Ok(message)) = rx.recv().await {
+            // L'appareil ne lit plus ce qu'on lui envoie : on coupe.
+            if overflow.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             let text = match message {
                 Message::Text(text) => text,
                 Message::Close(_) => break,
@@ -788,7 +888,11 @@ impl Relay {
             let Ok(msg) = serde_json::from_str::<Value>(&text) else {
                 continue;
             };
-            match msg["t"].as_str().unwrap_or("") {
+            let kind = msg["t"].as_str().unwrap_or("");
+            if kind != "send" && !asks.allow() {
+                continue;
+            }
+            match kind {
                 "send" => {
                     let answer = self.send(Some(&me), &msg, &mut limit);
                     reply(answer.to_string());
@@ -917,6 +1021,7 @@ mod tests {
         assert!(
             relay
                 .store(Some("AAAAAAAAAA"), to, "r1", "x", false, &Wake::No)
+                .unwrap()
                 .2
                 .is_empty()
         );
@@ -924,6 +1029,7 @@ mod tests {
         assert!(
             relay
                 .store(Some("AAAAAAAAAA"), to, "l1", "x", true, &Wake::Empty)
+                .unwrap()
                 .2
                 .is_empty()
         );
@@ -931,6 +1037,7 @@ mod tests {
         assert_eq!(
             relay
                 .store(Some("AAAAAAAAAA"), to, "m1", "x", false, &Wake::Empty)
+                .unwrap()
                 .2,
             vec![sub(&format!("{FCM}b"))]
         );
@@ -949,6 +1056,7 @@ mod tests {
                     false,
                     &Wake::Apercu("a".into())
                 )
+                .unwrap()
                 .2
                 .len(),
             1
@@ -957,6 +1065,7 @@ mod tests {
         assert!(
             relay
                 .store(Some("AAAAAAAAAA"), to, "m2", "x", false, &Wake::Empty)
+                .unwrap()
                 .2
                 .is_empty()
         );
@@ -967,6 +1076,7 @@ mod tests {
         assert_eq!(
             relay
                 .store(Some("AAAAAAAAAA"), to, "m3", "x", false, &Wake::Empty)
+                .unwrap()
                 .2
                 .len(),
             1
@@ -982,6 +1092,7 @@ mod tests {
                     false,
                     &Wake::Empty
                 )
+                .unwrap()
                 .2
                 .is_empty()
         );
@@ -992,12 +1103,103 @@ mod tests {
         let relay = Relay::default();
         let to = "BBBBBBBBBB";
         relay.push(to, sub(&format!("{FCM}b")));
-        let (_id, _rx) = relay.register(to, String::new(), String::new(), true);
+        let (_id, _rx, _) = relay.register(to, String::new(), String::new(), true);
         assert!(
             relay
                 .store(Some("AAAAAAAAAA"), to, "m1", "x", false, &Wake::Empty)
+                .unwrap()
                 .2
                 .is_empty()
         );
+    }
+
+    /// Une boîte pleine refuse (l'expéditeur réessaiera) ; elle ne jette
+    /// jamais les messages qui attendent, ni ceux des autres.
+    #[test]
+    fn a_full_mailbox_refuses_instead_of_dropping() {
+        let relay = Relay::default();
+        let to = "BBBBBBBBBB";
+        for i in 0..MAILBOX_MAX_COUNT {
+            assert!(
+                relay
+                    .store(None, to, &format!("m{i}"), "x", false, &Wake::No)
+                    .is_ok()
+            );
+        }
+        assert_eq!(
+            relay.store(None, to, "trop", "x", false, &Wake::No).err(),
+            Some("full")
+        );
+        assert_eq!(relay.lock().mailboxes[to].queue.len(), MAILBOX_MAX_COUNT);
+        // Les autres boîtes, elles, reçoivent toujours.
+        assert!(
+            relay
+                .store(None, "CCCCCCCCCC", "m", "x", false, &Wake::No)
+                .is_ok()
+        );
+        // Toutes les boîtes ensemble : pareil.
+        relay.lock().total_bytes = TOTAL_MAX_BYTES;
+        assert_eq!(
+            relay
+                .store(None, "DDDDDDDDDD", "m", "x", false, &Wake::No)
+                .err(),
+            Some("full")
+        );
+    }
+
+    /// Un code déjà lié à des clés ne passe pas à d'autres.
+    #[test]
+    fn a_code_keeps_its_keys() {
+        let relay = Relay::default();
+        let (_id, _rx, _) = relay.register("BBBBBBBBBB", "s1".into(), "d1".into(), false);
+        assert!(!relay.taken("BBBBBBBBBB", "s1", "d1"));
+        assert!(relay.taken("BBBBBBBBBB", "s2", "d1"));
+        assert!(relay.taken("BBBBBBBBBB", "s1", "d2"));
+        assert!(!relay.taken("CCCCCCCCCC", "s2", "d2"));
+    }
+
+    /// Masqué : pas d'heure de dernière connexion pour les autres.
+    #[test]
+    fn hidden_codes_leave_no_last_seen() {
+        let relay = Relay::default();
+        let (id, _rx, _) = relay.register("BBBBBBBBBB", "s".into(), "d".into(), true);
+        relay.unregister("BBBBBBBBBB", id);
+        assert!(!relay.lock().seen.contains_key("BBBBBBBBBB"));
+        let (id, _rx, _) = relay.register("BBBBBBBBBB", "s".into(), "d".into(), false);
+        relay.unregister("BBBBBBBBBB", id);
+        assert!(relay.lock().seen.contains_key("BBBBBBBBBB"));
+    }
+
+    /// Un appareil qui ne lit plus : sa file se remplit, la connexion est
+    /// marquée pour être coupée (la mémoire du relais ne grossit pas).
+    #[test]
+    fn a_stalled_connection_is_cut() {
+        let relay = Relay::default();
+        let (id, _rx, overflow) = relay.register("BBBBBBBBBB", "s".into(), "d".into(), false);
+        let st = relay.lock();
+        let conn = st.online["BBBBBBBBBB"].iter().find(|c| c.id == id).unwrap();
+        for _ in 0..OUT_QUEUE {
+            conn.send("x".into());
+        }
+        assert!(!overflow.load(std::sync::atomic::Ordering::Relaxed));
+        conn.send("x".into());
+        assert!(overflow.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    /// Les réveils, tous codes confondus, sont plafonnés.
+    #[test]
+    fn wakes_are_capped_overall() {
+        let relay = Relay::default();
+        let mut woken = 0;
+        for i in 0..200 {
+            let to = format!("B{i:09}");
+            relay.push(&to, sub(&format!("{FCM}{i}")));
+            woken += relay
+                .store(None, &to, "m", "x", false, &Wake::Empty)
+                .unwrap()
+                .2
+                .len();
+        }
+        assert_eq!(woken, WAKES_PER_SECOND as usize);
     }
 }

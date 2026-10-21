@@ -273,7 +273,9 @@ struct SafetyView: View {
 
     var body: some View {
         if let e = model.engine {
-            let number = TalkaCrypto.safetyNumber(e.me.code, code)
+            let peer = e.contact(code)
+            let number = TalkaCrypto.safetyNumber((e.me.code, e.me.sign, e.me.dh),
+                                                  (code, peer?.sign ?? "", peer?.dh ?? ""))
             ScrollView {
                 VStack(spacing: 20) {
                     Image(systemName: "lock.shield.fill").font(.system(size: 56)).foregroundStyle(Color.talkaGreen)

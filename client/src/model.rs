@@ -84,6 +84,10 @@ pub struct Contact {
     /// Bonjour ») lui est chiffré pour elle. Vide : un simple réveil.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub nk: String,
+    /// L'empreinte de ses clés donnée par son lien d'invitation : les clés
+    /// trouvées pour son code doivent y correspondre.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fp: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -606,6 +606,15 @@ async fn keys_for(code: &str) -> Option<Contact> {
         added_at: now(),
         ..Default::default()
     });
+    // Le lien d'invitation donnait l'empreinte de ses clés : ce ne sont pas
+    // elles. Quelqu'un d'autre se présente sous ce code ; on n'en veut pas.
+    if !c.fp.is_empty() && crypto::fingerprint(&sign, &dh) != c.fp {
+        dom::toast(format!(
+            "Attention : les clés de {} ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.",
+            crypto::pretty(code)
+        ));
+        return None;
+    }
     c.sign = sign;
     c.dh = dh;
     save_contact(c.clone()).await;
@@ -620,6 +629,19 @@ async fn refresh_missing_keys() {
     }
 }
 
+thread_local! {
+    /// Les empreintes des liens d'invitation ouverts, par code.
+    static FINGERPRINTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+/// Un lien d'invitation donne l'empreinte des clés de ce code : elle sera
+/// vérifiée quand il sera ajouté.
+pub fn expect_fingerprint(code: &str, fp: &str) {
+    if crypto::valid_fingerprint(fp) {
+        FINGERPRINTS.with(|f| f.borrow_mut().insert(code.to_owned(), fp.to_owned()));
+    }
+}
+
 /// Ajoute un contact par son code ; `true` s'il est joignable tout de suite.
 pub async fn add_contact(code: &str, name: &str) -> Result<bool, String> {
     if code == my_code() {
@@ -630,6 +652,12 @@ pub async fn add_contact(code: &str, name: &str) -> Result<bool, String> {
         added_at: now(),
         ..Default::default()
     });
+    if let Some(fp) = FINGERPRINTS.with(|f| f.borrow_mut().remove(code)) {
+        if !c.sign.is_empty() && crypto::fingerprint(&c.sign, &c.dh) != fp {
+            return Err("Les clés de ce code ne correspondent pas au lien d'invitation : quelqu'un se fait peut-être passer pour lui.".into());
+        }
+        c.fp = fp;
+    }
     c.saved = true;
     let name: String = name.trim().chars().take(40).collect();
     if !name.is_empty() {
