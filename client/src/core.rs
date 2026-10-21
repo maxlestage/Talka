@@ -1038,6 +1038,17 @@ pub async fn clear_chat(id: &str) {
     emit(Ev::Messages(id.to_owned()));
 }
 
+/// Ce qu'on lit d'un message sur une ligne (épingle, favoris) : son texte,
+/// sauf s'il est supprimé ou si c'est une capsule encore scellée pour soi ;
+/// sinon son aperçu (« ⏳ Capsule temporelle »…). Comme TalkaKit.
+pub fn readable(m: &Message) -> String {
+    if m.kind == "text" && !m.deleted && !m.sealed_for(&my_code(), now()) {
+        m.text.clone()
+    } else {
+        preview(m)
+    }
+}
+
 /// Une capsule temporelle s'ouvre au plus tard dans dix ans.
 pub const CAPSULE_MAX_MS: f64 = 10.0 * 366.0 * DAY;
 

@@ -537,6 +537,13 @@ public final class Engine {
         bump(id)
     }
 
+    /// Ce qu'on lit d'un message sur une ligne (épingle, favoris, réponse) :
+    /// son texte, sauf s'il est supprimé ou si c'est une capsule encore
+    /// scellée pour soi ; sinon son aperçu (« ⏳ Capsule temporelle »…).
+    public func readable(_ m: Message, now: Double = nowMs()) -> String {
+        m.kind == "text" && !m.deleted && !m.sealed(for: me.code, now: now) ? Brocolis.masked(m.text) : Self.preview(m)
+    }
+
     public static func preview(_ m: Message) -> String {
         if m.deleted { return "🚫 Message supprimé" }
         // Ni l'aperçu de la liste, ni la notification ne trahissent une capsule.
