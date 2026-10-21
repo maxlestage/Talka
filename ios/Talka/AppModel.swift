@@ -18,7 +18,7 @@ final class AppModel {
         let text: String
     }
 
-    let store = Store(directory: Store.defaultDirectory())
+    let store = Store(directory: Store.defaultDirectory(), key: StoreVault.key())
     var engine: Engine?
     var tab: Tab = .chats
     /// Les discussions ouvertes (navigation de l'onglet Discussions).

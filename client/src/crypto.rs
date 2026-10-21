@@ -401,6 +401,61 @@ pub fn open_sealed(me: &Identity, sealed: &str) -> Option<(String, String)> {
     Some((from, s.body))
 }
 
+// ----- La mémoire de l'appareil, chiffrée au repos ---------------------------
+//
+// Chaque valeur gardée (messages, contacts, clés…) est chiffrée avant d'aller
+// sur le disque : AES-256-GCM avec la clé de l'appareil, liée à sa clé de
+// ligne (une valeur ne peut pas être déplacée sur une autre). Talka la
+// déchiffre en mémoire pour l'afficher.
+
+/// Le début d'une valeur chiffrée (octets) : `t1` puis iv (12) ‖ chiffré.
+pub const ROW_MAGIC: &[u8; 2] = b"t1";
+
+fn row_aad(name: &str) -> Vec<u8> {
+    format!("talka-repos:{name}").into_bytes()
+}
+
+/// Chiffre la valeur `value` de la ligne `name` avec la clé de l'appareil.
+pub fn seal_row(key: &[u8], name: &str, value: &str) -> Option<Vec<u8>> {
+    let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+    let iv = random_bytes(12);
+    let aad = row_aad(name);
+    let ct = cipher
+        .encrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: value.as_bytes(),
+                aad: &aad,
+            },
+        )
+        .ok()?;
+    let mut out = ROW_MAGIC.to_vec();
+    out.extend(iv);
+    out.extend(ct);
+    Some(out)
+}
+
+/// Déchiffre une valeur gardée ; `None` si elle est abîmée, d'une autre
+/// ligne ou d'une autre clé.
+pub fn open_row(key: &[u8], name: &str, sealed: &[u8]) -> Option<String> {
+    let rest = sealed.strip_prefix(ROW_MAGIC)?;
+    if rest.len() < 12 + 16 {
+        return None;
+    }
+    let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+    let aad = row_aad(name);
+    let pt = cipher
+        .decrypt(
+            Nonce::from_slice(&rest[..12]),
+            Payload {
+                msg: &rest[12..],
+                aad: &aad,
+            },
+        )
+        .ok()?;
+    String::from_utf8(pt).ok()
+}
+
 // ----- Le code de verrouillage et la sauvegarde ------------------------------
 
 pub const PIN_ROUNDS: u32 = 120_000;
@@ -588,6 +643,31 @@ mod tests {
             sealed,
             seal_sender(&a.code, &b.code, &b.dh, &inner).unwrap()
         );
+    }
+
+    #[test]
+    fn rows_at_rest() {
+        let key = random_bytes(32);
+        let json = r#"{"text":"Bonjour 👋","from":"KD6YMWRFXX"}"#;
+        let sealed = seal_row(&key, "messages/c|m1", json).unwrap();
+        assert!(sealed.starts_with(ROW_MAGIC));
+        assert!(!String::from_utf8_lossy(&sealed).contains("Bonjour"));
+        assert_ne!(
+            sealed,
+            seal_row(&key, "messages/c|m1", json).unwrap(),
+            "un iv neuf"
+        );
+        assert_eq!(
+            open_row(&key, "messages/c|m1", &sealed).as_deref(),
+            Some(json)
+        );
+        // Une autre ligne, une autre clé, un octet changé : illisible.
+        assert!(open_row(&key, "messages/c|m2", &sealed).is_none());
+        assert!(open_row(&random_bytes(32), "messages/c|m1", &sealed).is_none());
+        let mut bad = sealed.clone();
+        bad[20] ^= 1;
+        assert!(open_row(&key, "messages/c|m1", &bad).is_none());
+        assert!(open_row(&key, "x", b"{}").is_none());
     }
 
     #[test]
