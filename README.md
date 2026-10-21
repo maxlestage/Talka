@@ -161,6 +161,12 @@ en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
 - ⭕ statuts (texte coloré ou photo) pendant 24 heures, avec « vu par »
 - ⏳ messages éphémères (24 h, 7 j, 90 j) ; 📌 épingler, archiver, sourdine,
   non lu ; 🚫 bloquer
+- 🔐 verrouillage : code de 6 à 12 chiffres qui chiffre aussi la mémoire de
+  l'appareil (Argon2id), passkey (navigateur) ou Face ID (iPhone, iPad),
+  verrouillage automatique, effacement après 10 codes faux ; aperçu des
+  notifications au choix (nom et message, nom seulement, rien)
+- 📱 iPhone, iPad (liste et discussion côte à côte) et navigateur ;
+  l'application web installée sur l'écran d'accueil occupe tout l'écran
 - 🌙 thème clair, sombre ou automatique, fonds d'écran, taille du texte ;
   🔔 notifications et sons (synthétisés, aucun fichier) ; badge d'application
 - 📲 PWA installable (manifeste et service worker de Paquets)
@@ -205,7 +211,9 @@ codes, et discutez.
   (`talka export`) sous `https://<propriétaire>.github.io/Talka/`. Il faut un
   relais Talka en ligne (Heroku…) : son adresse vient de la variable
   `TALKA_API_URL`, ou de l'app Heroku (`HEROKU_API_KEY` + `HEROKU_APP_NAME`),
-  sinon l'application la demande au premier lancement. Côté serveur,
+  sinon le relais officiel (`OFFICIAL` dans `client/src/net.rs`,
+  `TalkaServer.official` sur l'iPhone) : il n'y a pas de serveur à choisir
+  dans l'application. Côté serveur,
   `TALKA_ALLOWED_ORIGINS` (par défaut `https://maxlestage.github.io`) autorise
   la page à l'utiliser. À faire une fois : *Settings → Pages → Source :
   GitHub Actions*.

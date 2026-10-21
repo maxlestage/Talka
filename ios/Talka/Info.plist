@@ -32,7 +32,7 @@
 			</array>
 		</dict>
 	</array>
-	<!-- Le serveur Talka (le même que celui du navigateur). Vide : demandé au premier lancement. -->
+	<!-- Le relais Talka (le même que celui du navigateur). Vide : le relais officiel. -->
 	<key>TalkaServer</key>
 	<string>$(TALKA_SERVER)</string>
 	<!-- Le groupe de trousseau partagé avec les widgets (Shared.entitlements). -->

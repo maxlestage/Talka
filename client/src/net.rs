@@ -100,13 +100,26 @@ pub fn ws_url() -> String {
     format!("{ws}/ws")
 }
 
-/// L'adresse HTTP du relais (vide : le même site).
+/// Le relais de Talka : un seul, le même pour tous (le navigateur, l'iPhone,
+/// l'iPad). Il n'y a plus de serveur à choisir.
+pub const OFFICIAL: &str = "https://talka-maxlestage-e497dd868a8c.herokuapp.com";
+
+/// L'adresse HTTP du relais (vide : le même site, quand la page vient du
+/// relais lui-même). Une page publiée ailleurs (GitHub Pages) le nomme dans
+/// `talka-api` ; à défaut, le relais officiel. Une adresse choisie autrefois
+/// dans les réglages (`Settings.server`) est ignorée.
 pub fn api_base() -> String {
-    let saved = crate::core::settings().server;
-    let base = if saved.is_empty() {
-        meta("talka-api")
+    let named = meta("talka-api");
+    let base = if !named.is_empty() {
+        named
+    } else if window()
+        .location()
+        .hostname()
+        .is_ok_and(|h| h.ends_with(".github.io"))
+    {
+        OFFICIAL.to_owned()
     } else {
-        saved
+        String::new()
     };
     base.trim_end_matches('/').to_owned()
 }

@@ -390,7 +390,8 @@ self.addEventListener("message", (e) => {
     const list = e.data.list
       .filter((c) => typeof c.code === "string" && c.code.length === 10 && typeof c.dh === "string")
       .map((c) => ({ code: c.code, dh: c.dh, name: String(c.name || "").slice(0, 80) }));
-    e.waitUntil(garderCarnet(list));
+    const mode = ["all", "name", "none"].includes(e.data.apercu) ? e.data.apercu : "all";
+    e.waitUntil(garderCarnet(list).then(() => ecrire("apercu", mode)));
   }
 });
 
@@ -404,11 +405,13 @@ self.addEventListener("push", (e) => {
     try {
       const d = e.data ? e.data.json() : null;
       const o = d && d.a ? await ouvrir(d.a) : null;
-      if (o) {
+      // Ce que vous avez choisi de montrer (Réglages → Aperçu).
+      const mode = (await lire("apercu")) || "all";
+      if (o && mode !== "none") {
         // Le nom que vous lui avez donné, sinon celui qu'il s'est choisi.
         const nom = o.contact.name || (o.a.n ? "~" + o.a.n : "Talka");
         titre = (nom + (o.a.g ? " · " + o.a.g : "")).slice(0, 80);
-        corps = String(o.a.t || corps).slice(0, 200);
+        if (mode === "all") corps = String(o.a.t || corps).slice(0, 200);
         const c = String(o.a.c || "");
         tag = "talka-" + (c.startsWith("g:") ? c : o.contact.code);
       }

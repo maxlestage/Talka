@@ -91,6 +91,33 @@ pub fn listen(target: &web_sys::EventTarget, event: &str, f: impl FnMut(Event) +
 }
 
 /// Un écouteur permanent (fenêtre, document) : jamais libéré.
+/// La hauteur réelle de la fenêtre dans `--app-h` (voir `app.css`) : sur
+/// l'écran d'accueil d'un iPhone ou d'un iPad, `100dvh` ne compte pas la
+/// barre d'état, et l'application laissait une bande vide en bas.
+pub fn track_height() {
+    fn set() {
+        let h = window()
+            .inner_height()
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        if h > 0.0
+            && let Some(root) = document().document_element()
+        {
+            let _ = root
+                .unchecked_ref::<web_sys::HtmlElement>()
+                .style()
+                .set_property("--app-h", &format!("{h}px"));
+        }
+    }
+    set();
+    listen_forever(&window(), "resize", |_| set());
+    listen_forever(&window(), "orientationchange", |_| {
+        // iOS donne la nouvelle taille un peu après l'événement.
+        timer(300, set);
+    });
+}
+
 pub fn listen_forever(target: &web_sys::EventTarget, event: &str, f: impl FnMut(Event) + 'static) {
     let closure = Closure::<dyn FnMut(Event)>::new(f);
     let _ = target.add_event_listener_with_callback(event, closure.as_ref().unchecked_ref());

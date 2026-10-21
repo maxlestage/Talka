@@ -1610,6 +1610,12 @@ public final class Engine {
 
     public func wipeEverything() {
         stop()
+        Self.wipe(store)
+    }
+
+    /// Efface tout, même une base qui n'a pas pu s'ouvrir (Talka verrouillé,
+    /// code oublié ou 10 codes faux) : messages, clés v3, clés Brocolis.
+    public nonisolated static func wipe(_ store: Store) {
         store.wipe()
         #if os(iOS)
         BrocolisVault.clear()
