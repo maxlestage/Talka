@@ -304,7 +304,8 @@ struct ConversationView: View {
                     Image(systemName: "pin.fill").foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(e.displayName(m.from)).font(.caption.bold())
-                        Text(m.kind == "text" ? Brocolis.masked(m.text) : Engine.preview(m))
+                        // Une capsule encore scellée ne se lit pas non plus dans l'épingle.
+                        Text(m.kind == "text" && !m.sealed(for: e.me.code) ? Brocolis.masked(m.text) : Engine.preview(m))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
