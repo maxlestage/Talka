@@ -667,18 +667,43 @@ public final class Engine {
         // de message ne doit jamais servir deux fois).
         if sealed.v3 { saveV3() }
         let wake = !live && !item.msgId.isEmpty
+        // Et, s'il a donné sa clé de notification, avec un aperçu chiffré pour
+        // elle : le relais le transmet sans pouvoir le lire.
+        let apercu = wake && !peer.nk.isEmpty
+            ? JSON.decode(Wire.self, item.payload).flatMap { Self.apercu(me: me.code, name: profile.name, wire: $0) }
+                .flatMap { TalkaCrypto.sealApercu(nk: peer.nk, plain: $0) }
+            : nil
         // L'expéditeur scellé : le relais ne sait pas qui écrit (une connexion
         // anonyme, et le jeton de remise du destinataire).
         if !peer.jeton.isEmpty, relay.sealed {
             guard let outer = TalkaCrypto.sealSender(from: me.code, to: peer.code, toDh: peer.dh, body: sealed.body)
             else { return .failed("crypto") }
-            let ack = await relay.sendSealed(id: item.id, peer: peer, body: outer, live: live, wake: wake)
+            let ack = await relay.sendSealed(id: item.id, peer: peer, body: outer, live: live, wake: wake, apercu: apercu)
             // Son jeton ne vaut plus : on l'oublie, et cet envoi part comme
             // avant. Sinon pas de repli : l'envoi réessaiera, toujours scellé.
             guard ack == .failed("jeton") else { return ack }
             updateContact(peer.code) { $0.jeton = "" }
         }
-        return await relay.send(id: item.id, to: item.to, body: sealed.body, live: live, wake: wake)
+        return await relay.send(id: item.id, to: item.to, body: sealed.body, live: live, wake: wake, apercu: apercu)
+    }
+
+    /// L'aperçu d'une notification pour le destinataire, en JSON : qui écrit
+    /// (`n`), quoi (`t`, comme la liste des discussions) et la discussion
+    /// (`c`, vue de chez lui). Seulement pour les messages écrits ; comme
+    /// `core::apercu_of` du navigateur.
+    public static func apercu(me: String, name: String, wire: Wire) -> String? {
+        guard case let .msg(_, _, _, content) = wire.body else { return nil }
+        let m = Message(chat: "", id: "", from: me, at: 0, content: content)
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        var n = trimmed.isEmpty ? TalkaCode.pretty(me) : String(trimmed.prefix(40))
+        var c = me
+        if let id = wire.groupId {
+            c = "g:\(id)"
+            if let g = wire.grp, !g.name.isEmpty { n += " · \(g.name.prefix(40))" }
+        }
+        let obj: [String: String] = ["n": n, "t": String(preview(m).prefix(120)), "c": c]
+        guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     /// Envoie ce qui attend dans la boîte d'envoi.
@@ -1046,8 +1071,13 @@ public final class Engine {
 
     func handle(_ from: String, _ wire: Wire, ts: Double, live: Bool) {
         switch wire.body {
-        case let .profile(p, jeton):
+        case let .profile(p, jeton, nk):
             var c = contacts[from] ?? Contact(code: from)
+            // Sa clé de notification (une clé P-256 publique, ou rien).
+            if nk != c.nk, nk.isEmpty || TalkaCrypto.validNk(nk) {
+                c.nk = nk
+                saveContact(c)
+            }
             // Son jeton de remise, s'il est bien signé par sa clé.
             if jeton != c.jeton, !jeton.isEmpty,
                TalkaCrypto.verifyJeton(to: from, sign: c.sign, dh: c.dh, jeton: jeton) {

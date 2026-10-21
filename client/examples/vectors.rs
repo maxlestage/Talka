@@ -7,6 +7,8 @@
 
 use std::collections::BTreeMap;
 
+use p256::elliptic_curve::sec1::ToEncodedPoint;
+
 use serde_json::json;
 use talka_web::crypto::{self, Identity};
 use talka_web::jetons;
@@ -15,6 +17,9 @@ use talka_web::model::*;
 fn main() {
     let a = Identity::create(1_700_000_000_000.0);
     let b = Identity::create(1_700_000_000_000.0);
+    // La clé de notification de B (celle que tire son service worker).
+    let nk_priv = p256::SecretKey::random(&mut rand_core::OsRng);
+    let nk = crypto::b64(nk_priv.public_key().to_encoded_point(false).as_bytes());
 
     let msg = Wire {
         body: Body::Msg {
@@ -72,6 +77,7 @@ fn main() {
                 v: 2,
             },
             jeton: String::new(),
+            nk: nk.clone(),
         }),
         Wire::new(Body::Group {
             op: "update".into(),
@@ -159,6 +165,7 @@ fn main() {
         saved: true,
         sign: b.sign.clone(),
         dh: b.dh.clone(),
+        nk: nk.clone(),
         ..Default::default()
     };
     let status = StatusItem {
@@ -205,6 +212,7 @@ fn main() {
         "fingerprint_k1": jetons::fingerprint(&k1),
     });
 
+    let apercu = json!({ "n": "Léa · Les amis", "t": "Salut 👋 *Talka*", "c": "g:g1" }).to_string();
     let vectors = json!({
         "brocolis": brocolis,
         "code_of_empty": crypto::code_of(&[], &[]),
@@ -217,6 +225,14 @@ fn main() {
         "scelle": {
             "a_to_b": crypto::seal_sender(&a.code, &b.code, &b.dh, &sealed).unwrap(),
             "jeton_a": a.jeton(),
+        },
+        // L'aperçu des notifications : chiffré par A pour la clé de
+        // notification de B, ouvert par le service worker de B.
+        "apercu": {
+            "nk": nk,
+            "nk_priv": crypto::b64(&nk_priv.to_bytes()),
+            "plain": apercu,
+            "sealed": crypto::seal_apercu(&nk, &apercu).unwrap(),
         },
         "challenge": { "nonce": "abc", "sig": a.sign_challenge("abc") },
         "safety": crypto::safety_number(&a.code, &b.code),
