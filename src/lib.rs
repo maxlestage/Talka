@@ -189,7 +189,15 @@ pub fn app() -> App {
 
     // Le relais : la seule chose que fait le serveur.
     app.ws("/ws", |req, socket| async move {
-        req.state::<Relay>().clone().serve(socket).await;
+        // L'adresse du client (vue à travers le proxy par le bouclier), un
+        // /64 en IPv6 : on en limite les connexions.
+        let ip = req
+            .extensions()
+            .get::<paquets::securite::ClientIp>()
+            .map(|c| c.0)
+            .or_else(|| req.remote_addr().map(|a| a.ip()))
+            .map(|ip| paquets::securite::ip::mask(ip, 64));
+        req.state::<Relay>().clone().serve(socket, ip).await;
     });
 
     // Les pages.

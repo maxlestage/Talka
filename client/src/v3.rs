@@ -34,7 +34,7 @@
 use std::collections::{HashMap, HashSet};
 
 pub use brocolis_proto::KeyBundle;
-use brocolis_proto::session::MAX_PLAINTEXT;
+pub use brocolis_proto::session::MAX_PLAINTEXT;
 use brocolis_proto::{Content, Device, Erreur, Session, Token, hasard, jeton_v3};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
