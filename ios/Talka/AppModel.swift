@@ -28,6 +28,9 @@ final class AppModel {
     var call: CallEngine?
     /// Un code reçu par un lien d'invitation, à ajouter.
     var invite: String?
+    /// « Répondre en privé » : le message de groupe à citer dans la discussion
+    /// à deux qui s'ouvre.
+    var privateReply: Message?
     @ObservationIgnored var hiddenAt: Date?
 
     /// L'étape de l'écran de chargement (`nil` : Talka est prêt).
