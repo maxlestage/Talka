@@ -384,7 +384,27 @@ initiateur non confirmé l'envoie après un 0x01 ; reçu avant, il donne
 - Mêmes règles que §7.5 : `MAX_SKIP`, 30 jours, rejeu ignoré,
   transactionnel.
 
-### 7.8 Hygiène
+### 7.8 Notifications (Web Push)
+
+Quand un destinataire n'a aucune connexion ouverte, le relais peut réveiller
+ses navigateurs par Web Push (RFC 8030, VAPID RFC 8292). Le réveil est
+**vide** : aucun contenu, aucun expéditeur, aucun nom de discussion ; le
+service worker affiche « Nouveau message » et le message reste chiffré dans
+la boîte aux lettres. Le service de notifications du navigateur (Google,
+Mozilla, Apple, Microsoft) apprend qu'un appareil reçoit quelque chose, et
+quand ; rien d'autre.
+
+- L'expéditeur marque `wake` ses vrais messages (pas les accusés, réactions
+  ni profils) : le relais l'apprend, en plus de ce qu'il voyait déjà.
+- Le relais ne contacte que les services connus (liste fermée d'hôtes en
+  HTTPS, sans port ni redirection) : pas de requête vers une adresse choisie
+  par un client.
+- Un réveil par code toutes les 20 secondes au plus ; `Topic` fusionne ceux
+  qui attendent ; `TTL` d'un jour.
+- Les adresses ne vivent qu'en mémoire (4 par code), redonnées à chaque
+  connexion ; une adresse disparue (404, 410) est oubliée.
+
+### 7.9 Hygiène
 
 Comparaisons de secrets en temps constant (tags GCM, identifiants dérivés
 d'une clé partagée), secrets effacés (`zeroize`), aucune panique sur une

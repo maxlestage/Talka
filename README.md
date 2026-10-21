@@ -206,6 +206,14 @@ codes, et discutez.
   `TALKA_ALLOWED_ORIGINS` (par défaut `https://maxlestage.github.io`) autorise
   la page à l'utiliser. À faire une fois : *Settings → Pages → Source :
   GitHub Actions*.
+- **Notifications quand Talka est fermé** (Web Push) : le relais n'envoie
+  qu'un réveil vide, sans expéditeur ni texte (voir [`src/push.rs`](src/push.rs)).
+  Il lui faut une clé, à fabriquer une fois et à ne plus changer :
+
+  ```sh
+  cargo run -- vapid   # affiche TALKA_VAPID_KEY=…
+  heroku config:set TALKA_VAPID_KEY=… -a <app>
+  ```
 
   ```sh
   BASE_PATH=/Talka TALKA_API_URL=https://talka.herokuapp.com cargo run -- export dist
