@@ -78,6 +78,7 @@ fn main() {
             },
             jeton: String::new(),
             nk: nk.clone(),
+            pj: true,
         }),
         Wire::new(Body::Group {
             op: "update".into(),
@@ -213,6 +214,21 @@ fn main() {
     });
 
     let apercu = msg.apercu(&a.code, "Léa", |m| m.text.clone()).unwrap();
+    let pj_data = format!("data:image/jpeg;base64,{}", "QUJD".repeat(60_000));
+    let pj = split_attachment(
+        &serde_json::to_string(&Wire::new(Body::Msg {
+            id: "pj1".into(),
+            at: 1_700_000_000_500.0,
+            pn: "Léa".into(),
+            content: Content {
+                kind: "image".into(),
+                data: pj_data.clone(),
+                ..Default::default()
+            },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let vectors = json!({
         "brocolis": brocolis,
         "code_of_empty": crypto::code_of(&[], &[]),
@@ -235,6 +251,17 @@ fn main() {
             "sealed": crypto::seal_apercu(&a, &nk, &apercu).unwrap(),
         },
         "fingerprint_a": crypto::fingerprint(&a.sign, &a.dh),
+        // Le jeton de remise que A donne à B (époque 0), et le nonce de
+        // l'époque 1 (après un blocage).
+        "jeton_a_pour_b": a.jeton_for(&b.code, 0),
+        "jeton_nonce_a_pour_b_1": a.jeton_nonce(&b.code, 1),
+        // Une pièce jointe trop grosse pour un jeton v3 : le message (avec la
+        // clé) et la pièce chiffrée, que l'iPhone doit réunir.
+        "pj": {
+            "small": pj.0,
+            "blob": crypto::b64(&pj.1),
+            "data": pj_data,
+        },
         "challenge": { "nonce": "abc", "sig": a.sign_challenge("abc") },
         "safety": crypto::safety_number((&a.code, &a.sign, &a.dh), (&b.code, &b.sign, &b.dh)),
         "pin": { "pin": "2580", "hash": pin },

@@ -408,6 +408,12 @@ public final class Relay {
         }
     }
 
+    /// Les nonces de nos jetons de remise révoqués (la liste remplace la
+    /// précédente) : le relais refuse ensuite les dépôts qui les présentent.
+    public func revoke(_ nonces: [String]) {
+        _ = raw(["t": "revoke", "nonces": nonces])
+    }
+
     public func watch(_ codes: [String]) {
         let fresh = codes.filter { watched.insert($0).inserted }
         if !fresh.isEmpty { raw(["t": "watch", "codes": fresh]) }

@@ -80,6 +80,18 @@ pub struct Contact {
     /// Lui a-t-on donné le nôtre ?
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub jeton_sent: bool,
+    /// A-t-il reçu son jeton personnel (`Identity::jeton_for`) ?
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub jeton_perso: bool,
+    /// L'époque de son jeton personnel : elle avance quand on le bloque
+    /// (l'ancien est révoqué auprès du relais).
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub jeton_epoch: u32,
+    /// Sa version chiffre tout en v3, pièces jointes comprises, et n'envoie
+    /// plus l'ancien format (hors signaux en direct) : de lui, l'ancien
+    /// format est refusé (un relais pourrait le rejouer).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pj: bool,
     /// Sa clé de notification : l'aperçu de ses notifications (« Léa :
     /// Bonjour ») lui est chiffré pour elle. Vide : un simple réveil.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -209,7 +221,11 @@ pub struct Message {
     pub bro: bool,
 }
 
-pub(crate) fn is_zero(v: &f64) -> bool {
+pub(crate) fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
 
@@ -484,6 +500,10 @@ pub enum Body {
         /// connaissent pas.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         nk: String,
+        /// Cette version chiffre tout en v3, pièces jointes comprises (voir
+        /// `Contact::pj`) ; ignoré par les versions qui ne le connaissent pas.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pj: bool,
     },
     Group {
         op: String,
@@ -604,9 +624,94 @@ impl Wire {
 }
 
 /// La taille maximale d'un document : 3 Mo. Encodé deux fois en base64 (dans
-/// le message, puis une fois chiffré), il fait environ 5,4 Mo, sous la
-/// limite de 6 Mo du relais (`MAX_BODY`). À 4 Mo, l'envoi échouait.
+/// le message, puis une fois chiffré), il fait environ 5,4 Mo ; scellé
+/// (expéditeur caché), une fois de plus : 7,2 Mo, sous la limite de 8 Mo du
+/// relais (`MAX_BODY`).
 pub const MAX_FILE: f64 = 3.0 * 1024.0 * 1024.0;
+
+// ----- Les pièces jointes en v3 ------------------------------------------------
+//
+// Un jeton v3 porte 200 Kio au plus. Une photo, un vocal ou un fichier plus
+// gros part ainsi : ses données sont chiffrées par une clé tirée pour lui
+// seul (AES-256-GCM, AD `talka-pj:<id du message>`), et le message v3 —
+// avec sa confidentialité persistante — ne porte que cette clé
+// (`data` = `talka-pj:<clé>`). L'enveloppe devient `<enveloppe v3>|<pièce
+// chiffrée en base64>`. Seulement vers un contact dont la version le sait
+// (`Contact::pj`) ; les autres reçoivent l'ancien format.
+
+/// Ce que devient `data` dans le message v3.
+pub const PJ_PREFIX: &str = "talka-pj:";
+
+fn pj_aad(id: &str) -> Vec<u8> {
+    format!("talka-pj:{id}").into_bytes()
+}
+
+/// Sépare les données d'un message (un `Wire` JSON) : le message à mettre
+/// dans le jeton v3, et la pièce chiffrée (iv ‖ chiffré ‖ tag). `None` si ce
+/// n'est pas un message avec des données.
+#[allow(deprecated)] // `Nonce::from_slice`, comme crypto.rs
+pub fn split_attachment(payload: &str) -> Option<(String, Vec<u8>)> {
+    use aes_gcm::aead::{Aead, Payload};
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+    let mut wire: Wire = serde_json::from_str(payload).ok()?;
+    let Body::Msg { id, content, .. } = &mut wire.body else {
+        return None;
+    };
+    if content.data.is_empty() {
+        return None;
+    }
+    let key = crate::crypto::random_bytes(32);
+    let iv = crate::crypto::random_bytes(12);
+    let ct = Aes256Gcm::new_from_slice(&key)
+        .ok()?
+        .encrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: content.data.as_bytes(),
+                aad: &pj_aad(id),
+            },
+        )
+        .ok()?;
+    content.data = format!("{PJ_PREFIX}{}", crate::crypto::b64(&key));
+    Some((serde_json::to_string(&wire).ok()?, [iv, ct].concat()))
+}
+
+/// Remet la pièce chiffrée dans le message ouvert (un `Wire` JSON). Une
+/// pièce absente, abîmée ou d'un autre message : les données restent vides.
+#[allow(deprecated)] // `Nonce::from_slice`, comme crypto.rs
+pub fn join_attachment(plain: &str, blob: Option<&[u8]>) -> String {
+    use aes_gcm::aead::{Aead, Payload};
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+    let Ok(mut wire) = serde_json::from_str::<Wire>(plain) else {
+        return plain.to_owned();
+    };
+    let Body::Msg { id, content, .. } = &mut wire.body else {
+        return plain.to_owned();
+    };
+    let Some(key) = content.data.strip_prefix(PJ_PREFIX) else {
+        return plain.to_owned();
+    };
+    let opened = (|| {
+        let key = crate::crypto::unb64(key)?;
+        let blob = blob?;
+        if blob.len() < 12 + 16 {
+            return None;
+        }
+        let pt = Aes256Gcm::new_from_slice(&key)
+            .ok()?
+            .decrypt(
+                Nonce::from_slice(&blob[..12]),
+                Payload {
+                    msg: &blob[12..],
+                    aad: &pj_aad(id),
+                },
+            )
+            .ok()?;
+        String::from_utf8(pt).ok()
+    })();
+    content.data = opened.unwrap_or_default();
+    serde_json::to_string(&wire).unwrap_or_else(|_| plain.to_owned())
+}
 
 /// Pour chercher sans tenir compte des majuscules ni des accents (« ecole »
 /// trouve « École »), comme l'application iPhone.
@@ -634,7 +739,7 @@ mod tests {
     use super::*;
 
     /// La limite du relais (`MAX_BODY` côté serveur).
-    const MAX_BODY: usize = 6 * 1024 * 1024;
+    const MAX_BODY: usize = 8 * 1024 * 1024;
 
     fn b64_len(n: usize) -> usize {
         n.div_ceil(3) * 4
@@ -694,10 +799,15 @@ mod tests {
         let plain = b64_len(file) + "data:application/octet-stream;base64,".len() + 2048;
         // Chiffré : iv (12) ‖ texte ‖ tag (16), en base64.
         let body = b64_len(12 + plain + 16);
-        assert!(body < MAX_BODY, "{body} > {MAX_BODY}");
+        // Scellé (expéditeur caché) : éphémère (65) ‖ iv ‖ {from, body} ‖ tag.
+        let sealed = b64_len(65 + 12 + body + 64 + 16);
+        assert!(sealed < MAX_BODY, "{sealed} > {MAX_BODY}");
+        // En v3 : la pièce chiffrée à côté du message v3 (quelques Ko).
+        let pj = b64_len(12 + 16 + b64_len(file) + 64) + 8 * 1024;
+        assert!(b64_len(65 + 12 + pj + 64 + 16) < MAX_BODY);
         // L'ancienne limite (4 Mo) ne passait pas.
         let old = b64_len(12 + b64_len(4 * 1024 * 1024) + 16);
-        assert!(old > MAX_BODY);
+        assert!(b64_len(65 + 12 + old + 80) > MAX_BODY);
     }
 
     #[test]
@@ -924,5 +1034,54 @@ mod tests {
         );
         assert_eq!(safe_data("file", "https://hameçon.example/facture"), "");
         assert_eq!(safe_data("contact", "data:x"), "");
+    }
+
+    /// Une pièce jointe trop grosse pour un jeton v3 : chiffrée à part, sa
+    /// clé dans le message ; rendue telle quelle, ou vide si on y touche.
+    #[test]
+    fn attachments_travel_beside_the_v3_message() {
+        let data = format!("data:image/jpeg;base64,{}", "A".repeat(300_000));
+        let wire = Wire::new(Body::Msg {
+            id: "m1".into(),
+            at: 1.0,
+            pn: String::new(),
+            content: Content {
+                kind: "image".into(),
+                data: data.clone(),
+                ..Default::default()
+            },
+        });
+        let payload = serde_json::to_string(&wire).unwrap();
+        let (small, blob) = split_attachment(&payload).unwrap();
+        assert!(small.len() < 1_000 && small.contains(PJ_PREFIX));
+        assert!(!small.contains("AAAA"));
+        let back: Wire = serde_json::from_str(&join_attachment(&small, Some(&blob))).unwrap();
+        let Body::Msg { content, .. } = back.body else {
+            panic!()
+        };
+        assert_eq!(content.data, data);
+        // Abîmée, absente, ou d'un autre message : vide.
+        let mut bad = blob.clone();
+        bad[40] ^= 1;
+        for b in [Some(bad.as_slice()), None] {
+            let w: Wire = serde_json::from_str(&join_attachment(&small, b)).unwrap();
+            let Body::Msg { content, .. } = w.body else {
+                panic!()
+            };
+            assert!(content.data.is_empty());
+        }
+        let other = small.replace("\"m1\"", "\"m2\"");
+        let w: Wire = serde_json::from_str(&join_attachment(&other, Some(&blob))).unwrap();
+        let Body::Msg { content, .. } = w.body else {
+            panic!()
+        };
+        assert!(content.data.is_empty());
+        // Un message sans données, ou autre chose : rien à séparer.
+        assert!(
+            split_attachment(
+                &serde_json::to_string(&Wire::new(Body::Typing { on: true })).unwrap()
+            )
+            .is_none()
+        );
     }
 }

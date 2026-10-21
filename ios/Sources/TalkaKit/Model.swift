@@ -3,6 +3,11 @@
 // sa valeur par défaut, comme `#[serde(default)]`.
 
 import Foundation
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 
 extension KeyedDecodingContainer {
     /// Une valeur, ou celle par défaut si elle manque (ou est `null`).
@@ -155,6 +160,13 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
     public var jeton = ""
     /// Lui a-t-on donné le nôtre ?
     public var jetonSent = false
+    /// A-t-il reçu son jeton personnel (`Identity.jeton(for:epoch:)`) ?
+    public var jetonPerso = false
+    /// L'époque de son jeton personnel : elle avance quand on le bloque.
+    public var jetonEpoch = 0
+    /// Sa version chiffre tout en v3, pièces jointes comprises, et n'envoie
+    /// plus l'ancien format (hors signaux en direct).
+    public var pj = false
     /// Sa clé de notification (navigateur) : l'aperçu de ses notifications
     /// lui est chiffré pour elle. Vide : un simple réveil.
     public var nk = ""
@@ -174,6 +186,9 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         case profileV = "profile_v"
         case sentProfileV = "sent_profile_v"
         case jetonSent = "jeton_sent"
+        case jetonPerso = "jeton_perso"
+        case jetonEpoch = "jeton_epoch"
+        case pj
     }
 
     public init(code: String, addedAt: Double = nowMs()) {
@@ -188,6 +203,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         blocked = c.v(.blocked, false); saved = c.v(.saved, false); addedAt = c.v(.addedAt, 0)
         profileV = c.v(.profileV, 0); sentProfileV = c.v(.sentProfileV, 0)
         jeton = c.v(.jeton, ""); jetonSent = c.v(.jetonSent, false); nk = c.v(.nk, ""); fp = c.v(.fp, ""); v3 = c.v(.v3, false)
+        jetonPerso = c.v(.jetonPerso, false); jetonEpoch = c.v(.jetonEpoch, 0); pj = c.v(.pj, false)
     }
 
     /// Comme le navigateur : le jeton n'est écrit que s'il y en a un.
@@ -201,6 +217,9 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         try c.encode(sentProfileV, forKey: .sentProfileV)
         if !jeton.isEmpty { try c.encode(jeton, forKey: .jeton) }
         if jetonSent { try c.encode(jetonSent, forKey: .jetonSent) }
+        if jetonPerso { try c.encode(jetonPerso, forKey: .jetonPerso) }
+        if jetonEpoch != 0 { try c.encode(jetonEpoch, forKey: .jetonEpoch) }
+        if pj { try c.encode(pj, forKey: .pj) }
         if !nk.isEmpty { try c.encode(nk, forKey: .nk) }
         if !fp.isEmpty { try c.encode(fp, forKey: .fp) }
         if v3 { try c.encode(v3, forKey: .v3) }
@@ -595,7 +614,8 @@ public enum Body: Equatable, Sendable {
     case typing(on: Bool)
     /// `jeton` : le jeton de remise de l'expéditeur (expéditeur scellé).
     /// `nk` : sa clé de notification (navigateur), pour l'aperçu chiffré.
-    case profile(Profile, jeton: String = "", nk: String = "")
+    /// `pj` : cette version chiffre tout en v3, pièces jointes comprises.
+    case profile(Profile, jeton: String = "", nk: String = "", pj: Bool = false)
     case group(op: String, note: String)
     case timer(secs: Int)
     case status(id: String, kind: String, text: String, bg: String, data: String, at: Double)
@@ -643,7 +663,7 @@ public struct Wire: Codable, Equatable, Sendable {
         case "edit": body = .edit(id: s("id"), text: s("text"))
         case "delete": body = .delete(id: s("id"))
         case "typing": body = .typing(on: c.v(K("on"), false))
-        case "profile": body = .profile(try Profile(from: decoder), jeton: s("jeton"), nk: s("nk"))
+        case "profile": body = .profile(try Profile(from: decoder), jeton: s("jeton"), nk: s("nk"), pj: c.v(K("pj"), false))
         case "group": body = .group(op: s("op"), note: s("note"))
         case "timer": body = .timer(secs: c.v(K("secs"), 0))
         case "status":
@@ -672,10 +692,11 @@ public struct Wire: Codable, Equatable, Sendable {
         case let .edit(id, text): try put("k", "edit"); try put("id", id); try put("text", text)
         case let .delete(id): try put("k", "delete"); try put("id", id)
         case let .typing(on): try put("k", "typing"); try put("on", on)
-        case let .profile(p, jeton, nk):
+        case let .profile(p, jeton, nk, pj):
             try put("k", "profile"); try p.encode(to: encoder)
             if !jeton.isEmpty { try put("jeton", jeton) }
             if !nk.isEmpty { try put("nk", nk) }
+            if pj { try put("pj", pj) }
         case let .group(op, note): try put("k", "group"); try put("op", op); try put("note", note)
         case let .timer(secs): try put("k", "timer"); try put("secs", secs)
         case let .status(id, kind, text, bg, data, at):
@@ -743,5 +764,50 @@ extension Body {
         case .timer, .edit, .delete, .group, .call, .statusDelete: true
         default: false
         }
+    }
+}
+
+// ----- Les pièces jointes en v3 ------------------------------------------------
+//
+// Comme `split_attachment` / `join_attachment` du navigateur : les données
+// d'un message trop gros pour un jeton v3 sont chiffrées par une clé tirée
+// pour lui seul (AES-256-GCM, AD `talka-pj:<id>`) ; le message v3 ne porte
+// que la clé (`data` = `talka-pj:<clé>`) ; l'enveloppe devient
+// `<enveloppe v3>|<pièce en base64>`.
+public enum Attachment {
+    public static let prefix = "talka-pj:"
+
+    /// Le message à mettre dans le jeton v3, et la pièce chiffrée.
+    public static func split(_ payload: String) -> (small: String, blob: Data)? {
+        guard var wire = JSON.decode(Wire.self, payload),
+              case let .msg(id, at, pn, content) = wire.body, !content.data.isEmpty
+        else { return nil }
+        let key = SymmetricKey(size: .bits256)
+        guard let box = try? AES.GCM.seal(Data(content.data.utf8), using: key, nonce: AES.GCM.Nonce(),
+                                          authenticating: Data("talka-pj:\(id)".utf8)),
+              let combined = box.combined
+        else { return nil }
+        var small = content
+        small.data = prefix + b64(key.withUnsafeBytes { Data($0) })
+        wire.body = .msg(id: id, at: at, pn: pn, content: small)
+        return (wire.json(), combined)
+    }
+
+    /// Remet la pièce dans le message ouvert ; absente, abîmée ou d'un autre
+    /// message : les données restent vides.
+    public static func join(_ plain: String, blob: Data?) -> String {
+        guard var wire = JSON.decode(Wire.self, plain),
+              case let .msg(id, at, pn, content) = wire.body, content.data.hasPrefix(prefix)
+        else { return plain }
+        var full = content
+        full.data = ""
+        if let key = unb64(String(content.data.dropFirst(prefix.count))), key.count == 32, let blob,
+           let box = try? AES.GCM.SealedBox(combined: blob),
+           let data = try? AES.GCM.open(box, using: SymmetricKey(data: key), authenticating: Data("talka-pj:\(id)".utf8)),
+           let text = String(data: data, encoding: .utf8) {
+            full.data = text
+        }
+        wire.body = .msg(id: id, at: at, pn: pn, content: full)
+        return wire.json()
     }
 }

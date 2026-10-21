@@ -328,15 +328,46 @@ fn sealed_key(shared: &[u8], eph: &[u8], to_dh: &[u8], to: &str) -> Option<Aes25
 }
 
 impl Identity {
-    /// Le jeton de remise de ce code : `nonce.signature` (base64). Le nonce
-    /// est tiré de la clé privée : toujours le même jeton, rien à garder.
+    /// L'ancien jeton de remise, le même pour tous les contacts : révoqué
+    /// auprès du relais depuis que chacun a le sien (`jeton_for`).
     pub fn jeton(&self) -> String {
         let Some(dh) = unb64(&self.dh_priv) else {
             return String::new();
         };
         let digest = Sha256::digest([b"talka-jeton-nonce:".as_slice(), &dh].concat());
-        let nonce = b64(&digest[..16]);
-        let sig = self.sign(&jeton_message(&self.code, &nonce));
+        self.jeton_with(&b64(&digest[..16]))
+    }
+
+    /// Le nonce du jeton de remise donné à `contact`, à l'époque `epoch`
+    /// (elle avance quand on le bloque : l'ancien jeton est révoqué). Tiré
+    /// de la clé privée : rien à garder.
+    pub fn jeton_nonce(&self, contact: &str, epoch: u32) -> String {
+        let Some(dh) = unb64(&self.dh_priv) else {
+            return String::new();
+        };
+        let digest = Sha256::digest(
+            [
+                b"talka-jeton-nonce:".as_slice(),
+                &dh,
+                format!(":{contact}:{epoch}").as_bytes(),
+            ]
+            .concat(),
+        );
+        b64(&digest[..16])
+    }
+
+    /// Le jeton de remise de ce code pour `contact` : `nonce.signature`. Un
+    /// jeton par contact : le relais peut refuser celui d'un contact bloqué
+    /// sans gêner les autres.
+    pub fn jeton_for(&self, contact: &str, epoch: u32) -> String {
+        self.jeton_with(&self.jeton_nonce(contact, epoch))
+    }
+
+    fn jeton_with(&self, nonce: &str) -> String {
+        if nonce.is_empty() {
+            return String::new();
+        }
+        let sig = self.sign(&jeton_message(&self.code, nonce));
         if sig.is_empty() {
             return String::new();
         }
@@ -1033,6 +1064,23 @@ mod tests {
         bad[20] ^= 1;
         assert!(open_row(&key, "messages/c|m1", &bad).is_none());
         assert!(open_row(&key, "x", b"{}").is_none());
+    }
+
+    #[test]
+    fn a_token_per_contact() {
+        let a = Identity::create(0.0);
+        let j1 = a.jeton_for("BBBBBBBBBB", 0);
+        assert_eq!(j1, a.jeton_for("BBBBBBBBBB", 0), "toujours le même jeton");
+        assert!(verify_jeton(&a.code, &a.sign, &a.dh, &j1));
+        // Un autre contact, une autre époque : un autre nonce.
+        let n = |c: &str, e: u32| a.jeton_nonce(c, e);
+        assert_ne!(n("BBBBBBBBBB", 0), n("CCCCCCCCCC", 0));
+        assert_ne!(n("BBBBBBBBBB", 0), n("BBBBBBBBBB", 1));
+        assert_eq!(j1.split('.').next(), Some(n("BBBBBBBBBB", 0).as_str()));
+        assert_ne!(
+            a.jeton().split('.').next(),
+            Some(n("BBBBBBBBBB", 0).as_str())
+        );
     }
 
     #[test]
