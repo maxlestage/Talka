@@ -1,6 +1,7 @@
 // L'état de l'application : le moteur (TalkaKit), le verrou, les
 // notifications, les liens d'invitation, l'appel en cours.
 
+import CryptoKit
 import LocalAuthentication
 import Observation
 import SwiftUI
@@ -23,6 +24,8 @@ final class AppModel {
     var store: Store
     /// La base attend Face ID (ou le code de l'iPhone).
     var vaultLocked = false
+    /// La base attend le code de verrouillage de Talka (qui chiffre sa clé).
+    var codeLocked = false
     var engine: Engine?
     var tab: Tab = .chats
     /// Les discussions ouvertes (navigation de l'onglet Discussions).
@@ -44,16 +47,17 @@ final class AppModel {
     var loading: String? = "Ouverture de Talka…"
 
     init() {
-        if StoreVault.isProtected {
+        if StoreVault.isProtected || StoreVault.isCodeLocked {
             store = Store(directory: Store.defaultDirectory(), key: nil)
-            vaultLocked = true
+            vaultLocked = StoreVault.isProtected
+            codeLocked = StoreVault.isCodeLocked
             loading = nil
             WatchBridge.shared.start(self)
             return
         }
         store = Store(directory: Store.defaultDirectory(), key: StoreVault.key())
         locked = store.read("kv", "pin", as: PinHash.self) != nil
-        adoptBuiltInServer()
+        forgetChosenServer()
         if Engine.hasAccount(store) { start() }
         WatchBridge.shared.start(self)
         Task { await finishLoading() }
@@ -74,14 +78,9 @@ final class AppModel {
         withAnimation(.easeOut(duration: 0.3)) { loading = nil }
     }
 
-    /// Une version qui apporte un (nouveau) serveur intégré le fait adopter :
-    /// l'adresse saisie avant, faute de mieux, est oubliée. Une adresse choisie
-    /// ensuite dans les réglages reste prioritaire.
-    func adoptBuiltInServer() {
-        let builtIn = Self.builtInServer
-        let key = "talka.builtInServer"
-        guard !builtIn.isEmpty, UserDefaults.standard.string(forKey: key) != builtIn else { return }
-        UserDefaults.standard.set(builtIn, forKey: key)
+    /// Une adresse de serveur choisie autrefois est oubliée : il n'y a plus
+    /// qu'un relais.
+    func forgetChosenServer() {
         if var s = store.read("kv", "settings", as: TalkaKit.Settings.self), !s.server.isEmpty {
             s.server = ""
             store.write("kv", "settings", s)
@@ -91,15 +90,14 @@ final class AppModel {
 
     // ----- Le serveur -----
 
-    /// Le serveur intégré à l'application (`TalkaServer` dans Info.plist).
+    /// Le relais de Talka : celui que la CI intègre (`TalkaServer` dans
+    /// Info.plist), sinon le relais officiel. Rien à choisir.
     static var builtInServer: String {
-        (Bundle.main.object(forInfoDictionaryKey: "TalkaServer") as? String ?? "").trimmingCharacters(in: .whitespaces)
+        let s = (Bundle.main.object(forInfoDictionaryKey: "TalkaServer") as? String ?? "").trimmingCharacters(in: .whitespaces)
+        return URL(string: s)?.host != nil ? s : TalkaServer.official
     }
 
-    var serverString: String {
-        let s = engine?.settings.server ?? store.read("kv", "settings", as: TalkaKit.Settings.self)?.server ?? ""
-        return s.isEmpty ? Self.builtInServer : s
-    }
+    var serverString: String { Self.builtInServer }
 
     // ----- Démarrage -----
 
@@ -123,13 +121,8 @@ final class AppModel {
         Sounds.prepare()
     }
 
-    func createAccount(name: String, avatar: String, server: String) {
+    func createAccount(name: String, avatar: String) {
         Engine.createAccount(store, name: name, avatar: avatar)
-        if !server.isEmpty, server != Self.builtInServer {
-            var s = store.read("kv", "settings", as: TalkaKit.Settings.self) ?? TalkaKit.Settings()
-            s.server = server
-            store.write("kv", "settings", s)
-        }
         store.save()
         start()
     }
@@ -143,20 +136,26 @@ final class AppModel {
     }
 
     func wipe() {
-        engine?.wipeEverything()
+        if let e = engine {
+            e.wipeEverything()
+        } else {
+            // Verrouillé : la base n'est pas ouverte, on l'efface quand même.
+            Engine.wipe(store)
+        }
         engine = nil
+        // Plus aucune copie de la clé : une nouvelle, pour une base vide.
+        StoreVault.reset()
+        store = Store(directory: Store.defaultDirectory(), key: StoreVault.key())
         path = []
         locked = false
-        UserDefaults.standard.removeObject(forKey: "talka.faceid")
+        codeLocked = false
+        vaultLocked = false
+        for key in ["talka.faceid", "talka.essais", "talka.essais.jusqua"] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
         WatchBridge.shared.updateWidgets()
     }
 
-    func changeServer(_ server: String) {
-        engine?.saveSettings { $0.server = server }
-        engine?.stop()
-        engine = nil
-        start()
-    }
 
     // ----- Premier plan, arrière-plan, verrou -----
 
@@ -185,7 +184,7 @@ final class AppModel {
     /// Face ID (ou le code de l'iPhone) ouvre la clé de la base, puis Talka.
     func unlockVault() async {
         let ctx = LAContext()
-        ctx.localizedFallbackTitle = "Code de l'iPhone"
+        ctx.localizedFallbackTitle = "Code de l'appareil"
         guard (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Ouvrir vos messages")) == true,
               let key = StoreVault.key(context: ctx)
         else { return }
@@ -194,7 +193,7 @@ final class AppModel {
         // le remplace déjà.
         locked = hasPin && !faceID
         vaultLocked = false
-        adoptBuiltInServer()
+        forgetChosenServer()
         if Engine.hasAccount(store) { start() }
         loading = "Ouverture de Talka…"
         await finishLoading()
@@ -212,13 +211,17 @@ final class AppModel {
         if StoreVault.setProtected(on, key: key) {
             show(on ? "Vos messages ne s'ouvrent qu'avec \(biometryName ?? "Face ID") 🔐" : "Protection retirée")
         } else {
-            show("Le trousseau de l'iPhone a refusé : réessayez.")
+            show("Le trousseau de l'appareil a refusé : réessayez.")
         }
     }
 
     var vaultProtected: Bool { StoreVault.isProtected }
 
     var hasPin: Bool { store.read("kv", "pin", as: PinHash.self) != nil }
+
+    /// Le code chiffre-t-il la clé de la base ? (Un code d'avant cette
+    /// version ne le fait qu'après avoir été tapé une fois.)
+    var codeEncrypts: Bool { StoreVault.isCodeLocked }
 
     func setPin(_ pin: String?) {
         if let pin {
@@ -228,6 +231,14 @@ final class AppModel {
             UserDefaults.standard.removeObject(forKey: "talka.faceid")
         }
         store.save()
+        // La clé de la base suit le code : chiffrée par lui, ou plus.
+        if let key = store.key {
+            if StoreVault.setCode(pin, key: key) {
+                if pin != nil, faceID { _ = StoreVault.setFaceUnlock(true, key: key) }
+            } else if pin != nil {
+                show("Le trousseau de l'appareil a refusé : vos messages restent protégés par l'appareil seul.")
+            }
+        }
     }
 
     func checkPin(_ pin: String) -> Bool {
@@ -238,13 +249,69 @@ final class AppModel {
             store.write("kv", "pin", TalkaCrypto.hashPin(pin))
             store.save()
         }
+        // Un code d'avant cette version : il chiffre désormais la clé.
+        if ok, !StoreVault.isCodeLocked, let key = store.key, StoreVault.setCode(pin, key: key), faceID {
+            _ = StoreVault.setFaceUnlock(true, key: key)
+        }
         return ok
+    }
+
+    /// Talka est fermé et sa base chiffrée par le code : le bon code ouvre
+    /// la clé (Argon2id, hors du fil principal), puis tout le reste.
+    func unlock(code: String) async -> Bool {
+        let key = await Task.detached(priority: .userInitiated) { StoreVault.key(code: code) }.value
+        guard let key else { return false }
+        open(with: key)
+        return true
+    }
+
+    /// Talka est fermé : Face ID ouvre la copie de la clé liée au visage.
+    func unlockColdWithFace() async {
+        guard StoreVault.hasFaceUnlock, biometryName != nil else { return }
+        let ctx = LAContext()
+        ctx.localizedFallbackTitle = ""
+        guard (try? await ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Ouvrir vos messages")) == true,
+              let key = StoreVault.key(face: ctx)
+        else { return }
+        open(with: key)
+    }
+
+    func open(with key: SymmetricKey) {
+        store = Store(directory: Store.defaultDirectory(), key: key)
+        codeLocked = false
+        locked = false
+        forgetChosenServer()
+        if Engine.hasAccount(store) { start() }
+        loading = "Ouverture de Talka…"
+        Task { await finishLoading() }
     }
 
     var faceID: Bool {
         get { UserDefaults.standard.bool(forKey: "talka.faceid") }
-        set { UserDefaults.standard.set(newValue, forKey: "talka.faceid") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "talka.faceid")
+            // La copie de la clé derrière Face ID suit le réglage.
+            if StoreVault.isCodeLocked, let key = store.key {
+                _ = StoreVault.setFaceUnlock(newValue, key: key)
+            }
+        }
     }
+
+    // ----- Les protections de l'écran -----
+
+    /// Après 10 codes faux, tout est effacé.
+    var wipeAfterFails = UserDefaults.standard.bool(forKey: "talka.effacer10") {
+        didSet { UserDefaults.standard.set(wipeAfterFails, forKey: "talka.effacer10") }
+    }
+
+    /// Masquer Talka pendant une capture ou une recopie de l'écran (activé
+    /// par défaut).
+    var hideWhenCaptured = !UserDefaults.standard.bool(forKey: "talka.capture.visible") {
+        didSet { UserDefaults.standard.set(!hideWhenCaptured, forKey: "talka.capture.visible") }
+    }
+
+    /// L'écran est-il enregistré, recopié (AirPlay) ou partagé en ce moment ?
+    var screenCaptured = UIScreen.main.isCaptured
 
     /// Face ID ou Touch ID, si l'appareil en a.
     var biometryName: String? {
@@ -340,7 +407,9 @@ final class AppModel {
             if e.settings.sound { Sounds.incoming() }
             if path.last != chat.id { show("\(e.title(chat)) : \(body)") }
         } else if e.settings.notify {
-            Notifier.message(title: e.title(chat), body: body, thread: chat.id, sound: e.settings.sound)
+            // L'écran verrouillé ne montre que ce qu'on a choisi.
+            let shown = e.settings.notification(title: e.title(chat), body: body)
+            Notifier.message(title: shown.title, body: shown.body, thread: chat.id, sound: e.settings.sound)
         }
         UNUserNotificationCenter.current().setBadgeCount(unreadTotal) { _ in }
         WatchBridge.shared.push()

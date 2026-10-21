@@ -437,6 +437,27 @@ public enum TalkaCrypto {
                           memoryKiB: m, passes: t, lanes: 1, length: 32)).map { Data($0) }
     }
 
+    /// La clé de l'appareil enveloppée par la clé tirée du code : nonce (12)
+    /// ‖ AES-256-GCM, données associées « talka-cle » (comme
+    /// `crypto::lock_device_key` du navigateur).
+    public static func lockDeviceKey(_ userKey: Data, _ deviceKey: Data) -> Data? {
+        guard userKey.count == 32, let nonce = try? AES.GCM.Nonce(data: randomBytes(12)),
+              let box = try? AES.GCM.seal(deviceKey, using: SymmetricKey(data: userKey), nonce: nonce,
+                                          authenticating: Data("talka-cle".utf8))
+        else { return nil }
+        return Data(nonce) + box.ciphertext + box.tag
+    }
+
+    /// La clé de l'appareil, si `userKey` est la bonne.
+    public static func unlockDeviceKey(_ userKey: Data, _ locked: Data) -> Data? {
+        guard userKey.count == 32, locked.count == 12 + 32 + 16 else { return nil }
+        let bytes = [UInt8](locked)
+        guard let nonce = try? AES.GCM.Nonce(data: Data(bytes[0..<12])),
+              let box = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: Data(bytes[12..<44]), tag: Data(bytes[44...]))
+        else { return nil }
+        return try? AES.GCM.open(box, using: SymmetricKey(data: userKey), authenticating: Data("talka-cle".utf8))
+    }
+
     public static func hashPin(_ pin: String) -> PinHash {
         let salt = randomBytes(16)
         return PinHash(salt: b64(salt), hash: b64(argon2id(pin, salt: salt, m: argonM, t: argonT) ?? Data()),

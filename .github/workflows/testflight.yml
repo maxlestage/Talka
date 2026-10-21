@@ -24,7 +24,7 @@ jobs:
         working-directory: ios
     env:
       # Le relais Talka intégré à l'application : TALKA_API_URL, sinon l'app
-      # Heroku (HEROKU_API_KEY). Sans eux, l'app demande l'adresse au lancement.
+      # Heroku (HEROKU_API_KEY). Sans eux, le relais officiel (rien à choisir).
       TALKA_API_URL: ${{ vars.TALKA_API_URL }}
       HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
       HEROKU_APP_NAME: ${{ vars.HEROKU_APP_NAME }}
