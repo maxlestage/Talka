@@ -1120,6 +1120,43 @@ pub fn readable(m: &Message) -> String {
     }
 }
 
+/// Une discussion en texte, comme WhatsApp (« Exporter la discussion ») :
+/// (nom du fichier, texte). Ce qu'on lit dans la discussion, rien d'autre :
+/// une capsule scellée reste scellée, une photo devient « 📷 Photo ».
+pub async fn export_chat(chat_id: &str) -> Option<(String, String)> {
+    let c = chat(chat_id)?;
+    let title = chat_title(&c);
+    let t = now();
+    let mine = profile().name;
+    let mut out = format!(
+        "Discussion Talka « {title} », exportée le {}.\nChiffrée de bout en bout dans Talka ; ce fichier, lui, ne l'est pas.\n\n",
+        dom::stamp(t)
+    );
+    for m in store::messages_of(chat_id, usize::MAX).await {
+        if m.exp.is_some_and(|e| e <= t) {
+            continue;
+        }
+        let author = if m.kind == "system" || m.from == "system" {
+            None
+        } else if m.from == my_code() {
+            Some(if mine.is_empty() {
+                "Vous".to_owned()
+            } else {
+                mine.clone()
+            })
+        } else {
+            Some(display_name(&m.from))
+        };
+        out.push_str(&export_line(
+            &dom::stamp(m.at),
+            author.as_deref(),
+            &readable(&m),
+        ));
+        out.push('\n');
+    }
+    Some((export_filename(&title), out))
+}
+
 /// Une capsule temporelle s'ouvre au plus tard dans dix ans.
 pub const CAPSULE_MAX_MS: f64 = 10.0 * 366.0 * DAY;
 
