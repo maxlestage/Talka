@@ -15,6 +15,7 @@ use web_sys::{MessageEvent, WebSocket};
 
 use crate::crypto::Identity;
 use crate::dom::{Deferred, Sender, clear_timer, listen_forever, meta, now, timer, window};
+use crate::model::Contact;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
@@ -42,6 +43,14 @@ thread_local! {
     static BOOT: RefCell<String> = const { RefCell::new(String::new()) };
     /// La clé VAPID du relais (`ready.push`) : vide s'il n'envoie pas de notifications.
     static PUSH_KEY: RefCell<String> = const { RefCell::new(String::new()) };
+    /// Le relais sait-il livrer en expéditeur scellé (`ready.sealed`) ?
+    static SEALED: Cell<bool> = const { Cell::new(false) };
+    /// La connexion anonyme (expéditeur scellé), ouverte à la demande.
+    static ANON: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
+    static ANON_READY: Cell<bool> = const { Cell::new(false) };
+    static ANON_WAITING: RefCell<Vec<Sender<bool>>> = const { RefCell::new(Vec::new()) };
+    static ANON_PENDING: RefCell<HashMap<String, Sender<Ack>>> = RefCell::new(HashMap::new());
+    static ANON_HANDLERS: RefCell<Vec<Handler>> = const { RefCell::new(Vec::new()) };
     static STOPPED: Cell<bool> = const { Cell::new(false) };
     static PENDING: RefCell<HashMap<String, Sender<Ack>>> = RefCell::new(HashMap::new());
     static LOOKUPS: RefCell<HashMap<String, Vec<Sender<Value>>>> = RefCell::new(HashMap::new());
@@ -116,6 +125,9 @@ pub fn start(identity: Identity, hidden: bool) {
 
 pub fn stop() {
     STOPPED.with(|s| s.set(true));
+    if let Some(ws) = ANON.with(|w| w.borrow_mut().take()) {
+        let _ = ws.close();
+    }
     if let Some(ws) = WS.with(|w| w.borrow_mut().take()) {
         let _ = ws.close();
     }
@@ -229,6 +241,7 @@ fn on_text(text: &str) {
             RETRY.with(|r| r.set(0));
             let boot = msg["boot"].as_str().unwrap_or("").to_owned();
             BOOT.with(|b| *b.borrow_mut() = boot);
+            SEALED.with(|s| s.set(msg["sealed"].as_bool().unwrap_or(false)));
             let push = msg["push"].as_str().unwrap_or("").to_owned();
             PUSH_KEY.with(|k| *k.borrow_mut() = push);
             RELAY_V3.with(|r| r.set(None));
@@ -325,6 +338,138 @@ pub async fn send(id: &str, to: &str, body: &str, live: bool, wake: bool) -> Ack
     let key = id.to_owned();
     let t = timer(30_000, move || {
         PENDING.with(|p| p.borrow_mut().remove(&key));
+        s.send(Some(Ack::Err("timeout".into())));
+    });
+    let out = d.wait().await.unwrap_or(Ack::Err("offline".into()));
+    clear_timer(t);
+    out
+}
+
+// ----- L'expéditeur scellé ---------------------------------------------------
+//
+// Une seconde WebSocket, qui ne se présente pas (`{"t":"anon"}`) : le relais
+// ne sait pas qui l'a ouverte. Elle ne sert qu'à déposer des enveloppes
+// scellées, avec le jeton de remise du destinataire.
+
+/// Le relais sait-il livrer en expéditeur scellé ?
+pub fn sealed_supported() -> bool {
+    SEALED.with(Cell::get) && state() == State::Online
+}
+
+fn open_anon() {
+    let Ok(ws) = WebSocket::new(&ws_url()) else {
+        anon_done(false);
+        return;
+    };
+    let me = ws.clone();
+    let on_message = Closure::<dyn FnMut(JsValue)>::new(move |e: JsValue| {
+        let Some(text) = e
+            .dyn_ref::<MessageEvent>()
+            .and_then(|m| m.data().as_string())
+        else {
+            return;
+        };
+        let Ok(msg) = serde_json::from_str::<Value>(&text) else {
+            return;
+        };
+        match msg["t"].as_str().unwrap_or("") {
+            "challenge" => {
+                let _ = me.send_with_str(&json!({ "t": "anon" }).to_string());
+            }
+            "ready" => {
+                ANON_READY.with(|r| r.set(true));
+                anon_done(true);
+            }
+            "ack" | "error" => {
+                let id = msg["id"].as_str().unwrap_or("").to_owned();
+                if let Some(s) = ANON_PENDING.with(|p| p.borrow_mut().remove(&id)) {
+                    s.send(Some(if msg["t"] == "ack" {
+                        Ack::Ok
+                    } else {
+                        Ack::Err(msg["error"].as_str().unwrap_or("error").to_owned())
+                    }));
+                }
+            }
+            _ => {}
+        }
+    });
+    let me = ws.clone();
+    let on_close = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+        if !ANON.with(|w| w.borrow().as_ref() == Some(&me)) {
+            return;
+        }
+        ANON.with(|w| *w.borrow_mut() = None);
+        ANON_READY.with(|r| r.set(false));
+        anon_done(false);
+        for (_, s) in ANON_PENDING.with(|p| p.borrow_mut().drain().collect::<Vec<_>>()) {
+            s.send(Some(Ack::Err("offline".into())));
+        }
+    });
+    ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+    ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+    ANON_HANDLERS.with(|h| {
+        let mut h = h.borrow_mut();
+        let n = h.len();
+        if n > 4 {
+            h.drain(..n - 4);
+        }
+        h.push(on_message);
+        h.push(on_close);
+    });
+    ANON.with(|w| *w.borrow_mut() = Some(ws));
+}
+
+fn anon_done(ok: bool) {
+    for s in ANON_WAITING.with(|w| w.borrow_mut().drain(..).collect::<Vec<_>>()) {
+        s.send(Some(ok));
+    }
+}
+
+/// La connexion anonyme, prête (ouverte au besoin, 10 secondes au plus).
+async fn anon_ready() -> bool {
+    if ANON_READY.with(Cell::get)
+        && ANON.with(|w| w.borrow().as_ref().is_some_and(|w| w.ready_state() == 1))
+    {
+        return true;
+    }
+    let d = Deferred::<bool>::new();
+    ANON_WAITING.with(|w| w.borrow_mut().push(d.sender()));
+    if ANON.with(|w| w.borrow().is_none()) {
+        open_anon();
+    }
+    let s = d.sender();
+    let t = timer(10_000, move || s.send(Some(false)));
+    let ok = d.wait().await.unwrap_or(false);
+    clear_timer(t);
+    ok
+}
+
+/// Dépose une enveloppe scellée pour `peer`, avec son jeton de remise.
+pub async fn send_sealed(id: &str, peer: &Contact, sealed: &str, live: bool, wake: bool) -> Ack {
+    if !anon_ready().await {
+        return Ack::Err("offline".into());
+    }
+    let mut msg = json!({
+        "t": "send", "id": id, "to": peer.code, "sign": peer.sign, "dh": peer.dh,
+        "jeton": peer.jeton, "body": sealed, "live": live,
+    });
+    if wake {
+        msg["wake"] = json!(true);
+    }
+    let sent = ANON.with(|w| {
+        w.borrow()
+            .as_ref()
+            .is_some_and(|ws| ws.send_with_str(&msg.to_string()).is_ok())
+    });
+    if !sent {
+        return Ack::Err("offline".into());
+    }
+    let d = Deferred::<Ack>::new();
+    ANON_PENDING.with(|p| p.borrow_mut().insert(id.to_owned(), d.sender()));
+    let s = d.sender();
+    let key = id.to_owned();
+    let t = timer(30_000, move || {
+        ANON_PENDING.with(|p| p.borrow_mut().remove(&key));
         s.send(Some(Ack::Err("timeout".into())));
     });
     let out = d.wait().await.unwrap_or(Ack::Err("offline".into()));
