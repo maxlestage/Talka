@@ -312,11 +312,15 @@ public final class Relay {
     }
 
     /// Dépose une enveloppe scellée pour `peer`, avec son jeton de remise.
-    public func sendSealed(id: String, peer: Contact, body: String, live: Bool, wake: Bool) async -> Ack {
+    public func sendSealed(id: String, peer: Contact, body: String, live: Bool, wake: Bool,
+                           apercu: String? = nil) async -> Ack {
         guard await anonConnected(), let anon else { return .failed("offline") }
         var msg: [String: Any] = ["t": "send", "id": id, "to": peer.code, "sign": peer.sign, "dh": peer.dh,
                                   "jeton": peer.jeton, "body": body, "live": live]
-        if wake { msg["wake"] = true }
+        if wake {
+            msg["wake"] = true
+            if let apercu { msg["apercu"] = apercu }
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: msg),
               let text = String(data: data, encoding: .utf8) else { return .failed("crypto") }
         return await withCheckedContinuation { c in
@@ -334,9 +338,14 @@ public final class Relay {
     /// Envoie une enveloppe ; tenue quand le relais l'a reçue. `wake` : un vrai
     /// message, qui réveille un destinataire hors ligne (notifications du
     /// navigateur) ; pas un accusé de lecture, une réaction ou un profil.
-    public func send(id: String, to: String, body: String, live: Bool, wake: Bool = false) async -> Ack {
+    /// `apercu` : ce que la notification affiche, chiffré pour le destinataire.
+    public func send(id: String, to: String, body: String, live: Bool, wake: Bool = false,
+                     apercu: String? = nil) async -> Ack {
         var msg: [String: Any] = ["t": "send", "id": id, "to": to, "body": body, "live": live]
-        if wake { msg["wake"] = true }
+        if wake {
+            msg["wake"] = true
+            if let apercu { msg["apercu"] = apercu }
+        }
         guard raw(msg) else { return .failed("offline") }
         return await withCheckedContinuation { c in
             pending[id] = c

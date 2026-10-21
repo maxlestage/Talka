@@ -72,6 +72,37 @@ final class CompatTests: XCTestCase {
         XCTAssertNil(TalkaCrypto.open(a, peerCode: claimed.from, peerDh: b.dh, body: claimed.body))
     }
 
+    /// L'aperçu des notifications : ce que le navigateur a chiffré pour une
+    /// clé de notification s'ouvre ici, ce que l'iPhone chiffre aussi, et
+    /// l'iPhone compose le même aperçu que le navigateur.
+    @MainActor
+    func testApercuWithTheBrowser() throws {
+        let ap = try XCTUnwrap(v["apercu"] as? [String: Any])
+        let nk = try XCTUnwrap(ap["nk"] as? String), plain = try XCTUnwrap(ap["plain"] as? String)
+        let priv = try XCTUnwrap(unb64(try XCTUnwrap(ap["nk_priv"] as? String)))
+        XCTAssertTrue(TalkaCrypto.validNk(nk))
+        XCTAssertFalse(TalkaCrypto.validNk("abc"))
+        XCTAssertEqual(TalkaCrypto.openApercu(nkPriv: priv, sealed: try XCTUnwrap(ap["sealed"] as? String)), plain)
+        let mine = try XCTUnwrap(TalkaCrypto.sealApercu(nk: nk, plain: "{\"t\":\"🙂\"}"))
+        XCTAssertEqual(TalkaCrypto.openApercu(nkPriv: priv, sealed: mine), "{\"t\":\"🙂\"}")
+        XCTAssertNil(TalkaCrypto.openApercu(nkPriv: Data(repeating: 7, count: 32), sealed: mine))
+
+        let wires = try XCTUnwrap(v["wires"] as? [String])
+        let msg = try XCTUnwrap(JSON.decode(Wire.self, wires[0]))
+        let a = try identity("a")
+        let ours = try XCTUnwrap(Engine.apercu(me: a.code, name: "Léa", wire: msg))
+        let parse = { (s: String) in try JSONSerialization.jsonObject(with: Data(s.utf8)) as? [String: String] }
+        XCTAssertEqual(try parse(ours), try parse(plain))
+        // La clé de notification voyage dans le profil, et se garde.
+        let profile = try XCTUnwrap(wires.compactMap { JSON.decode(Wire.self, $0) }.first {
+            if case .profile = $0.body { return true } else { return false }
+        })
+        guard case let .profile(_, _, wireNk) = profile.body else { return XCTFail() }
+        XCTAssertEqual(wireNk, nk)
+        let store = try XCTUnwrap(v["store"] as? [String: Any])
+        XCTAssertEqual(JSON.decode(Contact.self, try XCTUnwrap(store["contact"] as? String))?.nk, nk)
+    }
+
     func testSealBothWays() throws {
         let a = try identity("a"), b = try identity("b")
         let sealed = try XCTUnwrap(TalkaCrypto.seal(b, peerCode: a.code, peerDh: a.dh, plain: "{\"k\":\"typing\",\"on\":true}"))

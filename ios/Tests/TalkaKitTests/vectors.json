@@ -1,88 +1,94 @@
 {
   "a": {
-    "code": "SKPTMSFLQT",
+    "code": "KD6YMWRFXX",
     "created_at": 1700000000000.0,
-    "dh": "BPeoAYSNjMwmeY0XII5r9gjcFdTIUKOcHcqBiYgNLJmYAd+Uf2tTcnFXh+Ymj2dx4LtJ+Tgq/t/2oxH1RI/TUME=",
-    "dh_priv": "+lPjzzlrUci0Z7EwoBOL2RgVCfWLI36i6IpoxoK+ysY=",
-    "sign": "BDEKAH7RfQcIeFfNEFE20WTkRnmwD0z4uxG7v9TyvpEL0A8em/AhaXiTLYOWPrkG6KjEgHOqKm730jCDH46o8SM=",
-    "sign_priv": "cNE3bFdCZ+3Nha27KyaXfrbtIJaEZ/BieVyoCaJPZAg="
+    "dh": "BA7ZfF/5bYNwJqORGzcu2nY3mV/C9pmPfDwI2d/wz2joe3PFignh9yO62pYknrWVhrDPr0EuqgxHpi/4mUGE/+M=",
+    "dh_priv": "ORr1/anKfTCuedxy7BvnEwWIY1g3+XgBoyDyxBSRDGk=",
+    "sign": "BIEWc6YnpRT/HUws4kKH58PpG4N+Lvkb4y/T19pSO27HAQcepuj0sIH1zJESQz/rCygeKMXE7w7jAqyJ20BUH2k=",
+    "sign_priv": "/AYTx3zwsfW4kKlWvLfoE/EnqhkPE6BL0SQKO+Ridw0="
+  },
+  "apercu": {
+    "nk": "BINnI1G8N4vjg0+PYUgYhE/l/iiOds1cz8RwyKQgfpfN1niJZJ3asabSP5nsr7smv2i8pn3CzT5lAPIC3rguLX0=",
+    "nk_priv": "8MeLbEAy/N+cvKbJr/BQNVDjIVO23v1xNVhNeTZcPX8=",
+    "plain": "{\"c\":\"g:g1\",\"n\":\"Léa · Les amis\",\"t\":\"Salut 👋 *Talka*\"}",
+    "sealed": "BIlNJg6qsVlRxeX6N8eoVdhKaDkZJnA1vYvc3Dh2KU1q/VuUwtx5iC7mPGLSb634GwNa+1M3LFMO7JnoaluBppKNM+0T5iPTFWWRhEN1z5U3nAaq5RJ1q2CZOzuPgnTrtE0SGmRGj4SHYOG9hKbVZCKbb7b/Dpx6J9jbts0EbJjkS+IcxYPDIv9aWil67iqT0RHN+xNtzTak"
   },
   "b": {
-    "code": "M75DRNR6GB",
+    "code": "YRGNRX8BTC",
     "created_at": 1700000000000.0,
-    "dh": "BEE8wYkktj5gGIbAmqPCcJPE/QSyptHsjdvX4W0Wf0VkJOcJtWOXbs7fHV1+D5ym2Ku3c7DttuesFj8kP6Rne8I=",
-    "dh_priv": "vHGh4wlS17kCxrhgdNk9UEuI/k5rjh7991T+wFM8kfA=",
-    "sign": "BPeg0dwFRPhA+azrOBRNWsCmxrxPNMcnsdojfebjeGY3Zh9qGA1d52vZUGYIXApoKSxbp5jRYAosgOQsvVe0Hfo=",
-    "sign_priv": "RKijlxqjmd//cP7cxm5/L337KAlpgVkyrNRZdZio0NI="
+    "dh": "BKL2+VcEAgGiRaEZOcHFMKoXhh5J+l5Dh5zx5b0DXDXb4khL0pzCAhZE49q4+oiUAlovA2HoRu5+BOxk2E+iZtw=",
+    "dh_priv": "ZY1RlAMiLjYrebq1R1Uoi8II/UkGui5K9GK2x+h1tkk=",
+    "sign": "BA5xw1tNzatZoszrIldVTpkyn1FT1ILyxIpFnNKaWfdS8qFP8MlvNWIcJ45yiugzgySPAjUhr5xwaMPXXrs8IRU=",
+    "sign_priv": "mTVjKbx3ALwNQQyDZU3nunoDLXzsVjoyjQ7t1xrLO4o="
   },
   "backup": {
     "file": {
-      "data": "zmQEzSHYqpDQZDyDVyAI+6UxvgKuj5wmaR4h4OeqO6meTPMQIQeD8RPUzPl51VYgbyORD9RPfF8v0xWQrWgratUrG34bzHUC7N6TsJDDt+RfK3rcHjcCMV27VYv7QxeA7ixcHg/eAo9Q8vEg8UDe4uii0kmtKtmIxI03hyjOGK0qBOAj4uCxBEJ6tC0J8lM95sSL9RahgYvmuFhueMag4i3ahgf+P1GT1IKV4zKzWsDIVSpgRLzBQZXLTExNLauh8oiAhph3sVEW3IgWCyaZfdWD/AHj5FTqz6xt6lW1xMdCwDw7RJI9csKq+ruL1lJF8FLCOj/rXcmXnjWcr2RC4MlcbBIoQaj+kwuRasvs7JHAA4qZbhDK+cYdVi5EJdCvhjdP1uutP6CDmmEa1NHVhkX/ygrKSNheSlhgQbgSixW4I/BEIZwDaYAAbjLQA1ighKuPFq2E2WZxIHsXbp+36PGk/SkvXgFwFARhk2lDh9Ph1ylJt5sxnNbdxDXoaNkr0dT/U+77+08RCj+myem0jCol074/ihN5x2+EYxVEWkNU6jMebFMi0YZ4Zcq5IhPln6JX5PRXkBcicQGHR4mbfhgtkvHo9g==",
-      "iv": "gb7HyeQ6OhUCIJNb",
-      "salt": "/SKibyc8+jzu2zEYkmI+PQ==",
+      "data": "pQmTQmU955BAScnjEejQRVpnwMpyfaEVvlAF+6SOdFZiZ0PqMShKFk1sg8O169toBLWUqqt4tRhWAntUb6COKjlMF9iIBOXgwWWc0BGzMTDX0miQ7d3XjLmJob27gUNAvKdiR7S12VvyNGbbwPkf2rEXyw+KI+m85EjOrkKP1FkNHv/70vj9iq9rBt0wMi19yjFE4z84Gt65Dj1tY5dlNSOLjuzsHKprckNJt2n7mOk3r6q8ji9EovG9iA+dK/xW0iObVv5RPvgGVRZnuuI4t6qsKqcYo1m1kmkNlW8bS41OjhO+DR1Y4DKZoiOVgu3S/Kvyv4i9k/VMRIwfzZ8cZ64TxxQ+vOh20AqOdhZc4rNez3DW5SxRzvr++ThIlrxtYfOfOtaoejzBVUA+yeQOJQXQ0wdCjPDeCvt1E2T36Cg3Cvzs1Hqi3KzY+eI4vcrtvKS7rjlnb22UtIrJCDu1Ug+29Hs1qWrojB3J3RI9L59A4QKIQ4vGdjr/567T+5ZqVomjTjW9hZ8eszFXaHKRs9qZIQROhmfwgDn9YNQTCgdd6fIBHg/5uZz1YQ0bPHLGb7fHtlrQde3w/6JaY87QWr0vSlblOw==",
+      "iv": "SvKX6Md/BruNawWH",
+      "salt": "f6X6t7+CDo72MpPDWPT5Og==",
       "talka": 2
     },
     "password": "motdepasse",
-    "plain": "{\"app\":\"talka\",\"at\":1.0,\"data\":{\"kv\":[[\"identity\",\"{\\\"code\\\":\\\"SKPTMSFLQT\\\",\\\"sign\\\":\\\"BDEKAH7RfQcIeFfNEFE20WTkRnmwD0z4uxG7v9TyvpEL0A8em/AhaXiTLYOWPrkG6KjEgHOqKm730jCDH46o8SM=\\\",\\\"dh\\\":\\\"BPeoAYSNjMwmeY0XII5r9gjcFdTIUKOcHcqBiYgNLJmYAd+Uf2tTcnFXh+Ymj2dx4LtJ+Tgq/t/2oxH1RI/TUME=\\\",\\\"sign_priv\\\":\\\"cNE3bFdCZ+3Nha27KyaXfrbtIJaEZ/BieVyoCaJPZAg=\\\",\\\"dh_priv\\\":\\\"+lPjzzlrUci0Z7EwoBOL2RgVCfWLI36i6IpoxoK+ysY=\\\",\\\"created_at\\\":1700000000000.0}\"]]}}"
+    "plain": "{\"app\":\"talka\",\"at\":1.0,\"data\":{\"kv\":[[\"identity\",\"{\\\"code\\\":\\\"KD6YMWRFXX\\\",\\\"sign\\\":\\\"BIEWc6YnpRT/HUws4kKH58PpG4N+Lvkb4y/T19pSO27HAQcepuj0sIH1zJESQz/rCygeKMXE7w7jAqyJ20BUH2k=\\\",\\\"dh\\\":\\\"BA7ZfF/5bYNwJqORGzcu2nY3mV/C9pmPfDwI2d/wz2joe3PFignh9yO62pYknrWVhrDPr0EuqgxHpi/4mUGE/+M=\\\",\\\"sign_priv\\\":\\\"/AYTx3zwsfW4kKlWvLfoE/EnqhkPE6BL0SQKO+Ridw0=\\\",\\\"dh_priv\\\":\\\"ORr1/anKfTCuedxy7BvnEwWIY1g3+XgBoyDyxBSRDGk=\\\",\\\"created_at\\\":1700000000000.0}\"]]}}"
   },
   "brocolis": {
-    "fingerprint_k1": "BC9F-5E57-FE62-8F66",
+    "fingerprint_k1": "BEDE-8913-D54E-DFDC",
     "keys": [
       {
         "id": "k1",
-        "key": "Rp0/5RPnk9xliVRvKDPn1Z5nrGqSHGTGzPN2Y6dsOuY=",
+        "key": "qYR5xH4VQNhLdrqqyiaU4NWblmaqOUb9mwmbeaZ359E=",
         "name": "Bob"
       },
       {
         "id": "k2",
-        "key": "f8sqT8loANorvQFxetqJSAo5S8kR55hHHTp9gC3B6SA=",
+        "key": "aL+jZCnxlU5r8B5eqp+h4d1hWuKPzUoGVRNkQocA70o=",
         "name": "Travail"
       }
     ],
-    "marked": "On se voit [[BROCOLIS:v1:kwfwzU5x1IqyhCiofK9yLQkQgWJGxjvs3pvHYIuc0j6n7is=]] demain",
+    "marked": "On se voit [[BROCOLIS:v1:rTEPRWQbpcnJRg5uFINkWtICyEW1kdOWYLjPuSF+FjP23Qc=]] demain",
     "marked_plain": "On se voit au parc demain",
-    "v1": "[[BROCOLIS:v1:r+NqPToNNm/6ZlMIXrhhVwSuS+QRzyR4MNFXF+xbipTlxQATOdN3LgtIy0DlLuxqDcVaqi8pSA==]]",
+    "v1": "[[BROCOLIS:v1:5pnyO/gzOzRARJVKSIv2D+lrlaqjdSTdYOVBpXPQLaAkjt25yyd75H+wa6pFYfHdTTWgZXhvNg==]]",
     "v1_plain": "Le code du portail est 4521",
-    "v2": "[[BROCOLIS:v2:AQLPO5ick8cW8wXIzAae1FbVdezKYSXWZX8kp6Whl0WLwZLd+fugMMQK58829mdGDETKTf0ed8nAHZaVKdS+CYkpvvsnDJC3MjBrBtg6324LENNMc4wNH40FGW2Kn8Q2QAIxZRMTMFy4C6/gE7bBnNm14pA1WAg9Rq695C6fZjPw3ZErnB2q8GBGIJ5RFBCM1o78Ebt7VSs2Aun2Aj4ez2iv]]",
+    "v2": "[[BROCOLIS:v2:AQJ3Q0/6TUjBSfOjqGo3P6SGlSprOx2WlRjljo8LoiO2WuaxBos4fTijTfV8oRJkNjI52ZGngUYkXflW3FeeSV03V5r2X2o884Wr3mluEqzdoQqjlKiyKZFPzcwlMdql/OIwfVMEghDiI7LLviReZnnwQus4G1UiyZOWc59n43EcupIwREXA1qXA1BzqL2ciCaplXP0zQRvWPj/JGpaa60OH]]",
     "v2_plain": "À tous 🥦"
   },
   "challenge": {
     "nonce": "abc",
-    "sig": "KA9HjmIp+NbFzpOmqtq4jKku+61oPj048RavvyN5x1ZGr1IdRaTV28jAH61bnbI255g2c35L6qbVzeA1DI7wlg=="
+    "sig": "5G68YojVVPG5pxGROLnEnuUX6JW8gLkKYLQrQYlazvYIK9WbWKZ4r8su6aZJo0NxkZObkbh5Z2Fgszwon7XYbg=="
   },
   "code_of_empty": "WGSEAJNSZJ",
   "pin": {
     "hash": {
-      "hash": "LU/MMtrP5ohnEwgnJE6XbpJG4/EdvbXin0fcyr22ah0=",
-      "salt": "EwPF0Zl+HvrpSMF7TfZYBg=="
+      "hash": "hERH4A3P0dny6vyoWAQjBNwJRPAXAcnBdw6jN74hzU0=",
+      "salt": "SQZCWJuV+dD8CtTg/1zmpg=="
     },
     "pin": "2580"
   },
-  "plain": "{\"k\":\"msg\",\"id\":\"m1\",\"at\":1700000000123.0,\"pn\":\"Léa\",\"kind\":\"text\",\"text\":\"Salut 👋 *Talka*\",\"data\":\"\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":0,\"h\":0,\"code\":\"\",\"reply\":{\"id\":\"m0\",\"from\":\"SKPTMSFLQT\",\"text\":\"avant\"},\"fwd\":false,\"grp\":{\"id\":\"g1\",\"name\":\"Les amis\",\"members\":[\"SKPTMSFLQT\",\"M75DRNR6GB\"],\"admins\":[\"SKPTMSFLQT\"],\"avatar\":\"\",\"v\":3},\"ttl\":86400}",
-  "safety": "55780 57529 44673 34191 59915 46087 14388 27471 20272 17379 25335 34084",
+  "plain": "{\"k\":\"msg\",\"id\":\"m1\",\"at\":1700000000123.0,\"pn\":\"Léa\",\"kind\":\"text\",\"text\":\"Salut 👋 *Talka*\",\"data\":\"\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":0,\"h\":0,\"code\":\"\",\"reply\":{\"id\":\"m0\",\"from\":\"KD6YMWRFXX\",\"text\":\"avant\"},\"fwd\":false,\"grp\":{\"id\":\"g1\",\"name\":\"Les amis\",\"members\":[\"KD6YMWRFXX\",\"YRGNRX8BTC\"],\"admins\":[\"KD6YMWRFXX\"],\"avatar\":\"\",\"v\":3},\"ttl\":86400}",
+  "safety": "52227 48315 31743 11367 00595 03719 18960 00417 47089 56035 58913 30977",
   "scelle": {
-    "a_to_b": "BKGngbbWpspRO1474Ape/V5BQ2R6A8R3MwhC7smEirg6R0MsZL+fyJl5beKbrwKVzrY2i2Pfye2XeLFg0Ue5W5OrFzIqooG34XnvUM0gTNvqdtY9/LA+tYjb12nkZl9mflEN6Y+cQL0nvxc6WuGN+5Ab03And0Tz3U+EV2q95pu2+4W2UTJtkKkwzAHsXMYWPwx/r71KAy3bucJZs4F7OisyFwx4OUV67DYTxHcb80rNaL4L2NyWVz/6G4ajaMWawxteIrynW/JzrpYfQTT+SHw4+/woggQQXg0yIw/YiPygQgnKxTNmeeHQMBoNe3tUdq3iWlX0W2JHMA511KjTe4A+tuOt5cEC8xZ5WwjlaYsTo4gbxyL9YkoNN8g7vVpTXEzljrdSn+60XxW+cPFFCdLixri8+PuguhKm6O+zGNV2uHfJBbLj3PQF+29IhiEkpieLjAZfnGkE7kBNFO74cYL+18CdPUD+eryDk0hzC0AdLMk36J4fsWio5b9JJzFAuqnDLPgV79pezKW//S5atf0a5f/1JgBxwao3MTswh7dhhZWCoUV2gKqRPQfCGP91MAmALPf4KTppX3Y4fzTxyzQ/7JGc1XER+CfkSUIF9OHcNzoev2Q+VAuclb1tks3zjSabiBxgF3uGdndHl4ZRjsPs8xX4dwPhd+AQ0uvTaKQHoKyKlRn0Fe/ZtDudmI1JCdZeaSm0pIpmdEV9tFt0OW5egO8ZfurhvJl8J1JH5BETYLm+MospLvA10qRTiepEbWg9dUXqzz8FjfrsC5aBb20otEvUFn80Q97memg7/B7+PR+be1jCzdx7PXKayzChoMaaU1jwZUmBcseNIgqgcAlYdB1E50ZE",
-    "jeton_a": "gQvQCx6UpvQpg6Ssa/kTOQ==.G91UURZUtDDi2xzBm86eUc5tygcRrnnqHQRGX5orUVV/1izazK77rKr5k6+Uzw5XaQD/3b1MvRTD3t+vW7Jagw=="
+    "a_to_b": "BMo09L9vYyDOhTCXnD8olcXmANkTdiO0agDFZad/+Xi+e4f/L28fno7ixjWzXI0AxHLa/hEFFO6gh1TfxJ3L+ZFD0JF4amOpp5v3i4b9apdoY9vMGMbiIlxdyV8bJ5Rb2RkrHVdTa3g0E5s3st0FKnY8W0Vtb2Aimqpodhzgcy0azYrThz7xxcfg+a97ZHlgBNlYvF8gRAyZbTxlK3NAa0ldrwAisLLM5+G12Jx92lLtUtXQS0awnIwLqFUDTzT3ttcU5vn+sK9K9gfiz4Kzeov6d3gFZeMCmFHtE8eHA4FBbUn90oqemDb9ux4WRrYdo0f9hs/wecjchlNT6WpVs5R2Y+AT4T0zBSBUvTFsvCtv9jAX1dlUb/CQqHvzdONtitlSsFASD3Gz7YgKFsXdLa0gITXwasFP5yG+ylrIfwp9fgLSEucSDTR6eMU03OF7cXOMkeV8X9+zCi7M/ZB7WLvHt27x2NeFnq3A9ewiFQLmFUuKaCocdOR6st5dOnnXNBqbesqmT1z8En8YWHtS2vHPizM5ptjghMnpWKfdEM0Fjwaq9FgPCpt3QoHVVWqtaibCNlzWzBeywPkXfsF8ibxdOloKqL76pRYJ2Rru7I3sx8c+0ajAK/oioj1Y7VJ2qDJInYdp1Cix437z1PldsJ/3c/RmVTznsO4xSWKt4WVi7TxvSE1D8bAFN4zD9nNynKFho8vXjPO4DHIXkMEzUwnGwlC5AVZpvN4JuzRn9l62QZZjFrAXstDvV6tBMAr9lKqKFqGtaAe+5f8VvL1XSk6IqZplOIdLW1ds2Ndo19wU/HBUCvgcwTez6Wop5idebUFwUUbZztZTUuRQlltCHuO1ncN6+lpv",
+    "jeton_a": "7Lay0y+Hw/YIXIBEnhI3xQ==.t6mQsZHkJMHARf/nAjUH027p0F/X+riLBLC4ypJP/1VY1d58KFpFVg7H20OYbyDAnaRujw/rB71duL5BGkeOpA=="
   },
-  "sealed_a_to_b": "LrEvBuem1ssoUURf6l0bjaeUEAjAGao8YapNSiMOvRsUMcduA0u5USWzU+mTHs+w3BF3EVaKta/XvmlHigJvPNr3tvri5ega1ZBEx7fRVL/XwQwmD11GVha1qIZ/T+di4p6iaYJ2ZZa7FElorvKOThcAAigL+jvW/doa2/2Ose0ZEpo5J8gBn9Qs590wErLAMIHw07xEQUAt/nsD1Wow8yPdlAa5fAUsoJFWm/HVfb2/r7iHBzMD2pHc+YrVSvYIn3WafEVl3X+5NnjZIyNMISebijbl0ryrFXjmlFxJeCcXBDLPZYPaScZL7VndR9Fhnvr99glDMTDFMdTikrHI0Z6eouXkphSVZDB6cJVFz+OTaUGBc/vFY7NcJDchzSWbksYNeuWZv/AT9oKEcGHE+/zG7fZX8PJcs2LehDURm9sbTL2YPtdfPWLLOwQo63rxPEKnakSVckOc0bryps2iUwDD9zJjWsch+9cWgUtpbXZvoOhC67FXvvCRQq4+BMfczVB25UcpF6U=",
+  "sealed_a_to_b": "ujaQtdZ1SIqb+P8NwTt1BLqUBoh6BXl34jt15saM4TWPGH8sdQeNX/yTj/tUmfaVu9KTlmFhC+ecKndqpXJGR146p695r6EQ4YE3UL68aNmIxBy5p4KgvyaLtY7OOWbNWAZ/R8nZlmRyiexEk9B1dBpBixiD9LJz4Nqu+AxqCDGxS/HWiGSsE0sJ5zbo+emopJ1F5yxWlKYoMbq7sjYkAWgPnyEJLOch64RECwR44+sQ4Wm1T3BI0ffW9W+Bb1u+3FMigf/ysVE78zagrx36Z0nEI92YhlrO5NLda9kCdyukqIcUYcS/P7g2xjWFJSQHD7iFotlvLrhceaY6wMUrzkqN4bdPh0TSIcLtX2LacCRm5GAVHH5aInVBJMQawRgH25zqrtW3Eehuwm5147M2XAeCv0XeFWbHbSMUbaz4Z513DtCdoI3T4T3JyxAnQtYaxkaDWbEoxyuAUXWsBODQtA8CbCrM4usICoWSPyzG6adnB1Q8+VR7amvu/j+nzdRYrfJGeOVth4s=",
   "store": {
-    "call": "{\"id\":\"c1\",\"peer\":\"M75DRNR6GB\",\"video\":true,\"incoming\":true,\"at\":1.0,\"dur\":42.0,\"missed\":false}",
-    "chat": "{\"id\":\"g:g1\",\"group\":true,\"name\":\"Les amis\",\"avatar\":\"\",\"members\":[\"SKPTMSFLQT\",\"M75DRNR6GB\"],\"admins\":[],\"created_by\":\"\",\"created_at\":0.0,\"last_at\":0.0,\"unread\":0,\"marked_unread\":false,\"pinned\":false,\"archived\":false,\"muted\":false,\"timer\":0,\"draft\":\"\",\"wallpaper\":\"\",\"left\":false,\"v\":0,\"last\":{\"id\":\"m1\",\"from\":\"SKPTMSFLQT\",\"text\":\"📷 Photo\",\"at\":1.0,\"kind\":\"image\"},\"has_exp\":false,\"pin_msg\":\"\",\"brocolis\":[\"k1\"]}",
-    "contact": "{\"code\":\"M75DRNR6GB\",\"name\":\"Bob\",\"profile_name\":\"\",\"about\":\"\",\"avatar\":\"\",\"sign\":\"BPeg0dwFRPhA+azrOBRNWsCmxrxPNMcnsdojfebjeGY3Zh9qGA1d52vZUGYIXApoKSxbp5jRYAosgOQsvVe0Hfo=\",\"dh\":\"BEE8wYkktj5gGIbAmqPCcJPE/QSyptHsjdvX4W0Wf0VkJOcJtWOXbs7fHV1+D5ym2Ku3c7DttuesFj8kP6Rne8I=\",\"blocked\":false,\"saved\":true,\"added_at\":0.0,\"profile_v\":0,\"sent_profile_v\":0}",
-    "message": "{\"chat\":\"M75DRNR6GB\",\"id\":\"m1\",\"from\":\"SKPTMSFLQT\",\"at\":1.0,\"kind\":\"image\",\"text\":\"\",\"data\":\"data:image/jpeg;base64,AAAA\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":4,\"h\":3,\"code\":\"\",\"reply\":null,\"fwd\":false,\"status\":\"\",\"to\":[\"M75DRNR6GB\"],\"sent_to\":[\"M75DRNR6GB\"],\"delivered_to\":[],\"read_by\":[],\"reactions\":{\"M75DRNR6GB\":\"👍\"},\"edited\":false,\"deleted\":false,\"starred\":false,\"exp\":2.0,\"read_by_me\":false,\"bro\":true}",
-    "outbox": "{\"id\":\"m1:X\",\"to\":\"M75DRNR6GB\",\"payload\":\"{\\\"k\\\":\\\"msg\\\",\\\"id\\\":\\\"m1\\\",\\\"at\\\":1700000000123.0,\\\"pn\\\":\\\"Léa\\\",\\\"kind\\\":\\\"text\\\",\\\"text\\\":\\\"Salut 👋 *Talka*\\\",\\\"data\\\":\\\"\\\",\\\"name\\\":\\\"\\\",\\\"mime\\\":\\\"\\\",\\\"size\\\":0.0,\\\"dur\\\":0.0,\\\"w\\\":0,\\\"h\\\":0,\\\"code\\\":\\\"\\\",\\\"reply\\\":{\\\"id\\\":\\\"m0\\\",\\\"from\\\":\\\"SKPTMSFLQT\\\",\\\"text\\\":\\\"avant\\\"},\\\"fwd\\\":false,\\\"grp\\\":{\\\"id\\\":\\\"g1\\\",\\\"name\\\":\\\"Les amis\\\",\\\"members\\\":[\\\"SKPTMSFLQT\\\",\\\"M75DRNR6GB\\\"],\\\"admins\\\":[\\\"SKPTMSFLQT\\\"],\\\"avatar\\\":\\\"\\\",\\\"v\\\":3},\\\"ttl\\\":86400}\",\"chat\":\"M75DRNR6GB\",\"msg_id\":\"m1\",\"seq\":1.0,\"boot\":\"B00T\"}",
+    "call": "{\"id\":\"c1\",\"peer\":\"YRGNRX8BTC\",\"video\":true,\"incoming\":true,\"at\":1.0,\"dur\":42.0,\"missed\":false}",
+    "chat": "{\"id\":\"g:g1\",\"group\":true,\"name\":\"Les amis\",\"avatar\":\"\",\"members\":[\"KD6YMWRFXX\",\"YRGNRX8BTC\"],\"admins\":[],\"created_by\":\"\",\"created_at\":0.0,\"last_at\":0.0,\"unread\":0,\"marked_unread\":false,\"pinned\":false,\"archived\":false,\"muted\":false,\"timer\":0,\"draft\":\"\",\"wallpaper\":\"\",\"left\":false,\"v\":0,\"last\":{\"id\":\"m1\",\"from\":\"KD6YMWRFXX\",\"text\":\"📷 Photo\",\"at\":1.0,\"kind\":\"image\"},\"has_exp\":false,\"pin_msg\":\"\",\"brocolis\":[\"k1\"]}",
+    "contact": "{\"code\":\"YRGNRX8BTC\",\"name\":\"Bob\",\"profile_name\":\"\",\"about\":\"\",\"avatar\":\"\",\"sign\":\"BA5xw1tNzatZoszrIldVTpkyn1FT1ILyxIpFnNKaWfdS8qFP8MlvNWIcJ45yiugzgySPAjUhr5xwaMPXXrs8IRU=\",\"dh\":\"BKL2+VcEAgGiRaEZOcHFMKoXhh5J+l5Dh5zx5b0DXDXb4khL0pzCAhZE49q4+oiUAlovA2HoRu5+BOxk2E+iZtw=\",\"blocked\":false,\"saved\":true,\"added_at\":0.0,\"profile_v\":0,\"sent_profile_v\":0,\"nk\":\"BINnI1G8N4vjg0+PYUgYhE/l/iiOds1cz8RwyKQgfpfN1niJZJ3asabSP5nsr7smv2i8pn3CzT5lAPIC3rguLX0=\"}",
+    "message": "{\"chat\":\"YRGNRX8BTC\",\"id\":\"m1\",\"from\":\"KD6YMWRFXX\",\"at\":1.0,\"kind\":\"image\",\"text\":\"\",\"data\":\"data:image/jpeg;base64,AAAA\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":4,\"h\":3,\"code\":\"\",\"reply\":null,\"fwd\":false,\"status\":\"\",\"to\":[\"YRGNRX8BTC\"],\"sent_to\":[\"YRGNRX8BTC\"],\"delivered_to\":[],\"read_by\":[],\"reactions\":{\"YRGNRX8BTC\":\"👍\"},\"edited\":false,\"deleted\":false,\"starred\":false,\"exp\":2.0,\"read_by_me\":false,\"bro\":true}",
+    "outbox": "{\"id\":\"m1:X\",\"to\":\"YRGNRX8BTC\",\"payload\":\"{\\\"k\\\":\\\"msg\\\",\\\"id\\\":\\\"m1\\\",\\\"at\\\":1700000000123.0,\\\"pn\\\":\\\"Léa\\\",\\\"kind\\\":\\\"text\\\",\\\"text\\\":\\\"Salut 👋 *Talka*\\\",\\\"data\\\":\\\"\\\",\\\"name\\\":\\\"\\\",\\\"mime\\\":\\\"\\\",\\\"size\\\":0.0,\\\"dur\\\":0.0,\\\"w\\\":0,\\\"h\\\":0,\\\"code\\\":\\\"\\\",\\\"reply\\\":{\\\"id\\\":\\\"m0\\\",\\\"from\\\":\\\"KD6YMWRFXX\\\",\\\"text\\\":\\\"avant\\\"},\\\"fwd\\\":false,\\\"grp\\\":{\\\"id\\\":\\\"g1\\\",\\\"name\\\":\\\"Les amis\\\",\\\"members\\\":[\\\"KD6YMWRFXX\\\",\\\"YRGNRX8BTC\\\"],\\\"admins\\\":[\\\"KD6YMWRFXX\\\"],\\\"avatar\\\":\\\"\\\",\\\"v\\\":3},\\\"ttl\\\":86400}\",\"chat\":\"YRGNRX8BTC\",\"msg_id\":\"m1\",\"seq\":1.0,\"boot\":\"B00T\"}",
     "profile": "{\"name\":\"Léa\",\"about\":\"Salut\",\"avatar\":\"\",\"v\":1}",
     "settings": "{\"theme\":\"auto\",\"read_receipts\":true,\"hide_online\":false,\"presence_dot\":true,\"notify\":false,\"sound\":true,\"enter_sends\":true,\"wallpaper\":\"doodle\",\"font_size\":15,\"lock_after\":0,\"server\":\"\",\"keep_days\":90}",
-    "status": "{\"owner\":\"M75DRNR6GB\",\"id\":\"s1\",\"kind\":\"text\",\"text\":\"Vacances\",\"bg\":\"\",\"data\":\"\",\"at\":1.0,\"seen\":false,\"viewers\":{}}"
+    "status": "{\"owner\":\"YRGNRX8BTC\",\"id\":\"s1\",\"kind\":\"text\",\"text\":\"Vacances\",\"bg\":\"\",\"data\":\"\",\"at\":1.0,\"seen\":false,\"viewers\":{}}"
   },
   "wires": [
-    "{\"k\":\"msg\",\"id\":\"m1\",\"at\":1700000000123.0,\"pn\":\"Léa\",\"kind\":\"text\",\"text\":\"Salut 👋 *Talka*\",\"data\":\"\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":0,\"h\":0,\"code\":\"\",\"reply\":{\"id\":\"m0\",\"from\":\"SKPTMSFLQT\",\"text\":\"avant\"},\"fwd\":false,\"grp\":{\"id\":\"g1\",\"name\":\"Les amis\",\"members\":[\"SKPTMSFLQT\",\"M75DRNR6GB\"],\"admins\":[\"SKPTMSFLQT\"],\"avatar\":\"\",\"v\":3},\"ttl\":86400}",
+    "{\"k\":\"msg\",\"id\":\"m1\",\"at\":1700000000123.0,\"pn\":\"Léa\",\"kind\":\"text\",\"text\":\"Salut 👋 *Talka*\",\"data\":\"\",\"name\":\"\",\"mime\":\"\",\"size\":0.0,\"dur\":0.0,\"w\":0,\"h\":0,\"code\":\"\",\"reply\":{\"id\":\"m0\",\"from\":\"KD6YMWRFXX\",\"text\":\"avant\"},\"fwd\":false,\"grp\":{\"id\":\"g1\",\"name\":\"Les amis\",\"members\":[\"KD6YMWRFXX\",\"YRGNRX8BTC\"],\"admins\":[\"KD6YMWRFXX\"],\"avatar\":\"\",\"v\":3},\"ttl\":86400}",
     "{\"k\":\"receipt\",\"st\":\"read\",\"ids\":[\"m1\",\"m2\"],\"g\":\"g1\"}",
     "{\"k\":\"react\",\"id\":\"m1\",\"emoji\":\"❤️\"}",
     "{\"k\":\"edit\",\"id\":\"m1\",\"text\":\"modifié\"}",
     "{\"k\":\"delete\",\"id\":\"m1\"}",
     "{\"k\":\"typing\",\"on\":true}",
-    "{\"k\":\"profile\",\"name\":\"Léa\",\"about\":\"Disponible\",\"avatar\":\"\",\"v\":2}",
+    "{\"k\":\"profile\",\"name\":\"Léa\",\"about\":\"Disponible\",\"avatar\":\"\",\"v\":2,\"nk\":\"BINnI1G8N4vjg0+PYUgYhE/l/iiOds1cz8RwyKQgfpfN1niJZJ3asabSP5nsr7smv2i8pn3CzT5lAPIC3rguLX0=\"}",
     "{\"k\":\"group\",\"op\":\"update\",\"note\":\"Vous avez renommé le groupe.\"}",
     "{\"k\":\"timer\",\"secs\":604800}",
     "{\"k\":\"status\",\"id\":\"s1\",\"type\":\"text\",\"text\":\"Vacances\",\"bg\":\"#008069\",\"data\":\"\",\"at\":1.0}",

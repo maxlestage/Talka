@@ -400,22 +400,69 @@ initiateur non confirmé l'envoie après un 0x01 ; reçu avant, il donne
 ### 7.8 Notifications (Web Push)
 
 Quand un destinataire n'a aucune connexion ouverte, le relais peut réveiller
-ses navigateurs par Web Push (RFC 8030, VAPID RFC 8292). Le réveil est
-**vide** : aucun contenu, aucun expéditeur, aucun nom de discussion ; le
-service worker affiche « Nouveau message » et le message reste chiffré dans
-la boîte aux lettres. Le service de notifications du navigateur (Google,
-Mozilla, Apple, Microsoft) apprend qu'un appareil reçoit quelque chose, et
-quand ; rien d'autre.
+ses navigateurs par Web Push (RFC 8030, VAPID RFC 8292). La notification
+montre **qui écrit et quoi** (« Léa : On se voit à 19 h ? »), mais cet
+aperçu est chiffré de bout en bout : ni le relais ni le service de
+notifications du navigateur (Google, Mozilla, Apple, Microsoft) ne peuvent
+le lire.
+
+**La clé de notification.** Le service worker de chaque navigateur tire une
+paire P-256 (WebCrypto, partie privée **non exportable**, gardée dans son
+IndexedDB `talka-notifications`). La moitié publique `nk` (65 octets,
+base64) part chez les contacts dans le profil (`{"k":"profile",…,"nk"}`) ;
+les versions qui ne la connaissent pas l'ignorent. Une clé qui n'est pas un
+point P-256 valable est refusée.
+
+**L'aperçu.** Pour un vrai message (`wake`) à un contact qui a donné sa clé,
+l'expéditeur compose `{"n": nom choisi[ · groupe], "t": texte, "c":
+discussion}` — le même texte que la liste des discussions : une photo dit
+« 📷 Photo », une capsule temporelle « ⏳ Capsule temporelle » (jamais son
+contenu), un jeton Brocolis reste masqué ; 40 caractères pour les noms,
+120 pour le texte. Il le chiffre :
+
+```
+eph      = P-256 éphémère
+ikm      = ECDH(eph, nk)
+clé      = HKDF-SHA256(ikm, salt = eph_pub (65) ‖ nk (65), info = "talka-apercu-v1", 32)
+apercu   = base64(eph_pub ‖ iv (12) ‖ AES-256-GCM(clé, iv, json, aad = "talka-apercu"))
+```
+
+et l'ajoute à l'envoi (`"apercu"`, 2 048 octets au plus). Le relais le
+recopie, sans pouvoir l'ouvrir, dans `{"a": apercu}` qu'il chiffre à son
+tour pour l'abonnement du navigateur (RFC 8291, `aes128gcm`, avec les clés
+`p256dh` et `auth` de l'abonnement) : le service de notifications ne voit
+qu'un bloc chiffré. Le service worker l'ouvre avec sa clé privée et
+affiche la notification ; s'il n'y arrive pas (pas de clé, aperçu abîmé,
+contact d'une ancienne version), il affiche « Nouveau message ».
+
+Limites, assumées :
+
+- Pas de confidentialité persistante pour les aperçus : qui volerait un
+  jour la clé de notification d'un navigateur (elle ne sort pas de
+  WebCrypto, mais un appareil compromis…) pourrait lire les aperçus
+  enregistrés plus tôt. Le message lui-même reste protégé par le double
+  cliquet (§4.3).
+- L'aperçu n'est pas authentifié par l'expéditeur : quelqu'un qui connaît
+  `nk` et un jeton de remise pourrait faire afficher un faux aperçu. Il ne
+  fait qu'annoncer : ouvert, Talka ne montre que les messages
+  authentifiés.
+- Le nom affiché est celui que l'expéditeur s'est choisi, pas celui que
+  vous lui avez donné.
+
+Le reste ne change pas :
 
 - L'expéditeur marque `wake` ses vrais messages (pas les accusés, réactions
   ni profils) : le relais l'apprend, en plus de ce qu'il voyait déjà.
 - Le relais ne contacte que les services connus (liste fermée d'hôtes en
   HTTPS, sans port ni redirection) : pas de requête vers une adresse choisie
   par un client.
-- Un réveil par code toutes les 20 secondes au plus ; `Topic` fusionne ceux
-  qui attendent ; `TTL` d'un jour.
-- Les adresses ne vivent qu'en mémoire (4 par code), redonnées à chaque
-  connexion ; une adresse disparue (404, 410) est oubliée.
+- Un réveil vide par code toutes les 20 secondes au plus (`Topic` fusionne
+  ceux qui attendent) ; avec un aperçu, une seconde au moins entre deux ;
+  `TTL` d'un jour.
+- Les adresses et leurs clés ne vivent qu'en mémoire (4 par code), redonnées
+  à chaque connexion ; une adresse disparue (404, 410) est oubliée.
+- Talka à l'écran : pas de notification système, l'application s'en
+  occupe.
 
 ### 7.9 Expéditeur scellé (v4)
 

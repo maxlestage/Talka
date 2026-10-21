@@ -145,20 +145,40 @@ fn bubble(out: bool, text: &str, time: &str) -> Element {
         }))
 }
 
+/// Une icône en trait (comme celles de l'application), en SVG.
+fn icon(path: &str) -> Element {
+    span().class("ico").html(format!(
+        r#"<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{path}</svg>"#
+    ))
+}
+
+const VIDEO: &str =
+    r#"<rect x="2" y="6" width="14" height="12" rx="3"/><path d="m16 10 6-3v10l-6-3"/>"#;
+const CALL: &str = r#"<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>"#;
+const MIC: &str =
+    r#"<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/>"#;
+const PLAY: &str = r#"<path d="M7 4v16l13-8z" fill="currentColor"/>"#;
+
 fn phone() -> Element {
+    // L'application d'aujourd'hui : des bulles de verre sur une photo.
+    let bars = [3, 5, 8, 11, 7, 4, 6, 10, 12, 8, 5, 3, 6, 9, 5, 3];
+    let mut wave = div().class("wave");
+    for h in bars {
+        wave = wave.child(span().attr("style", format!("height:{}px", h + 3)));
+    }
     div()
         .class("phone")
         .attr("aria-hidden", "true")
         .child(
             div()
                 .class("phone-top")
-                .child(div().class("avatar").text("🦊"))
+                .child(div().class("avatar").text("🦊").child(span().class("dot")))
                 .child(
                     div()
                         .child(strong().text("Léa"))
                         .child(small().text("en ligne")),
                 )
-                .child(div().class("phone-icons").text("📹 📞")),
+                .child(div().class("phone-icons").child(icon(VIDEO)).child(icon(CALL))),
         )
         .child(
             div()
@@ -167,25 +187,27 @@ fn phone() -> Element {
                 .child(div().class("e2e").text("🔒 Chiffré de bout en bout. Personne d'autre, pas même Talka, ne peut lire ces messages."))
                 .child(bubble(false, "Salut ! C'est quoi ton code Talka ? 😊", "09:41"))
                 .child(bubble(true, "K7Q2M-X9PRT, pas besoin de mon numéro 😉", "09:42"))
-                .child(bubble(false, "Ajouté ! On s'appelle ce soir ?", "09:42"))
                 .child(
                     div()
-                        .class("bubble out voice")
-                        .child(span().text("▶ ▂▃▅▇▅▃▂▃▅▆▃▂ 0:07"))
-                        .child(small().text("09:43").child(span().class("ticks").text(" ✓✓"))),
+                        .class("bubble in reacted")
+                        .child(span().text("Ajouté ! On s'appelle ce soir ?"))
+                        .child(small().text("09:42"))
+                        .child(span().class("reaction").text("❤️")),
                 )
                 .child(
                     div()
-                        .class("bubble in")
-                        .child(span().text("❤️ Parfait, à ce soir !"))
-                        .child(small().text("09:44")),
-                ),
+                        .class("bubble out voice")
+                        .child(span().class("play").child(icon(PLAY)))
+                        .child(wave)
+                        .child(small().text("0:07 · 09:43").child(span().class("ticks").text(" ✓✓"))),
+                )
+                .child(bubble(false, "Parfait, à ce soir !", "09:44")),
         )
         .child(
             div()
                 .class("phone-input")
                 .child(span().text("😊  Message"))
-                .child(span().class("mic").text("🎙")),
+                .child(span().class("mic").child(icon(MIC))),
         )
 }
 
@@ -416,13 +438,13 @@ pub fn home(site: &Site) -> Page {
                                 .child(row("Le contenu des messages", "Chiffré, illisible", "Chiffré, illisible"))
                                 .child(row("Qui écrit", "Personne, entre contacts (un premier message à un inconnu montre encore son auteur)", "Personne"))
                                 .child(row("À qui", "Le code du destinataire", "Une boîte aux lettres qui change chaque jour"))
-                                .child(row("Les notifications", "Pas de notification app fermée", "Un simple réveil, sans nom ni texte")),
+                                .child(row("Les notifications", "Un aperçu chiffré pour votre appareil : illisible", "Un aperçu chiffré pour votre appareil : illisible")),
                         ),
                 )
                 .child(
                     div()
                         .class("features roadmap")
-                        .child(milestone("1", "En cours", "🔔", "Notifications sans fuite", "Recevoir ses messages app fermée, sur l'ordinateur et l'iPhone. La notification ne contient rien : c'est votre appareil qui déchiffre et affiche."))
+                        .child(milestone("1", "Disponible", "🔔", "Notifications chiffrées", "App fermée, la notification montre qui écrit et quoi, « Léa : On se voit à 19 h ? ». Cet aperçu est chiffré par votre contact pour votre appareil : ni le relais, ni Google ou Apple ne peuvent le lire."))
                         .child(milestone("2", "Prévu", "📱", "Plusieurs appareils", "Le même compte sur l'iPhone et l'ordinateur, liés par un QR code. Chaque appareil a ses propres clés ; chaque message part chiffré pour chacun."))
                         .child(milestone("3", "Disponible", "🕶️", "Expéditeur scellé", "Le relais ne voit plus qui envoie : un jeton de remise, donné seulement à vos contacts, prouve qu'on a le droit d'écrire, sans dire qui l'on est."))
                         .child(milestone("4", "Prévu", "📮", "Boîtes aux lettres tournantes", "Entre contacts, les messages ne sont plus adressés à votre code mais à une boîte pseudonyme renouvelée chaque jour.")),
@@ -538,7 +560,7 @@ pub fn privacy(site: &Site) -> Page {
                 .child(p().class("lead").text("Talka est conçu pour savoir le moins de choses possible sur vous."))
                 .child(item("Pas de compte, pas de base de données", "Talka ne vous demande ni numéro, ni e-mail, ni mot de passe. Il n'y a pas de base de données : vos messages, contacts, photos, statuts et clés sont rangés sur votre appareil : dans votre navigateur (Memoire ORM, sur IndexedDB) ou dans l'app iPhone (SQLite, protégée par iOS). Ils y sont gardés chiffrés (AES-256), avec une clé que le navigateur ne laisse pas sortir ou que l'iPhone garde dans son trousseau : Talka les affiche en clair, mais une copie des fichiers ne montre rien. L'Apple Watch ne reçoit de l'iPhone qu'un résumé de vos discussions récentes, directement, sans passer par un serveur."))
                 .child(item("Ce que voit le relais", "Pour transmettre un message, le serveur voit le code du destinataire, la taille et l'heure du message chiffré ; il ne peut pas en lire le contenu. Entre contacts, il ne sait pas qui écrit (expéditeur scellé) : il voit seulement le code de l'expéditeur d'un tout premier message à quelqu'un, et votre adresse IP. Il voit aussi qui est en ligne et quels codes vous suivez (pour la présence). Il garde en mémoire vive vos clés publiques et votre paquet de clés de session, signé (pour que vos contacts puissent vous écrire) et l'heure de votre dernière connexion. Tout cela disparaît quand le serveur redémarre."))
-                .child(item("Notifications", "Si vous activez les notifications du navigateur, le relais garde en mémoire vive l'adresse que votre navigateur lui donne, et envoie au service de notifications de ce navigateur (Google, Mozilla, Apple ou Microsoft) un simple réveil, sans contenu ni expéditeur : votre appareil affiche « Nouveau message ». Ce service apprend seulement que vous avez reçu quelque chose, et quand. Désactivez les notifications, ou effacez vos données, et l'adresse est oubliée."))
+                .child(item("Notifications", "Si vous activez les notifications du navigateur, le relais garde en mémoire vive l'adresse que votre navigateur lui donne, et envoie au service de notifications de ce navigateur (Google, Mozilla, Apple ou Microsoft) un réveil qui porte l'aperçu du message (qui écrit, et quoi), chiffré par votre contact pour la clé de notification de votre navigateur : ni le relais ni ce service ne peuvent le lire, seul votre appareil le déchiffre. Ce service apprend seulement que vous avez reçu quelque chose, et quand. Désactivez les notifications, ou effacez vos données, et l'adresse est oubliée."))
                 .child(item("Messages en attente", "Un message destiné à quelqu'un qui n'est pas connecté attend, chiffré, en mémoire vive, au plus 30 jours. Il est effacé dès que le destinataire confirme l'avoir reçu."))
                 .child(item("Appels", "L'audio et la vidéo passent directement d'un appareil à l'autre. Pour établir la connexion, vos appareils peuvent contacter un serveur STUN public, qui voit votre adresse IP."))
                 .child(item("Effacer vos données", "Réglages → Supprimer toutes mes données : tout ce que Talka a rangé sur votre appareil est effacé. Pensez à exporter une sauvegarde avant, si vous voulez la garder."))
