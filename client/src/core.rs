@@ -1038,6 +1038,34 @@ pub async fn clear_chat(id: &str) {
     emit(Ev::Messages(id.to_owned()));
 }
 
+/// La recherche dans toutes les discussions : les messages qui contiennent
+/// `q` (déjà replié par `fold`), les plus récents d'abord, `limit` au plus.
+/// Ni messages système ou supprimés, ni capsule scellée, ni discussion bloquée.
+pub async fn search_messages(q: &str, limit: usize) -> Vec<Message> {
+    if q.chars().count() < 2 {
+        return Vec::new();
+    }
+    let (me, t) = (my_code(), now());
+    let mut found = Vec::new();
+    for chat in chats() {
+        if !chat.group && blocked(&chat.id) {
+            continue;
+        }
+        for m in store::messages_of(&chat.id, usize::MAX).await {
+            if m.kind != "system"
+                && !m.deleted
+                && !m.sealed_for(&me, t)
+                && crate::model::fold(&format!("{} {}", m.text, m.name)).contains(q)
+            {
+                found.push(m);
+            }
+        }
+    }
+    found.sort_by(|a, b| b.at.total_cmp(&a.at));
+    found.truncate(limit);
+    found
+}
+
 /// Ce qu'on lit d'un message sur une ligne (épingle, favoris) : son texte,
 /// sauf s'il est supprimé ou si c'est une capsule encore scellée pour soi ;
 /// sinon son aperçu (« ⏳ Capsule temporelle »…). Comme TalkaKit.

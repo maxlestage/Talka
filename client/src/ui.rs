@@ -15,7 +15,7 @@ use crate::crypto::{normalize, pretty, safety_number};
 use crate::dom::*;
 use crate::lock;
 use crate::media;
-use crate::model::{Chat, StatusItem, fold};
+use crate::model::{Chat, Message, StatusItem, fold};
 use crate::net::{self, State};
 use crate::sounds;
 use crate::store;
@@ -32,6 +32,8 @@ struct Ui {
     tab: String,
     filter: String,
     query: String,
+    /// Les messages trouvés pour une recherche (la requête, les messages).
+    found: Option<(String, Vec<Message>)>,
     archived: bool,
     lock: bool,
 }
@@ -712,10 +714,52 @@ fn search_box(placeholder: &str) -> El {
         .el();
     let i = input.clone();
     listen(&input, "input", move |_| {
-        with(|u| u.query = value(&i));
+        with(|u| {
+            u.query = value(&i);
+            u.found = None;
+        });
         spawn(render_side_body());
     });
     h("div.search-wrap").child(icon("search")).child(input)
+}
+
+/// Un message trouvé : sa discussion, sa date, et le passage ; un clic
+/// ouvre la discussion sur lui.
+fn found_item(m: &Message) -> Element {
+    let (chat, id) = (m.chat.clone(), m.id.clone());
+    let title = core::chat(&m.chat)
+        .map(|c| core::chat_title(&c))
+        .unwrap_or_default();
+    let who = if m.from == core::my_code() {
+        "Vous : ".to_owned()
+    } else if core::is_group(&m.chat) {
+        format!("{} : ", core::display_name(&m.from))
+    } else {
+        String::new()
+    };
+    h("button.chat-item.found-item")
+        .attr("type", "button")
+        .attr("role", "listitem")
+        .child(avatar(&m.chat, 40))
+        .child(
+            h("div.chat-item-main")
+                .child(
+                    h("div.chat-item-top")
+                        .child(h("span.chat-item-title").text(&title))
+                        .child(h("small").text(list_time(m.at))),
+                )
+                .child(h("div.chat-item-bottom").child(
+                    h("span.chat-item-preview").text(format!("{who}{}", core::readable(m))),
+                )),
+        )
+        .click(move || {
+            let (chat, id) = (chat.clone(), id.clone());
+            spawn(async move {
+                open_chat(&chat).await;
+                conv::reveal(&id);
+            })
+        })
+        .el()
 }
 
 fn render_chat_list() {
@@ -786,7 +830,28 @@ fn render_chat_list() {
                 })
                 .collect()
         };
-        let empty = items.is_empty() && extra.is_empty();
+        // Les messages de toutes les discussions : cherchés une fois par
+        // requête, en arrière-plan, puis affichés sous les discussions.
+        let messages: Vec<Message> = match with(|u| u.found.clone()) {
+            Some((key, found)) if key == q => found,
+            _ => {
+                if q.chars().count() >= 2 {
+                    with(|u| u.found = Some((q.clone(), Vec::new())));
+                    let key = q.clone();
+                    spawn(async move {
+                        let found = core::search_messages(&key, 40).await;
+                        let current = with(|u| fold(u.query.trim()));
+                        if current == key {
+                            with(|u| u.found = Some((key, found)));
+                            render_side_body().await;
+                        }
+                    });
+                }
+                Vec::new()
+            }
+        };
+        let found_items: Vec<Element> = messages.iter().map(found_item).collect();
+        let empty = items.is_empty() && extra.is_empty() && found_items.is_empty();
         let typed_code = normalize(&q).filter(|c| core::contact(c).is_none());
         let mut nodes: Vec<Child> =
             vec![search_box("Rechercher ou démarrer une discussion").into()];
@@ -829,6 +894,15 @@ fn render_chat_list() {
         if has_extra {
             nodes.push(h("div.list-title").text("Contacts").into());
             nodes.push(extra.into());
+        }
+        if !found_items.is_empty() {
+            nodes.push(h("div.list-title").text("Messages").into());
+            nodes.push(
+                h("div.chat-list")
+                    .attr("role", "list")
+                    .children(found_items)
+                    .into(),
+            );
         }
         if empty {
             let mut e = h("div.side-empty");
