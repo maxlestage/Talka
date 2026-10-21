@@ -321,13 +321,13 @@ final class SealedSenderTests: XCTestCase {
         let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
         let member = Identity.create()
         e.saveContact(Contact(code: member.code))
-        guard case let .profile(_, jeton, _, pj) = e.profileBody(for: member.code) else { return XCTFail() }
+        guard case let .profile(_, jeton, _, pj, _, _, _) = e.profileBody(for: member.code) else { return XCTFail() }
         XCTAssertTrue(pj)
         XCTAssertEqual(jeton.split(separator: ".").first.map(String.init), e.me.jetonNonce(for: member.code, epoch: 0))
         e.setBlocked(member.code, true)
-        guard case let .profile(_, none, _, _) = e.profileBody(for: member.code) else { return XCTFail() }
+        guard case let .profile(_, none, _, _, _, _, _) = e.profileBody(for: member.code) else { return XCTFail() }
         XCTAssertEqual(none, "")
-        guard case let .profile(_, stranger, _, _) = e.profileBody(for: Identity.create().code) else { return XCTFail() }
+        guard case let .profile(_, stranger, _, _, _, _, _) = e.profileBody(for: Identity.create().code) else { return XCTFail() }
         XCTAssertEqual(stranger, "", "quelqu'un qu'on ne connaît pas du tout")
     }
 
