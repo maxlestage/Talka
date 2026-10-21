@@ -1221,3 +1221,116 @@ html.js .features .reveal:nth-child(4n + 4) {
     transform: none;
   }
 }
+
+/* ---------- Talka v4 : le tableau « ce que voit le relais » et les étapes ---------- */
+
+.compare {
+  width: 100%;
+  margin: 2rem 0 1.5rem;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.compare th,
+.compare td {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid rgba(0, 128, 105, 0.15);
+  text-align: left;
+  vertical-align: top;
+}
+
+.compare thead th {
+  color: var(--green);
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.compare tbody th {
+  font-weight: 600;
+}
+
+.compare td.next {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.roadmap {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.milestone-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.milestone-state {
+  padding: 0.2em 0.7em;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 128, 105, 0.25);
+  color: var(--green);
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.milestone-state.now {
+  background: var(--green);
+  color: #fff;
+}
+
+@media (max-width: 900px) {
+  .roadmap {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .roadmap {
+    grid-template-columns: 1fr;
+  }
+
+  .compare,
+  .compare tbody,
+  .compare tr,
+  .compare th,
+  .compare td {
+    display: block;
+  }
+
+  .compare thead {
+    display: none;
+  }
+
+  .compare tr {
+    padding: 0.75rem 0;
+    border-bottom: 1px solid rgba(0, 128, 105, 0.15);
+  }
+
+  .compare th,
+  .compare td {
+    padding: 0.15rem 0;
+    border: 0;
+  }
+
+  .compare td::before {
+    display: inline-block;
+    min-width: 6.5rem;
+    color: var(--muted, #667781);
+    font-size: 0.8rem;
+  }
+
+  .compare td:nth-of-type(1)::before {
+    content: "Aujourd'hui : ";
+  }
+
+  .compare td:nth-of-type(2)::before {
+    content: "Avec la v4 : ";
+  }
+}
+
+.roadmap + p {
+  margin-top: 1.25rem;
+}
