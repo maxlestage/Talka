@@ -61,7 +61,9 @@ struct RootView: View {
     var body: some View {
         ZStack(alignment: .top) {
             Group {
-                if model.engine == nil {
+                if model.vaultLocked {
+                    VaultLockView()
+                } else if model.engine == nil {
                     WelcomeView()
                 } else {
                     MainView()

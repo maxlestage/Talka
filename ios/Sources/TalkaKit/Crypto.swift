@@ -9,6 +9,7 @@
 // - le code de verrouillage et la sauvegarde : PBKDF2-SHA256.
 
 import Foundation
+import BrocolisProto
 
 #if canImport(CryptoKit)
 import CryptoKit
@@ -377,22 +378,49 @@ public enum TalkaCrypto {
         #endif
     }
 
+    /// Argon2id, comme le navigateur (`crypto::argon2id`) : 19 Mio, 2 passes
+    /// pour le code ; 46 Mio, 1 passe pour la sauvegarde.
+    public static let argonM: UInt32 = 19_456, argonT: UInt32 = 2
+    public static let backupM: UInt32 = 47_104, backupT: UInt32 = 1
+    /// Les nouveaux codes : 6 chiffres au moins (4 ou 5 restent acceptés).
+    public static let pinMin = 6, pinMax = 12
+
+    public static func argon2id(_ secret: String, salt: Data, m: UInt32, t: UInt32) -> Data? {
+        (try? Argon2.hash(variant: .id, password: Array(secret.utf8), salt: Array(salt),
+                          memoryKiB: m, passes: t, lanes: 1, length: 32)).map { Data($0) }
+    }
+
     public static func hashPin(_ pin: String) -> PinHash {
         let salt = randomBytes(16)
-        return PinHash(salt: b64(salt), hash: b64(pbkdf2(pin, salt: salt, rounds: pinRounds)))
+        return PinHash(salt: b64(salt), hash: b64(argon2id(pin, salt: salt, m: argonM, t: argonT) ?? Data()),
+                       v: 2, m: argonM, t: argonT)
+    }
+
+    /// Comparaison en temps constant.
+    static func same(_ a: Data, _ b: Data) -> Bool {
+        a.count == b.count && zip(a, b).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
     }
 
     public static func checkPin(_ pin: String, _ stored: PinHash) -> Bool {
-        guard let salt = unb64(stored.salt) else { return false }
-        return b64(pbkdf2(pin, salt: salt, rounds: pinRounds)) == stored.hash
+        guard let salt = unb64(stored.salt), let hash = unb64(stored.hash) else { return false }
+        switch stored.v {
+        case 0, 1:
+            return same(pbkdf2(pin, salt: salt, rounds: pinRounds), hash)
+        case 2 where (8...(1 << 20)).contains(stored.m) && (1...10).contains(stored.t):
+            return argon2id(pin, salt: salt, m: stored.m, t: stored.t).map { same($0, hash) } ?? false
+        default:
+            return false
+        }
     }
 
     public static func encryptBackup(password: String, plain: String) -> Backup? {
         let salt = randomBytes(16)
-        let key = SymmetricKey(data: pbkdf2(password, salt: salt, rounds: backupRounds))
+        guard let raw = argon2id(password, salt: salt, m: backupM, t: backupT) else { return nil }
+        let key = SymmetricKey(data: raw)
         let nonce = AES.GCM.Nonce()
         guard let box = try? AES.GCM.seal(Data(plain.utf8), using: key, nonce: nonce) else { return nil }
-        return Backup(talka: 2, salt: b64(salt), iv: b64(Data(nonce)), data: b64(box.ciphertext + box.tag))
+        return Backup(talka: 3, salt: b64(salt), iv: b64(Data(nonce)), data: b64(box.ciphertext + box.tag),
+                      m: backupM, t: backupT)
     }
 
     public enum BackupError: Error, LocalizedError {
@@ -406,11 +434,20 @@ public enum TalkaCrypto {
     }
 
     public static func decryptBackup(password: String, file: Backup) throws -> String {
-        guard file.talka == 2, let salt = unb64(file.salt), let iv = unb64(file.iv),
+        guard let salt = unb64(file.salt), let iv = unb64(file.iv),
               let data = unb64(file.data), data.count >= 16,
               let nonce = try? AES.GCM.Nonce(data: iv)
         else { throw BackupError.notBackup }
-        let key = SymmetricKey(data: pbkdf2(password, salt: salt, rounds: backupRounds))
+        let key: SymmetricKey
+        switch file.talka {
+        case 2:
+            key = SymmetricKey(data: pbkdf2(password, salt: salt, rounds: backupRounds))
+        case 3 where (8...(1 << 21)).contains(file.m) && (1...10).contains(file.t):
+            guard let raw = argon2id(password, salt: salt, m: file.m, t: file.t) else { throw BackupError.notBackup }
+            key = SymmetricKey(data: raw)
+        default:
+            throw BackupError.notBackup
+        }
         guard let box = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: data.dropLast(16), tag: data.suffix(16)),
               let plain = try? AES.GCM.open(box, using: key)
         else { throw BackupError.wrongPassword }
@@ -423,6 +460,34 @@ public enum TalkaCrypto {
 public struct PinHash: Codable, Equatable, Sendable {
     public var salt: String
     public var hash: String
+    /// 2 : Argon2id (`m`, `t`) ; 0 : PBKDF2 (les codes d'avant).
+    public var v: UInt32 = 0
+    public var m: UInt32 = 0
+    public var t: UInt32 = 0
+
+    public init(salt: String, hash: String, v: UInt32 = 0, m: UInt32 = 0, t: UInt32 = 0) {
+        self.salt = salt; self.hash = hash; self.v = v; self.m = m; self.t = t
+    }
+
+    enum CodingKeys: String, CodingKey { case salt, hash, v, m, t }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        salt = try c.decode(String.self, forKey: .salt); hash = try c.decode(String.self, forKey: .hash)
+        v = c.v(.v, 0); m = c.v(.m, 0); t = c.v(.t, 0)
+    }
+
+    /// Comme le navigateur : `v`, `m`, `t` seulement s'il y en a.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(salt, forKey: .salt); try c.encode(hash, forKey: .hash)
+        if v != 0 { try c.encode(v, forKey: .v) }
+        if m != 0 { try c.encode(m, forKey: .m) }
+        if t != 0 { try c.encode(t, forKey: .t) }
+    }
+
+    /// Un code d'avant (PBKDF2), à rehacher.
+    public var isOld: Bool { v < 2 }
 }
 
 /// Une sauvegarde chiffrée : le même fichier que celle du navigateur.
@@ -431,4 +496,28 @@ public struct Backup: Codable, Equatable, Sendable {
     public var salt: String
     public var iv: String
     public var data: String
+    /// Argon2id (`talka` 3) : mémoire (Kio) et passes.
+    public var m: UInt32 = 0
+    public var t: UInt32 = 0
+
+    public init(talka: Int, salt: String, iv: String, data: String, m: UInt32 = 0, t: UInt32 = 0) {
+        self.talka = talka; self.salt = salt; self.iv = iv; self.data = data; self.m = m; self.t = t
+    }
+
+    enum CodingKeys: String, CodingKey { case talka, salt, iv, data, m, t }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        talka = try c.decode(Int.self, forKey: .talka); salt = try c.decode(String.self, forKey: .salt)
+        iv = try c.decode(String.self, forKey: .iv); data = try c.decode(String.self, forKey: .data)
+        m = c.v(.m, 0); t = c.v(.t, 0)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(talka, forKey: .talka); try c.encode(salt, forKey: .salt)
+        try c.encode(iv, forKey: .iv); try c.encode(data, forKey: .data)
+        if m != 0 { try c.encode(m, forKey: .m) }
+        if t != 0 { try c.encode(t, forKey: .t) }
+    }
 }
