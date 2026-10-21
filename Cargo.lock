@@ -1728,9 +1728,11 @@ dependencies = [
 name = "talka"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "base64 0.22.1",
  "futures-util",
  "getrandom 0.2.17",
+ "hkdf 0.12.4",
  "p256",
  "paquets",
  "qrcode",
