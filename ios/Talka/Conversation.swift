@@ -186,6 +186,12 @@ struct ConversationView: View {
                 e.activeChat = chatId
                 e.markRead(chatId)
                 if text.isEmpty { text = chat.draft }
+                // Arrivé par « Répondre en privé » : la réponse est prête.
+                if let m = model.privateReply, m.from == chatId {
+                    model.privateReply = nil
+                    reply = m
+                    focused = true
+                }
             }
             .onDisappear {
                 if e.activeChat == chatId { e.activeChat = nil }
@@ -305,7 +311,7 @@ struct ConversationView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(e.displayName(m.from)).font(.caption.bold())
                         // Une capsule encore scellée ne se lit pas non plus dans l'épingle.
-                        Text(m.kind == "text" && !m.sealed(for: e.me.code) ? Brocolis.masked(m.text) : Engine.preview(m))
+                        Text(e.readable(m))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -389,6 +395,16 @@ struct ConversationView: View {
                 }
             }
             Button { reply = m; focused = true } label: { Label("Répondre", systemImage: "arrowshape.turn.up.left") }
+            // Dans un groupe, sur le message d'un autre membre : lui répondre
+            // dans votre discussion à deux, sa phrase citée (comme le navigateur).
+            if chat.group, !mine, m.from != "system", !e.blocked(m.from) {
+                Button {
+                    model.privateReply = m
+                    model.openChat(m.from)
+                } label: {
+                    Label("Répondre en privé", systemImage: "person.crop.circle")
+                }
+            }
             if !m.text.isEmpty, !sealed {
                 Button { UIPasteboard.general.string = m.text } label: { Label("Copier", systemImage: "doc.on.doc") }
             }
@@ -433,7 +449,7 @@ struct ConversationView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(editing != nil ? "Modifier le message" : e.displayName(m.from))
                                 .font(.caption.bold()).foregroundStyle(Color.talkaGreen)
-                            Text(m.kind == "text" ? Brocolis.masked(m.text) : Engine.preview(m)).font(.caption).lineLimit(2).foregroundStyle(.secondary)
+                            Text(e.readable(m)).font(.caption).lineLimit(2).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button {
