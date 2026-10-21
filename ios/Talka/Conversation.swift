@@ -29,6 +29,9 @@ struct ConversationView: View {
     @State private var search: String?
     /// Le message vers lequel faire défiler (bandeau de l'épingle).
     @State private var jumpTo: String?
+    /// « N messages non lus » : le premier non lu à l'ouverture, et leur nombre
+    /// (comme le navigateur).
+    @State private var unreadMark: (id: String, count: Int)?
     /// Le choix des clés Brocolis 🥦 de la discussion.
     @State private var choosingBrocolis = false
     /// La pluie de brocolis en cours (l'œuf de Pâques 🥦).
@@ -75,6 +78,9 @@ struct ConversationView: View {
                                         .background(Color(.systemBackground).opacity(0.9), in: .capsule)
                                         .padding(.vertical, 8)
                                 }
+                                if let mark = unreadMark, mark.id == m.id, query.isEmpty {
+                                    UnreadSeparator(count: mark.count).id("unread-separator")
+                                }
                                 let first = i == 0 || messages[i - 1].from != m.from || messages[i - 1].kind == "system"
                                 MessageRow(engine: e, chat: chat, message: m, first: first, onReply: { reply = m; focused = true },
                                            onOpen: { viewing = m }, onScrollTo: { id in withAnimation { proxy.scrollTo(id, anchor: .center) } })
@@ -97,7 +103,15 @@ struct ConversationView: View {
                         }
                     }
                     .onAppear {
-                        if let id = messages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                        // `chat` est celui d'avant « lu » : ses non-lus d'avant l'ouverture.
+                        let n = chat.unread
+                        if !loaded, n > 0, messages.count >= n {
+                            unreadMark = (messages[messages.count - n].id, n)
+                            // Le bandeau s'affiche, puis la discussion s'ouvre sur lui.
+                            DispatchQueue.main.async { proxy.scrollTo("unread-separator", anchor: .top) }
+                        } else if let id = messages.last?.id {
+                            proxy.scrollTo(id, anchor: .bottom)
+                        }
                         loaded = true
                     }
                     .onChange(of: jumpTo) { _, id in
@@ -620,6 +634,24 @@ struct ConversationView: View {
 }
 
 // MARK: Une bulle
+
+/// « 3 messages non lus » : là où commencent les messages arrivés depuis la
+/// dernière visite (le même bandeau que dans le navigateur).
+struct UnreadSeparator: View {
+    let count: Int
+
+    var body: some View {
+        Text(count > 1 ? "\(count) messages non lus" : "1 message non lu")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 3)
+            .background(Color(.systemBackground).opacity(0.75))
+            .padding(.vertical, 6)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
 
 struct MessageRow: View {
     let engine: Engine
