@@ -369,6 +369,39 @@ pub struct Content {
     pub open_at: f64,
 }
 
+/// Un groupe ne change que par ses admins ; un membre peut seulement le
+/// quitter (et, s'il était le dernier admin, le premier membre restant le
+/// devient). Une version ne saute pas de plus de `GROUP_V_STEP` : personne
+/// ne la bloque en l'envoyant au bout des nombres.
+pub const GROUP_V_STEP: u64 = 1_000;
+
+impl Chat {
+    /// `from` peut-il appliquer cette description du groupe ?
+    pub fn accepts(&self, from: &str, grp: &GroupInfo) -> bool {
+        if !self.group || grp.v <= self.v || grp.v > self.v.saturating_add(GROUP_V_STEP) {
+            return false;
+        }
+        if !self.members.iter().any(|m| m == from) {
+            return false;
+        }
+        if self.admins.iter().any(|a| a == from) {
+            return true;
+        }
+        // Un simple membre : seulement son départ.
+        let members: Vec<&String> = self.members.iter().filter(|m| *m != from).collect();
+        let mut admins: Vec<&String> = self.admins.iter().filter(|a| *a != from).collect();
+        if admins.is_empty()
+            && let Some(first) = members.first()
+        {
+            admins = vec![*first];
+        }
+        grp.members.iter().collect::<Vec<_>>() == members
+            && grp.admins.iter().collect::<Vec<_>>() == admins
+            && grp.name == self.name
+            && grp.avatar == self.avatar
+    }
+}
+
 /// Ce qui voyage, chiffré, d'un appareil à l'autre.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "kebab-case")]
@@ -770,5 +803,66 @@ mod tests {
                 .apercu("X", "Léa", preview)
                 .is_none()
         );
+    }
+
+    fn group(members: &[&str], admins: &[&str]) -> Chat {
+        Chat {
+            id: "g:g1".into(),
+            group: true,
+            name: "Les amis".into(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+            admins: admins.iter().map(|m| m.to_string()).collect(),
+            v: 5,
+            ..Default::default()
+        }
+    }
+
+    fn info(c: &Chat, v: u64) -> GroupInfo {
+        GroupInfo {
+            id: "g1".into(),
+            name: c.name.clone(),
+            members: c.members.clone(),
+            admins: c.admins.clone(),
+            avatar: c.avatar.clone(),
+            v,
+        }
+    }
+
+    /// Un membre (ou un ancien membre) ne prend pas un groupe en main.
+    #[test]
+    fn only_admins_change_a_group() {
+        let c = group(&["A", "B", "C"], &["A"]);
+        // L'admin : oui.
+        let mut by_admin = info(&c, 6);
+        by_admin.members.push("D".into());
+        assert!(c.accepts("A", &by_admin));
+        // Un membre qui se fait admin, ou exclut les autres : non.
+        let mut coup = info(&c, 6);
+        coup.admins = vec!["B".into()];
+        assert!(!c.accepts("B", &coup));
+        let mut purge = info(&c, 6);
+        purge.members = vec!["B".into()];
+        assert!(!c.accepts("B", &purge));
+        // Un ancien membre, ou un inconnu : non.
+        assert!(!c.accepts("Z", &by_admin));
+        // Une version au bout des nombres, ou pas plus récente : non.
+        assert!(!c.accepts("A", &info(&c, u64::MAX)));
+        assert!(!c.accepts("A", &info(&c, 5)));
+        // Un membre qui part : oui (et seulement ça).
+        let mut leave = info(&c, 6);
+        leave.members = vec!["A".into(), "C".into()];
+        assert!(c.accepts("B", &leave));
+        leave.name = "À moi".into();
+        assert!(!c.accepts("B", &leave));
+        // Le dernier admin part : le premier membre restant le devient.
+        let mut last = info(&c, 6);
+        last.members = vec!["B".into(), "C".into()];
+        last.admins = vec!["B".into()];
+        assert!(c.accepts("A", &last));
+        let solo = group(&["A", "B"], &["B"]);
+        let mut gone = info(&solo, 6);
+        gone.members = vec!["A".into()];
+        gone.admins = vec!["A".into()];
+        assert!(solo.accepts("B", &gone));
     }
 }

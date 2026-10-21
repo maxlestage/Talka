@@ -1093,10 +1093,15 @@ public final class Engine {
         if repair { repairV3(from) }
     }
 
-    func groupChat(_ from: String, _ grp: GroupInfo, at: Double) -> Chat? {
+    /// La discussion d'un groupe, créée ou mise à jour par `grp` ; `applied` :
+    /// cette description a été appliquée (un groupe ne change que par ses
+    /// admins, voir `Chat.accepts`).
+    func groupChat(_ from: String, _ grp: GroupInfo, at: Double) -> (chat: Chat?, applied: Bool) {
         let id = "g:\(grp.id)"
         guard var c = chats[id] else {
-            guard grp.members.contains(me.code) else { return nil }
+            // Un nouveau groupe : créé par un de ses admins, qui nous y met.
+            guard grp.members.contains(me.code), grp.admins.contains(from), grp.members.contains(from)
+            else { return (nil, false) }
             var c = Chat(id: id)
             c.group = true
             c.name = grp.name; c.avatar = grp.avatar; c.members = grp.members; c.admins = grp.admins
@@ -1104,15 +1109,14 @@ public final class Engine {
             saveChat(c)
             systemMessage(id, "\(displayName(from)) vous a ajouté au groupe « \(grp.name) ».", at: at)
             relay.watch(grp.members.filter { $0 != me.code })
-            return c
+            return (c, true)
         }
-        if grp.v > c.v {
-            let wasIn = c.members.contains(me.code)
-            c.name = grp.name; c.avatar = grp.avatar; c.members = grp.members; c.admins = grp.admins; c.v = grp.v
-            if grp.members.contains(me.code) { c.left = false } else if wasIn { c.left = true }
-            saveChat(c)
-        }
-        return c
+        guard c.accepts(from, grp) else { return (c, false) }
+        let wasIn = c.members.contains(me.code)
+        c.name = grp.name; c.avatar = grp.avatar; c.members = grp.members; c.admins = grp.admins; c.v = grp.v
+        if grp.members.contains(me.code) { c.left = false } else if wasIn { c.left = true }
+        saveChat(c)
+        return (c, true)
     }
 
     func handle(_ from: String, _ wire: Wire, ts: Double, live: Bool) {
@@ -1183,19 +1187,24 @@ public final class Engine {
 
         // Le reste appartient à une discussion.
         var chat: Chat?
+        var applied = false
         if let grp = wire.grp {
             // L'annonce « vous a ajouté » se range juste avant le premier message.
             var at = ts
             if case let .msg(_, mAt, _, _) = wire.body { at = min(mAt, ts) - 1 }
-            chat = groupChat(from, grp, at: at)
+            (chat, applied) = groupChat(from, grp, at: at)
         } else if let g = wire.g {
             chat = chats["g:\(g)"]
         } else {
+            // Un message de groupe hors d'un groupe : ignoré.
+            if case .group = wire.body { return }
             chat = ensureDirectChat(from)
         }
         guard var c = chat else { return }
+        // Dans un groupe, seuls ses membres parlent ; qui vient de le quitter
+        // (sa description appliquée à l'instant) l'annonce encore.
         if c.group, !c.members.contains(from) {
-            if case .group = wire.body {} else { return }
+            guard applied, case .group(let op, _) = wire.body, op == "leave" else { return }
         }
 
         switch wire.body {
@@ -1268,9 +1277,10 @@ public final class Engine {
         case let .group(op, note):
             if op == "leave" {
                 systemMessage(c.id, "\(displayName(from)) a quitté le groupe.", at: ts)
-            } else if op != "create", !note.isEmpty {
-                let text = note.hasPrefix("Vous avez") ? "\(displayName(from)) a" + note.dropFirst("Vous avez".count) : note
-                systemMessage(c.id, text, at: ts)
+            } else if op != "create", applied, c.group, note.hasPrefix("Vous avez ") {
+                // Seulement les annonces que Talka écrit, d'un admin dont la
+                // mise à jour vient d'être appliquée : pas de faux message système.
+                systemMessage(c.id, "\(displayName(from)) a " + note.dropFirst("Vous avez ".count).prefix(200), at: ts)
             }
         default:
             break

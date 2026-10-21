@@ -2011,13 +2011,20 @@ async fn receive(env: &Value) {
     handle(&from, wire, ts, env["live"].as_bool().unwrap_or(false)).await;
 }
 
-async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> Option<Chat> {
+/// La discussion d'un groupe, créée ou mise à jour par `grp` ; `true` si
+/// cette description a été appliquée (un groupe ne change que par ses
+/// admins, voir `Chat::accepts`).
+async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool) {
     let id = format!("g:{}", grp.id);
     let me = my_code();
     match chat(&id) {
         None => {
-            if !grp.members.contains(&me) {
-                return None;
+            // Un nouveau groupe : créé par un de ses admins, qui nous y met.
+            if !grp.members.contains(&me)
+                || !grp.admins.iter().any(|a| a == from)
+                || !grp.members.iter().any(|m| m == from)
+            {
+                return (None, false);
             }
             let c = Chat {
                 id: id.clone(),
@@ -2050,9 +2057,9 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> Option<Chat> {
                     .cloned()
                     .collect::<Vec<_>>(),
             );
-            Some(c)
+            (Some(c), true)
         }
-        Some(mut c) if grp.v > c.v => {
+        Some(mut c) if c.accepts(from, grp) => {
             let was_in = c.members.contains(&me);
             c.name = grp.name.clone();
             c.avatar = grp.avatar.clone();
@@ -2065,9 +2072,9 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> Option<Chat> {
                 c.left = true;
             }
             save_chat(c.clone()).await;
-            Some(c)
+            (Some(c), true)
         }
-        other => other,
+        other => (other, false),
     }
 }
 
@@ -2186,7 +2193,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
     }
 
     // Le reste appartient à une discussion.
-    let c = match (&wire.grp, &wire.g) {
+    let (c, applied) = match (&wire.grp, &wire.g) {
         (Some(grp), _) => {
             // L'annonce « vous a ajouté » se range juste avant le premier message.
             let at = match &wire.body {
@@ -2195,11 +2202,16 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             };
             group_chat(from, grp, at).await
         }
-        (None, Some(g)) => chat(&format!("g:{g}")),
-        (None, None) => Some(ensure_direct_chat(from).await),
+        (None, Some(g)) => (chat(&format!("g:{g}")), false),
+        // Un message de groupe hors d'un groupe : ignoré.
+        (None, None) if matches!(wire.body, Body::Group { .. }) => return,
+        (None, None) => (Some(ensure_direct_chat(from).await), false),
     };
     let Some(mut c) = c else { return };
-    if c.group && !c.members.iter().any(|x| x == from) && !matches!(wire.body, Body::Group { .. }) {
+    // Dans un groupe, seuls ses membres parlent ; qui vient de le quitter
+    // (sa description appliquée à l'instant) l'annonce encore.
+    let leaving = applied && matches!(&wire.body, Body::Group { op, .. } if op == "leave");
+    if c.group && !c.members.iter().any(|x| x == from) && !leaving {
         return;
     }
 
@@ -2381,12 +2393,14 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                     ts,
                 )
                 .await;
-            } else if op != "create" && !note.is_empty() {
-                let note = match note.strip_prefix("Vous avez") {
-                    Some(rest) => format!("{} a{rest}", display_name(from)),
-                    None => note,
-                };
-                system_message(&c.id, &note, ts).await;
+            } else if op != "create" && applied && c.group {
+                // Seulement les annonces que Talka écrit (« Vous avez ajouté
+                // Bob »), d'un admin dont la mise à jour vient d'être
+                // appliquée : pas de faux message système.
+                if let Some(rest) = note.strip_prefix("Vous avez ") {
+                    let rest: String = rest.chars().take(200).collect();
+                    system_message(&c.id, &format!("{} a {rest}", display_name(from)), ts).await;
+                }
             }
             emit(Ev::Chats);
         }
