@@ -179,6 +179,29 @@ final class CompatTests: XCTestCase {
         XCTAssertNil(TalkaCode.fingerprint(in: "https://talka.example/c/\(a.code)"))
     }
 
+    /// La clé de l'appareil chiffrée par le code : celle du navigateur
+    /// s'ouvre sur l'iPhone, et inversement ; un mauvais code n'ouvre rien.
+    func testDeviceKeyLockedByCode() throws {
+        let cle = try XCTUnwrap(v["cle"] as? [String: Any])
+        let code = try XCTUnwrap(cle["code"] as? String)
+        let lock = StoreVault.CodeLock(salt: try XCTUnwrap(cle["salt"] as? String),
+                                       m: UInt32(try XCTUnwrap(cle["m"] as? Int)),
+                                       t: UInt32(try XCTUnwrap(cle["t"] as? Int)),
+                                       data: try XCTUnwrap(cle["locked"] as? String))
+        let device = try XCTUnwrap(unb64(try XCTUnwrap(cle["device"] as? String)))
+        let key = try XCTUnwrap(StoreVault.unwrap(lock, code: code))
+        XCTAssertEqual(key.withUnsafeBytes { Data($0) }, device)
+        XCTAssertNil(StoreVault.unwrap(lock, code: "147036"))
+        // Dans l'autre sens.
+        let mine = try XCTUnwrap(StoreVault.wrap(SymmetricKey(data: device), code: "963852"))
+        XCTAssertEqual(StoreVault.unwrap(mine, code: "963852")?.withUnsafeBytes { Data($0) }, device)
+        XCTAssertNil(StoreVault.unwrap(mine, code: code))
+        // Des réglages d'Argon2id absurdes ne font rien tourner.
+        var absurd = mine
+        absurd.m = 1 << 30
+        XCTAssertNil(StoreVault.unwrap(absurd, code: "963852"))
+    }
+
     func testPinAndBackup() throws {
         let pin = try XCTUnwrap(v["pin"] as? [String: Any])
         let hash = try JSONDecoder().decode(PinHash.self, from: JSONSerialization.data(withJSONObject: pin["hash"]!))

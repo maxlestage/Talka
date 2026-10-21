@@ -40,8 +40,12 @@ struct ConversationView: View {
     /// La pluie de brocolis en cours (l'œuf de Pâques 🥦).
     @State private var brocolis: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// iPad : la discussion est la colonne de droite (la liste reste à côté).
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @FocusState private var focused: Bool
     @FocusState private var searchFocused: Bool
+    /// La largeur de la discussion (sur iPad, pas celle de l'écran).
+    @State private var width: CGFloat = 0
 
     var body: some View {
         if let e = model.engine, let chat = e.chat(chatId) {
@@ -144,6 +148,13 @@ struct ConversationView: View {
             // Le fond couvre tout l'écran, sous la barre du haut et la zone de
             // saisie : pas de bande vide quand la photo n'a pas la bonne forme.
             .background { wallpaper(e, chat).ignoresSafeArea() }
+            .background {
+                GeometryReader { g in
+                    Color.clear
+                        .onAppear { width = g.size.width }
+                        .onChange(of: g.size.width) { _, w in width = w }
+                }
+            }
             .overlay {
                 if let id = brocolis {
                     BrocoliRain()
@@ -172,7 +183,7 @@ struct ConversationView: View {
                         // Toute la place entre le bouton retour et « ⋯ » (le titre
                         // est centré : 75 points de chaque côté pour eux), sans
                         // passer dessous.
-                        .frame(width: max(160, UIScreen.main.bounds.width - 150), alignment: .leading)
+                        .frame(width: max(160, (width > 0 ? width : UIScreen.main.bounds.width) - 150), alignment: .leading)
                     }
                     .foregroundStyle(.primary)
                     .accessibilityLabel("Infos de \(e.title(chat))")
@@ -215,7 +226,9 @@ struct ConversationView: View {
                     .accessibilityLabel("Plus d'options")
                 }
             }
-            .toolbar(.hidden, for: .tabBar)
+            // Sur iPhone, la discussion prend tout l'écran ; sur iPad, les
+            // onglets restent là.
+            .toolbar(sizeClass == .regular ? .automatic : .hidden, for: .tabBar)
             .sheet(item: Binding(get: { exported.map(SharedURL.init) }, set: { exported = $0?.url })) { shared in
                 ActivityView(items: [shared.url]).presentationDetents([.medium, .large])
             }
@@ -554,6 +567,13 @@ struct ConversationView: View {
                             .onChange(of: text) { _, t in
                                 if editing == nil { e.setTyping(chatId, !t.isEmpty) }
                             }
+                            // Un clavier (iPad, Mac) : Entrée envoie, Maj + Entrée va à la
+                            // ligne (Réglages → Entrée pour envoyer, comme le navigateur).
+                            .onKeyPress(keys: [.return]) { press in
+                                guard e.settings.enterSends, !press.modifiers.contains(.shift) else { return .ignored }
+                                submit(e)
+                                return .handled
+                            }
                         // La galerie à portée de pouce, comme WhatsApp.
                         if text.isEmpty && editing == nil {
                             Button { pickingPhotos = true } label: {
@@ -772,6 +792,8 @@ struct MessageRow: View {
                     }
                 }
                 .padding(.bottom, m.reactions.isEmpty ? 0 : 6)
+                // Sur iPad, une bulle ne s'étire pas sur toute la largeur.
+                .frame(maxWidth: 560, alignment: mine ? .trailing : .leading)
                 if !mine { Spacer(minLength: 50) }
             }
             .padding(.top, first ? 6 : 0)

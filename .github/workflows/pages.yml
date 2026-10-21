@@ -6,7 +6,7 @@
 # L'adresse du relais vient, dans l'ordre :
 #   1. de la variable TALKA_API_URL (Settings → Secrets and variables → Actions) ;
 #   2. sinon de l'app Heroku (secret HEROKU_API_KEY + variable HEROKU_APP_NAME) ;
-#   3. sinon l'application demande l'adresse du serveur au premier lancement.
+#   3. sinon le relais officiel (client/src/net.rs, `OFFICIAL`).
 #
 # Côté serveur, la variable TALKA_ALLOWED_ORIGINS doit contenir l'adresse de
 # GitHub Pages (https://maxlestage.github.io par défaut).

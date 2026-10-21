@@ -30,153 +30,184 @@ struct ChatsTab: View {
         }
     }
 
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
     var body: some View {
         @Bindable var model = model
-        NavigationStack(path: $model.path) {
-            if let e = model.engine {
-                List {
-                    if e.netState != .online {
-                        // Le serveur est nommé : une adresse mal saisie se voit et se corrige.
-                        Button { model.tab = .settings } label: {
-                            Label {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(e.netState == .connecting ? "Connexion…" : "Hors ligne : les messages partiront au retour du réseau.")
-                                    Text("Serveur : \(e.relay.server.host ?? e.relay.server.absoluteString) · Réglages")
-                                        .font(.caption2)
-                                }
-                            } icon: {
-                                Image(systemName: "wifi.slash")
-                            }
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        }
-                        .accessibilityHint("Ouvre les réglages pour vérifier le serveur")
-                    }
-                    Picker("Filtre", selection: $filter) {
-                        ForEach(Filter.allCases, id: \.self) { Text($0.rawValue) }
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowSeparator(.hidden)
-                    ForEach(chats(e)) { chat in
-                        NavigationLink(value: chat.id) {
-                            ChatRow(engine: e, chat: chat)
-                        }
-                        .swipeActions(edge: .leading) {
-                            Button {
-                                e.updateChat(chat.id) {
-                                    if $0.unread > 0 || $0.markedUnread {
-                                        $0.unread = 0; $0.markedUnread = false; $0.mentioned = false
-                                    } else { $0.markedUnread = true }
-                                }
-                                if chat.unread > 0 { e.markRead(chat.id) }
-                            } label: {
-                                Label(chat.unread > 0 || chat.markedUnread ? "Lu" : "Non lu",
-                                      systemImage: chat.unread > 0 || chat.markedUnread ? "checkmark.message" : "message.badge")
-                            }
-                            .tint(.blue)
-                            Button {
-                                e.updateChat(chat.id) { $0.pinned.toggle() }
-                            } label: {
-                                Label(chat.pinned ? "Désépingler" : "Épingler", systemImage: chat.pinned ? "pin.slash" : "pin")
-                            }
-                            .tint(.orange)
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) { e.deleteChat(chat.id) } label: { Label("Supprimer", systemImage: "trash") }
-                            Button {
-                                e.updateChat(chat.id) { $0.archived.toggle() }
-                            } label: {
-                                Label(chat.archived ? "Désarchiver" : "Archiver", systemImage: "archivebox")
-                            }
-                            .tint(.gray)
-                            Button {
-                                if chat.muted { e.mute(chat.id, seconds: 0) } else { muting = chat.id }
-                            } label: {
-                                Label(chat.muted ? "Son" : "Silence", systemImage: chat.muted ? "bell" : "bell.slash")
-                            }
-                            .tint(.indigo)
-                        }
-                    }
-                    // La recherche trouve aussi les messages de toutes les
-                    // discussions (comme le navigateur).
-                    let found = e.searchMessages(query)
-                    if !found.isEmpty {
-                        Section("Messages") {
-                            ForEach(found, id: \.key) { m in
-                                Button {
-                                    model.reveal = m.id
-                                    model.openChat(m.chat)
-                                } label: {
-                                    FoundRow(engine: e, message: m)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                }
-                .listStyle(.plain)
-                .overlay {
-                    if chats(e).isEmpty && e.searchMessages(query).isEmpty {
+        if sizeClass == .regular {
+            // iPad (et toute fenêtre large) : la liste à gauche, la
+            // discussion à droite, sur tout l'écran.
+            NavigationSplitView {
+                list
+            } detail: {
+                NavigationStack {
+                    if let id = model.path.last {
+                        ConversationView(chatId: id).id(id)
+                    } else {
                         ContentUnavailableView {
-                            Label(query.isEmpty ? "Aucune discussion" : "Aucun résultat", systemImage: "bubble.left.and.bubble.right")
+                            Label("Talka", systemImage: "bubble.left.and.bubble.right")
                         } description: {
-                            Text(query.isEmpty ? "Ajoutez un contact avec son code Talka pour commencer." : "")
-                        } actions: {
-                            if query.isEmpty, filter == .all {
-                                Button("Nouvelle discussion") { sheet = .newChat }.buttonStyle(.borderedProminent)
-                            }
+                            Text("Choisissez une discussion. Vos messages sont chiffrés de bout en bout.")
                         }
                     }
                 }
-                .searchable(text: $query, prompt: "Rechercher")
-                .confirmationDialog("Mettre en sourdine", isPresented: Binding(get: { muting != nil }, set: { if !$0 { muting = nil } }),
-                                    titleVisibility: .visible) {
-                    if let id = muting, let e = model.engine {
-                        MuteChoices(engine: e, chatId: id, muted: false)
-                    }
-                } message: {
-                    Text("Plus de notification ni de son ; les messages arrivent quand même.")
+            }
+            .navigationSplitViewStyle(.balanced)
+        } else {
+            NavigationStack(path: $model.path) {
+                list
+                    .navigationDestination(for: String.self) { id in ConversationView(chatId: id) }
+            }
+        }
+    }
+
+    /// La discussion choisie dans la liste (sur iPad, la colonne de droite).
+    var selection: Binding<String?> {
+        Binding(get: { model.path.last }, set: { id in model.path = id.map { [$0] } ?? [] })
+    }
+
+    @ViewBuilder var list: some View {
+        if let e = model.engine {
+            Group {
+                if sizeClass == .regular {
+                    List(selection: selection) { rows(e) }
+                } else {
+                    List { rows(e) }
                 }
-                .navigationTitle("Discussions")
-                .navigationDestination(for: String.self) { id in ConversationView(chatId: id) }
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Menu {
-                            Button { sheet = .myCode } label: { Label("Mon code", systemImage: "qrcode") }
-                            Button { sheet = .group } label: { Label("Nouveau groupe", systemImage: "person.3") }
-                            Button { sheet = .starred } label: { Label("Messages importants", systemImage: "star") }
-                            if let e = model.engine, e.chats.values.contains(where: { $0.unread > 0 || $0.markedUnread }) {
-                                Button {
-                                    let n = e.markAllRead()
-                                    UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
-                                    model.show(n > 1 ? "\(n) discussions marquées comme lues" : "Discussion marquée comme lue")
-                                } label: {
-                                    Label("Tout marquer comme lu", systemImage: "checkmark.message")
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
+            }
+            .listStyle(.plain)
+            .overlay {
+                if chats(e).isEmpty && e.searchMessages(query).isEmpty {
+                    ContentUnavailableView {
+                        Label(query.isEmpty ? "Aucune discussion" : "Aucun résultat", systemImage: "bubble.left.and.bubble.right")
+                    } description: {
+                        Text(query.isEmpty ? "Ajoutez un contact avec son code Talka pour commencer." : "")
+                    } actions: {
+                        if query.isEmpty, filter == .all {
+                            Button("Nouvelle discussion") { sheet = .newChat }.buttonStyle(.borderedProminent)
                         }
-                        .accessibilityLabel("Plus")
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { sheet = .newChat } label: { Image(systemName: "square.and.pencil") }
-                            .accessibilityLabel("Nouvelle discussion")
                     }
                 }
-                .sheet(item: $sheet) { s in
-                    switch s {
-                    case .newChat: NewChatSheet(sheet: $sheet)
-                    case .add(let code): AddContactSheet(code: code)
-                    case .group: NewGroupSheet()
-                    case .myCode: MyCodeSheet()
-                    case .starred: StarredSheet()
-                    }
+            }
+            .searchable(text: $query, prompt: "Rechercher")
+            .confirmationDialog("Mettre en sourdine", isPresented: Binding(get: { muting != nil }, set: { if !$0 { muting = nil } }),
+                                titleVisibility: .visible) {
+                if let id = muting, let e = model.engine {
+                    MuteChoices(engine: e, chatId: id, muted: false)
                 }
-                .onChange(of: model.invite, initial: true) { _, code in
-                    guard let code else { return }
-                    model.invite = nil
-                    sheet = .add(code)
+            } message: {
+                Text("Plus de notification ni de son ; les messages arrivent quand même.")
+            }
+            .navigationTitle("Discussions")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Button { sheet = .myCode } label: { Label("Mon code", systemImage: "qrcode") }
+                        Button { sheet = .group } label: { Label("Nouveau groupe", systemImage: "person.3") }
+                        Button { sheet = .starred } label: { Label("Messages importants", systemImage: "star") }
+                        if let e = model.engine, e.chats.values.contains(where: { $0.unread > 0 || $0.markedUnread }) {
+                            Button {
+                                let n = e.markAllRead()
+                                UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
+                                model.show(n > 1 ? "\(n) discussions marquées comme lues" : "Discussion marquée comme lue")
+                            } label: {
+                                Label("Tout marquer comme lu", systemImage: "checkmark.message")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("Plus")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { sheet = .newChat } label: { Image(systemName: "square.and.pencil") }
+                        .accessibilityLabel("Nouvelle discussion")
+                }
+            }
+            .sheet(item: $sheet) { s in
+                switch s {
+                case .newChat: NewChatSheet(sheet: $sheet)
+                case .add(let code): AddContactSheet(code: code)
+                case .group: NewGroupSheet()
+                case .myCode: MyCodeSheet()
+                case .starred: StarredSheet()
+                }
+            }
+            .onChange(of: model.invite, initial: true) { _, code in
+                guard let code else { return }
+                model.invite = nil
+                sheet = .add(code)
+            }
+        }
+    }
+
+    /// Les lignes de la liste : l’état du réseau, le filtre, les discussions,
+    /// les messages trouvés.
+    @ViewBuilder func rows(_ e: Engine) -> some View {
+        if e.netState != .online {
+            Label(e.netState == .connecting ? "Connexion…" : "Hors ligne : les messages partiront au retour du réseau.",
+                  systemImage: "wifi.slash")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        Picker("Filtre", selection: $filter) {
+            ForEach(Filter.allCases, id: \.self) { Text($0.rawValue) }
+        }
+        .pickerStyle(.segmented)
+        .listRowSeparator(.hidden)
+        ForEach(chats(e)) { chat in
+            NavigationLink(value: chat.id) {
+                ChatRow(engine: e, chat: chat)
+            }
+            .swipeActions(edge: .leading) {
+                Button {
+                    e.updateChat(chat.id) {
+                        if $0.unread > 0 || $0.markedUnread {
+                            $0.unread = 0; $0.markedUnread = false; $0.mentioned = false
+                        } else { $0.markedUnread = true }
+                    }
+                    if chat.unread > 0 { e.markRead(chat.id) }
+                } label: {
+                    Label(chat.unread > 0 || chat.markedUnread ? "Lu" : "Non lu",
+                          systemImage: chat.unread > 0 || chat.markedUnread ? "checkmark.message" : "message.badge")
+                }
+                .tint(.blue)
+                Button {
+                    e.updateChat(chat.id) { $0.pinned.toggle() }
+                } label: {
+                    Label(chat.pinned ? "Désépingler" : "Épingler", systemImage: chat.pinned ? "pin.slash" : "pin")
+                }
+                .tint(.orange)
+            }
+            .swipeActions(edge: .trailing) {
+                Button(role: .destructive) { e.deleteChat(chat.id) } label: { Label("Supprimer", systemImage: "trash") }
+                Button {
+                    e.updateChat(chat.id) { $0.archived.toggle() }
+                } label: {
+                    Label(chat.archived ? "Désarchiver" : "Archiver", systemImage: "archivebox")
+                }
+                .tint(.gray)
+                Button {
+                    if chat.muted { e.mute(chat.id, seconds: 0) } else { muting = chat.id }
+                } label: {
+                    Label(chat.muted ? "Son" : "Silence", systemImage: chat.muted ? "bell" : "bell.slash")
+                }
+                .tint(.indigo)
+            }
+        }
+        // La recherche trouve aussi les messages de toutes les
+        // discussions (comme le navigateur).
+        let found = e.searchMessages(query)
+        if !found.isEmpty {
+            Section("Messages") {
+                ForEach(found, id: \.key) { m in
+                    Button {
+                        model.reveal = m.id
+                        model.openChat(m.chat)
+                    } label: {
+                        FoundRow(engine: e, message: m)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }

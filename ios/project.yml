@@ -1,8 +1,9 @@
 # Le projet Xcode de l'application iOS, décrit pour XcodeGen :
 #   brew install xcodegen && cd ios && xcodegen && open Talka.xcodeproj
 #
-# Le serveur intégré à l'application : TALKA_SERVER (vide → l'application
-# le demande au premier lancement). La CI le remplit avec TALKA_API_URL.
+# Le relais intégré à l'application : TALKA_SERVER, que la CI remplit avec
+# TALKA_API_URL (vide → le relais officiel, `TalkaServer.official`). Il n'y
+# a rien à choisir dans l'application.
 name: Talka
 options:
   bundleIdPrefix: com.maxlestage
