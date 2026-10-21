@@ -173,8 +173,9 @@ struct LockView: View {
     @Environment(AppModel.self) private var model
     @State private var pin = ""
     @State private var wrong = false
-    @State private var fails = 0
-    @State private var until = Date.distantPast
+    // Les essais manqués survivent à un redémarrage de l'app.
+    @State private var fails = UserDefaults.standard.integer(forKey: "talka.essais")
+    @State private var until = Date(timeIntervalSince1970: UserDefaults.standard.double(forKey: "talka.essais.jusqua"))
 
     var body: some View {
         ZStack {
@@ -215,6 +216,8 @@ struct LockView: View {
             if fails >= 5 { until = Date().addingTimeInterval(min(300, 15 * pow(2, Double(fails - 5)))) }
             withAnimation(.default) { wrong = true }
         }
+        UserDefaults.standard.set(fails, forKey: "talka.essais")
+        UserDefaults.standard.set(fails == 0 ? 0 : until.timeIntervalSince1970, forKey: "talka.essais.jusqua")
         pin = ""
     }
 }

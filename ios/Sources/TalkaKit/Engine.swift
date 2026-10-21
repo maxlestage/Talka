@@ -1093,13 +1093,23 @@ public final class Engine {
             let device = saveV3Sessions()
             switch opened {
             case .legacy(let plain), .v3(let plain):
-                // Prouvé : ses clés sont gardées (s'il est nouveau).
-                if contacts[from]?.sign.isEmpty ?? true {
-                    var c = contacts[from] ?? peer
+                let legacy: Bool
+                if case .legacy = opened { legacy = true } else { legacy = false }
+                // Prouvé : ses clés sont gardées (s'il est nouveau), et son
+                // passage en v3.
+                let known = contacts[from]
+                if known == nil || known!.sign.isEmpty || (!legacy && !known!.v3) {
+                    var c = known ?? peer
                     c.sign = peer.sign; c.dh = peer.dh
+                    if !legacy { c.v3 = true }
                     saveContact(c)
                 }
-                if let wire = Wire.parse(plain) {
+                let live = env["live"] as? Bool ?? false
+                // L'ancien format n'a pas de protection contre le rejeu : d'un
+                // contact passé en v3, il ne change plus d'état.
+                if let wire = Wire.parse(plain), legacy, !live, known?.v3 == true, wire.body.changesState {
+                    v3Log("ancien format refusé de \(from) (déjà en v3)")
+                } else if let wire = Wire.parse(plain) {
                     handle(from, wire, ts: env["ts"] as? Double ?? nowMs(), live: env["live"] as? Bool ?? false)
                 }
             // Déjà lu (le relais l'a renvoyé), ou pas pour nous.
