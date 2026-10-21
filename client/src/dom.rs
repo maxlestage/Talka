@@ -1203,13 +1203,16 @@ pub fn rich_text(text: &str) -> Vec<Child> {
     };
     while i < chars.len() {
         let rest: String = chars[i..].iter().take(8).collect();
-        let at_word_start = i == 0 || chars[i - 1].is_whitespace();
+        // Un lien commence après une espace, ou juste après une parenthèse ou
+        // un guillemet ouvrants : « (https://…) », « «https://…» ».
+        let at_word_start =
+            i == 0 || chars[i - 1].is_whitespace() || "([{«\"'“‘".contains(chars[i - 1]);
         if at_word_start && (rest.starts_with("https://") || rest.starts_with("http://")) {
             let mut j = i;
             while j < chars.len() && !chars[j].is_whitespace() && chars[j] != '<' {
                 j += 1;
             }
-            while j > i && ".,;:!?)]'\"".contains(chars[j - 1]) {
+            while j > i && ".,;:!?)]}'\"»”’".contains(chars[j - 1]) {
                 j -= 1;
             }
             let url: String = chars[i..j].iter().collect();
