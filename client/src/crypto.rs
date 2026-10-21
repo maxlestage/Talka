@@ -401,6 +401,84 @@ pub fn open_sealed(me: &Identity, sealed: &str) -> Option<(String, String)> {
     Some((from, s.body))
 }
 
+// ----- L'aperçu des notifications -------------------------------------------
+//
+// Ce que la notification affiche (« Léa : Bonjour »), chiffré par
+// l'expéditeur pour la clé de notification du destinataire : une clé P-256
+// tirée et gardée par le service worker du navigateur (non exportable), dont
+// la moitié publique voyage dans le profil chiffré. Même construction que
+// l'enveloppe scellée (éphémère, ECDH, HKDF-SHA256, AES-256-GCM), avec ses
+// propres étiquettes ; le service worker l'ouvre avec WebCrypto.
+// Sans confidentialité persistante : la clé de notification ne change pas.
+// Elle ne sert qu'à cet aperçu, jamais aux messages.
+
+fn apercu_key(shared: &[u8], eph: &[u8], nk: &[u8]) -> Option<Aes256Gcm> {
+    let salt = [eph, nk].concat();
+    let mut key = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(&salt), shared)
+        .expand(b"talka-apercu-v1", &mut key)
+        .ok()?;
+    Aes256Gcm::new_from_slice(&key).ok()
+}
+
+/// Une clé de notification valable : un point P-256 (65 octets, base64).
+pub fn valid_nk(nk: &str) -> bool {
+    unb64(nk).is_some_and(|b| b.len() == 65 && PublicKey::from_sec1_bytes(&b).is_ok())
+}
+
+/// Chiffre un aperçu (du JSON) pour la clé de notification `nk` (65 octets,
+/// base64) : base64(éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag).
+pub fn seal_apercu(nk: &str, plain: &str) -> Option<String> {
+    let nk_raw = unb64(nk)?;
+    let public = PublicKey::from_sec1_bytes(&nk_raw).ok()?;
+    let eph = SecretKey::random(&mut OsRng);
+    let eph_raw = raw(&eph.public_key());
+    let shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
+    let cipher = apercu_key(shared.raw_secret_bytes(), &eph_raw, &nk_raw)?;
+    let iv = random_bytes(12);
+    let ct = cipher
+        .encrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: plain.as_bytes(),
+                aad: b"talka-apercu",
+            },
+        )
+        .ok()?;
+    let mut out = eph_raw;
+    out.extend(iv);
+    out.extend(ct);
+    Some(b64(&out))
+}
+
+/// Ouvre un aperçu avec la clé privée de notification (32 octets) : ce que
+/// fait le service worker, ici pour les tests et les vecteurs.
+pub fn open_apercu(nk_priv: &[u8], sealed: &str) -> Option<String> {
+    let bytes = unb64(sealed)?;
+    if bytes.len() < 65 + 12 + 16 {
+        return None;
+    }
+    let secret = SecretKey::from_slice(nk_priv).ok()?;
+    let (eph_raw, rest) = bytes.split_at(65);
+    let public = PublicKey::from_sec1_bytes(eph_raw).ok()?;
+    let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+    let cipher = apercu_key(
+        shared.raw_secret_bytes(),
+        eph_raw,
+        &raw(&secret.public_key()),
+    )?;
+    let pt = cipher
+        .decrypt(
+            Nonce::from_slice(&rest[..12]),
+            Payload {
+                msg: &rest[12..],
+                aad: b"talka-apercu",
+            },
+        )
+        .ok()?;
+    String::from_utf8(pt).ok()
+}
+
 // ----- Le code de verrouillage et la sauvegarde ------------------------------
 
 pub const PIN_ROUNDS: u32 = 120_000;
@@ -588,6 +666,23 @@ mod tests {
             sealed,
             seal_sender(&a.code, &b.code, &b.dh, &inner).unwrap()
         );
+    }
+
+    #[test]
+    fn notification_preview() {
+        let nk = SecretKey::random(&mut OsRng);
+        let nk_pub = b64(&raw(&nk.public_key()));
+        let sealed = seal_apercu(&nk_pub, r#"{"n":"Léa","t":"Bonjour 👋"}"#).unwrap();
+        assert!(!sealed.contains("Bonjour"));
+        assert_eq!(
+            open_apercu(&nk.to_bytes(), &sealed).as_deref(),
+            Some(r#"{"n":"Léa","t":"Bonjour 👋"}"#)
+        );
+        let other = SecretKey::random(&mut OsRng);
+        assert!(open_apercu(&other.to_bytes(), &sealed).is_none());
+        assert!(seal_apercu("pas une clé", "x").is_none());
+        assert!(valid_nk(&nk_pub));
+        assert!(!valid_nk("pas une clé") && !valid_nk(&b64(&[4; 65])));
     }
 
     #[test]

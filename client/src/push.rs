@@ -5,9 +5,13 @@
 //! s'abonne auprès de son service de notifications et donne l'adresse au
 //! relais, à chaque connexion. Son service worker a sa propre portée
 //! (`talka-push/`, sans aucune page) : il ne remplace pas celui qui garde
-//! l'application hors ligne. Le réveil est vide : le service worker
-//! (`talka-sw.js`) affiche seulement « Nouveau message » ; le message reste
-//! chiffré dans la boîte aux lettres jusqu'à l'ouverture de Talka.
+//! l'application hors ligne. Il tire aussi une clé de notification (P-256,
+//! jamais exportée) dont la moitié publique part chez les contacts : leur
+//! Talka chiffre pour elle l'aperçu (« Léa : Bonjour »), le relais le
+//! transmet sans le lire et le service worker (`talka-sw.js`) l'ouvre ici.
+//! Sans aperçu, la notification dit seulement « Nouveau message » ; le
+//! message, lui, reste chiffré dans la boîte aux lettres jusqu'à
+//! l'ouverture de Talka.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
@@ -66,7 +70,7 @@ async fn apply(want: bool) -> Result<(), JsValue> {
     if !want {
         if !sub.is_null() {
             if let Some(endpoint) = get(&sub, "endpoint").as_string() {
-                net::push_endpoint(&endpoint, false);
+                net::push_endpoint(&endpoint, "", "", false);
             }
             let _ = await_promise(call(&sub, "unsubscribe", &[])).await;
         }
@@ -97,17 +101,67 @@ async fn apply(want: bool) -> Result<(), JsValue> {
         sub = await_promise(call(&pm, "subscribe", &[opts.into()])).await?;
     }
     if let Some(endpoint) = get(&sub, "endpoint").as_string() {
-        net::push_endpoint(&endpoint, true);
+        net::push_endpoint(
+            &endpoint,
+            &sub_key(&sub, "p256dh"),
+            &sub_key(&sub, "auth"),
+            true,
+        );
+    }
+    if let Some(nk) = notification_key(&reg).await {
+        core::set_nk(nk).await;
     }
     clear_shown(&reg).await;
     Ok(())
 }
 
-/// Talka est ouvert : les « Nouveau message » déjà affichés s'effacent.
+/// Une clé de l'abonnement (`p256dh` ou `auth`), en base64url.
+fn sub_key(sub: &JsValue, name: &str) -> String {
+    call(sub, "getKey", &[name.into()])
+        .ok()
+        .filter(|k| !k.is_null() && !k.is_undefined())
+        .map(|k| B64URL.encode(Uint8Array::new(&k).to_vec()))
+        .unwrap_or_default()
+}
+
+/// La clé publique de notification, demandée au service worker.
+async fn notification_key(reg: &JsValue) -> Option<String> {
+    let worker = get(reg, "active");
+    if worker.is_null() || worker.is_undefined() {
+        return None;
+    }
+    let channel = web_sys::MessageChannel::new().ok()?;
+    // Un ancien service worker ne répond pas : on n'attend pas plus de 5 s.
+    let reply = js_sys::Promise::new(&mut |ok, _| {
+        let late = ok.clone();
+        let f = Closure::once_into_js(move |e: JsValue| {
+            let _ = ok.call1(&JsValue::NULL, &get(&e, "data"));
+        });
+        channel.port1().set_onmessage(Some(f.unchecked_ref()));
+        let t = Closure::once_into_js(move || {
+            let _ = late.call1(&JsValue::NULL, &JsValue::NULL);
+        });
+        let _ = window()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(t.unchecked_ref(), 5_000);
+    });
+    let msg = Object::new();
+    Reflect::set(&msg, &"t".into(), &"nk".into()).ok()?;
+    call(
+        &worker,
+        "postMessage",
+        &[msg.into(), js_sys::Array::of1(&channel.port2()).into()],
+    )
+    .ok()?;
+    let data = await_promise(Ok(reply.into())).await.ok()?;
+    if data.is_null() {
+        return None;
+    }
+    get(&data, "nk").as_string().filter(|k| !k.is_empty())
+}
+
+/// Talka est ouvert : les notifications déjà affichées s'effacent.
 async fn clear_shown(reg: &JsValue) {
-    let opts = Object::new();
-    let _ = Reflect::set(&opts, &"tag".into(), &"talka".into());
-    if let Ok(list) = await_promise(call(reg, "getNotifications", &[opts.into()])).await {
+    if let Ok(list) = await_promise(call(reg, "getNotifications", &[])).await {
         for n in js_sys::Array::from(&list).iter() {
             let _ = call(&n, "close", &[]);
         }

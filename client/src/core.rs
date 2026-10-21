@@ -73,6 +73,8 @@ struct St {
     typing: HashMap<String, HashMap<String, i32>>,
     active: Option<String>,
     brocolis: Vec<BrocolisKey>,
+    /// Notre clé de notification (publique), donnée aux contacts.
+    nk: String,
 }
 
 thread_local! {
@@ -227,9 +229,11 @@ pub async fn start() {
     let contacts: Vec<Contact> = store::all("contacts").await;
     let chats: Vec<Chat> = store::all("chats").await;
     let brocolis = load_brocolis().await;
+    let nk: String = store::read("kv", "nk").await.unwrap_or_default();
     let hidden = settings.hide_online;
     with(|s| {
         s.brocolis = brocolis;
+        s.nk = nk;
         s.me = Some(identity.clone());
         s.profile = profile;
         s.settings = settings;
@@ -533,7 +537,31 @@ fn profile_body() -> Body {
     Body::Profile {
         profile: profile(),
         jeton: me().jeton(),
+        nk: with(|s| s.nk.clone()),
     }
+}
+
+/// La clé de notification de ce navigateur (son service worker la tire) :
+/// une nouvelle part chez les contacts, avec le profil, pour qu'ils
+/// chiffrent l'aperçu des notifications. Vide : plus d'aperçu.
+pub async fn set_nk(nk: String) {
+    if with(|s| s.nk == nk) {
+        return;
+    }
+    with(|s| s.nk = nk.clone());
+    store::write("kv", "nk", &nk).await;
+    for c in contacts() {
+        if c.saved && !c.blocked {
+            enqueue(&c.code, Wire::new(profile_body()), None, None, false).await;
+        }
+    }
+    spawn(flush());
+}
+
+/// L'aperçu d'une notification pour le destinataire (voir
+/// [`Wire::apercu`]) : le texte comme la liste des discussions.
+pub fn apercu_of(me: &str, name: &str, wire: &Wire) -> Option<String> {
+    wire.apercu(me, name, preview)
 }
 
 /// Notre jeton de remise, pour les contacts qui ne l'ont pas encore (une
@@ -1263,11 +1291,18 @@ async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
     // Les messages écrits (pas les accusés, réactions, profils) réveillent
     // un destinataire hors ligne.
     let wake = !live && !item.msg_id.is_empty();
+    // Et, s'il a donné sa clé de notification, avec un aperçu chiffré pour
+    // elle : le relais le transmet sans pouvoir le lire.
+    let apercu = (wake && !peer.nk.is_empty())
+        .then(|| serde_json::from_str::<Wire>(&item.payload).ok())
+        .flatten()
+        .and_then(|w| apercu_of(&my_code(), &profile().name, &w))
+        .and_then(|a| crypto::seal_apercu(&peer.nk, &a));
     // L'expéditeur scellé : le relais ne sait pas qui écrit (une connexion
     // anonyme, et le jeton de remise du destinataire).
     if !peer.jeton.is_empty() && net::sealed_supported() {
         let outer = crypto::seal_sender(&me().code, &peer.code, &peer.dh, &body).ok_or("crypto")?;
-        match net::send_sealed(&item.id, &peer, &outer, live, wake).await {
+        match net::send_sealed(&item.id, &peer, &outer, live, wake, apercu.as_deref()).await {
             Ack::Ok => return Ok(()),
             // Son jeton ne vaut plus : on l'oublie, et cet envoi part comme avant.
             Ack::Err(e) if e == "jeton" => {
@@ -1277,7 +1312,7 @@ async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
             Ack::Err(e) => return Err(e),
         }
     }
-    match net::send(&item.id, &item.to, &body, live, wake).await {
+    match net::send(&item.id, &item.to, &body, live, wake, apercu.as_deref()).await {
         Ack::Ok => Ok(()),
         Ack::Err(e) => Err(e),
     }
@@ -1974,7 +2009,7 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> Option<Chat> {
 async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
     let me = my_code();
     match &wire.body {
-        Body::Profile { profile, jeton } => {
+        Body::Profile { profile, jeton, nk } => {
             let mut c = contact(from).unwrap_or_else(|| Contact {
                 code: from.to_owned(),
                 added_at: now(),
@@ -1986,6 +2021,11 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 && crypto::verify_jeton(from, &c.sign, &c.dh, jeton)
             {
                 c.jeton = jeton.clone();
+                save_contact(c.clone()).await;
+            }
+            // Sa clé de notification (une clé P-256 publique, ou rien).
+            if *nk != c.nk && (nk.is_empty() || crypto::valid_nk(nk)) {
+                c.nk = nk.clone();
                 save_contact(c.clone()).await;
             }
             if profile.v >= c.profile_v {
