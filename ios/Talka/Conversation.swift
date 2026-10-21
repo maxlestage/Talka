@@ -676,6 +676,8 @@ struct MessageRow: View {
     let onScrollTo: (String) -> Void
     @State private var drag: CGFloat = 0
     @State private var showReactions = false
+    /// Le cœur qui apparaît au double-tap.
+    @State private var heartPop = false
 
     var body: some View {
         let e = engine
@@ -698,6 +700,17 @@ struct MessageRow: View {
                 }
                 VStack(alignment: mine ? .trailing : .leading, spacing: -6) {
                     bubble(e, m, mine)
+                        // Double-tap : ❤️ (une seconde fois, retiré), comme
+                        // le double-clic du navigateur.
+                        .simultaneousGesture(TapGesture(count: 2).onEnded { like(e, m) })
+                        .overlay {
+                            if heartPop {
+                                Text("❤️").font(.system(size: 44))
+                                    .transition(.scale(scale: 0.3).combined(with: .opacity))
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .accessibilityAction(named: "Aimer ❤️") { like(e, m) }
                     if !m.reactions.isEmpty {
                         let counts = Dictionary(grouping: m.reactions.values, by: { $0 }).map { ($0.key, $0.value.count) }.sorted { $0.1 > $1.1 }
                         HStack(spacing: 2) {
@@ -732,6 +745,19 @@ struct MessageRow: View {
                         withAnimation(.spring) { drag = 0 }
                     }
             )
+        }
+    }
+
+    func like(_ e: Engine, _ m: Message) {
+        guard !m.deleted, m.kind != "system" else { return }
+        let adding = m.reactions[e.me.code] != "❤️"
+        e.react(chat.id, m.id, "❤️")
+        guard adding else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        withAnimation(.spring(duration: 0.25)) { heartPop = true }
+        Task {
+            try? await Task.sleep(for: .milliseconds(650))
+            withAnimation(.easeOut(duration: 0.2)) { heartPop = false }
         }
     }
 
