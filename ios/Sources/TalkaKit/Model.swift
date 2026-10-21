@@ -153,11 +153,14 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
     public var jeton = ""
     /// Lui a-t-on donné le nôtre ?
     public var jetonSent = false
+    /// Sa clé de notification (navigateur) : l'aperçu de ses notifications
+    /// lui est chiffré pour elle. Vide : un simple réveil.
+    public var nk = ""
 
     public var id: String { code }
 
     enum CodingKeys: String, CodingKey {
-        case code, name, about, avatar, sign, dh, blocked, saved, jeton
+        case code, name, about, avatar, sign, dh, blocked, saved, jeton, nk
         case profileName = "profile_name"
         case addedAt = "added_at"
         case profileV = "profile_v"
@@ -176,7 +179,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         about = c.v(.about, ""); avatar = c.v(.avatar, ""); sign = c.v(.sign, ""); dh = c.v(.dh, "")
         blocked = c.v(.blocked, false); saved = c.v(.saved, false); addedAt = c.v(.addedAt, 0)
         profileV = c.v(.profileV, 0); sentProfileV = c.v(.sentProfileV, 0)
-        jeton = c.v(.jeton, ""); jetonSent = c.v(.jetonSent, false)
+        jeton = c.v(.jeton, ""); jetonSent = c.v(.jetonSent, false); nk = c.v(.nk, "")
     }
 
     /// Comme le navigateur : le jeton n'est écrit que s'il y en a un.
@@ -190,6 +193,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         try c.encode(sentProfileV, forKey: .sentProfileV)
         if !jeton.isEmpty { try c.encode(jeton, forKey: .jeton) }
         if jetonSent { try c.encode(jetonSent, forKey: .jetonSent) }
+        if !nk.isEmpty { try c.encode(nk, forKey: .nk) }
     }
 }
 
@@ -580,7 +584,8 @@ public enum Body: Equatable, Sendable {
     case delete(id: String)
     case typing(on: Bool)
     /// `jeton` : le jeton de remise de l'expéditeur (expéditeur scellé).
-    case profile(Profile, jeton: String = "")
+    /// `nk` : sa clé de notification (navigateur), pour l'aperçu chiffré.
+    case profile(Profile, jeton: String = "", nk: String = "")
     case group(op: String, note: String)
     case timer(secs: Int)
     case status(id: String, kind: String, text: String, bg: String, data: String, at: Double)
@@ -628,7 +633,7 @@ public struct Wire: Codable, Equatable, Sendable {
         case "edit": body = .edit(id: s("id"), text: s("text"))
         case "delete": body = .delete(id: s("id"))
         case "typing": body = .typing(on: c.v(K("on"), false))
-        case "profile": body = .profile(try Profile(from: decoder), jeton: s("jeton"))
+        case "profile": body = .profile(try Profile(from: decoder), jeton: s("jeton"), nk: s("nk"))
         case "group": body = .group(op: s("op"), note: s("note"))
         case "timer": body = .timer(secs: c.v(K("secs"), 0))
         case "status":
@@ -657,9 +662,10 @@ public struct Wire: Codable, Equatable, Sendable {
         case let .edit(id, text): try put("k", "edit"); try put("id", id); try put("text", text)
         case let .delete(id): try put("k", "delete"); try put("id", id)
         case let .typing(on): try put("k", "typing"); try put("on", on)
-        case let .profile(p, jeton):
+        case let .profile(p, jeton, nk):
             try put("k", "profile"); try p.encode(to: encoder)
             if !jeton.isEmpty { try put("jeton", jeton) }
+            if !nk.isEmpty { try put("nk", nk) }
         case let .group(op, note): try put("k", "group"); try put("op", op); try put("note", note)
         case let .timer(secs): try put("k", "timer"); try put("secs", secs)
         case let .status(id, kind, text, bg, data, at):
