@@ -25,6 +25,8 @@ struct ConversationView: View {
     @State private var showInfo = false
     @State private var recorder = VoiceRecorder()
     @State private var voiceChain = VoiceChain()
+    /// La discussion exportée en texte, à partager.
+    @State private var exported: URL?
     @State private var loaded = false
     /// La recherche dans la discussion (nil : fermée).
     @State private var search: String?
@@ -195,6 +197,14 @@ struct ConversationView: View {
                         Button { showInfo = true } label: {
                             Label(chat.group ? "Infos du groupe" : "Infos du contact", systemImage: "info.circle")
                         }
+                        Button {
+                            if let export = e.exportChat(chatId) {
+                                let url = FileManager.default.temporaryDirectory.appendingPathComponent(export.filename)
+                                if (try? Data(export.text.utf8).write(to: url)) != nil { exported = url }
+                            }
+                        } label: {
+                            Label("Exporter la discussion", systemImage: "square.and.arrow.up")
+                        }
                         Button { choosingBrocolis = true } label: {
                             Label(chat.brocolis.isEmpty ? "Chiffrer avec Brocolis 🥦" : "Brocolis 🥦 : \(e.chatBrocolis(chat).map(\.name).joined(separator: ", "))",
                                   systemImage: "lock.shield")
@@ -206,6 +216,9 @@ struct ConversationView: View {
                 }
             }
             .toolbar(.hidden, for: .tabBar)
+            .sheet(item: Binding(get: { exported.map(SharedURL.init) }, set: { exported = $0?.url })) { shared in
+                ActivityView(items: [shared.url]).presentationDetents([.medium, .large])
+            }
             .navigationDestination(isPresented: $showInfo) {
                 if chat.group { GroupInfoView(chatId: chatId) } else { ContactInfoView(code: chatId) }
             }
