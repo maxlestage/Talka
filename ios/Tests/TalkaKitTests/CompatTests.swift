@@ -4,6 +4,11 @@
 
 import Foundation
 import XCTest
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 @testable import TalkaKit
 
 final class CompatTests: XCTestCase {
@@ -145,6 +150,25 @@ final class CompatTests: XCTestCase {
         XCTAssertThrowsError(try TalkaCrypto.decryptBackup(password: "autre", file: file))
         let mine = try XCTUnwrap(TalkaCrypto.encryptBackup(password: "secret123", plain: "{\"x\":1}"))
         XCTAssertEqual(try TalkaCrypto.decryptBackup(password: "secret123", file: mine), "{\"x\":1}")
+        XCTAssertEqual(mine.talka, 3)
+
+        // Argon2id, comme le navigateur ; les codes et sauvegardes d'avant
+        // (PBKDF2) s'ouvrent toujours, et les codes se rehachent.
+        XCTAssertEqual(hash.v, 2)
+        XCTAssertFalse(hash.isOld)
+        let ours = TalkaCrypto.hashPin("739154")
+        XCTAssertTrue(TalkaCrypto.checkPin("739154", ours) && !TalkaCrypto.checkPin("739155", ours))
+        let salt = Data(repeating: 3, count: 16)
+        let old = PinHash(salt: b64(salt), hash: b64(TalkaCrypto.pbkdf2("2580", salt: salt, rounds: TalkaCrypto.pinRounds)))
+        XCTAssertTrue(old.isOld && TalkaCrypto.checkPin("2580", old) && !TalkaCrypto.checkPin("2581", old))
+        var greedy = ours
+        greedy.m = .max
+        XCTAssertFalse(TalkaCrypto.checkPin("739154", greedy))
+        let oldKey = SymmetricKey(data: TalkaCrypto.pbkdf2("motdepasse", salt: salt, rounds: TalkaCrypto.backupRounds))
+        let nonce = AES.GCM.Nonce()
+        let box = try AES.GCM.seal(Data("{}".utf8), using: oldKey, nonce: nonce)
+        let oldFile = Backup(talka: 2, salt: b64(salt), iv: b64(Data(nonce)), data: b64(box.ciphertext + box.tag))
+        XCTAssertEqual(try TalkaCrypto.decryptBackup(password: "motdepasse", file: oldFile), "{}")
     }
 
     func testWires() throws {
