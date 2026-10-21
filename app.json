@@ -28,6 +28,10 @@
       "description": "Facultatif : des serveurs TURN pour les appels sur les réseaux qui bloquent le pair-à-pair (JSON RTCIceServer[]).",
       "required": false
     },
+    "TALKA_VAPID_KEY": {
+      "description": "Facultatif : la clé qui signe les notifications quand Talka est fermé (un réveil vide, sans contenu). La fabriquer avec `talka vapid` ; ne jamais la changer ensuite (les navigateurs abonnés devraient se réabonner).",
+      "required": false
+    },
     "TALKA_ALLOWED_ORIGINS": {
       "description": "Les sites autorisés à utiliser ce relais depuis un autre domaine (la version GitHub Pages), séparés par des virgules.",
       "value": "https://maxlestage.github.io",
