@@ -292,7 +292,29 @@ public enum TalkaCrypto {
 
     private struct SealedSender: Codable {
         var from: String
+        /// L'appareil de l'expéditeur (v4) ; absent d'un ancien client.
+        var fd = ""
         var body: String
+
+        enum CodingKeys: String, CodingKey { case from, fd, body }
+
+        init(from: String, fd: String, body: String) {
+            self.from = from; self.fd = fd; self.body = body
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            from = try c.decode(String.self, forKey: .from)
+            fd = c.v(.fd, "")
+            body = try c.decode(String.self, forKey: .body)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(from, forKey: .from)
+            if !fd.isEmpty { try c.encode(fd, forKey: .fd) }
+            try c.encode(body, forKey: .body)
+        }
     }
 
     private static func sealedKey(_ secret: SharedSecret, eph: Data, toDh: Data, to: String) -> SymmetricKey {
@@ -362,13 +384,19 @@ public enum TalkaCrypto {
     /// Scelle `body` (une enveloppe ordinaire de `from` pour `to`) :
     /// base64(éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag).
     public static func sealSender(from: String, to: String, toDh: String, body: String) -> String? {
+        sealSender(from: from, fd: "", to: to, toDh: toDh, body: body)
+    }
+
+    /// Comme `sealSender`, en disant aussi de quel appareil (`fd`, v4) vient
+    /// l'enveloppe.
+    public static func sealSender(from: String, fd: String, to: String, toDh: String, body: String) -> String? {
         guard let toRaw = unb64(toDh),
               let pub = try? P256.KeyAgreement.PublicKey(x963Representation: toRaw)
         else { return nil }
         let eph = P256.KeyAgreement.PrivateKey()
         let ephRaw = eph.publicKey.x963Representation
         guard let secret = try? eph.sharedSecretFromKeyAgreement(with: pub),
-              let plain = try? JSONEncoder().encode(SealedSender(from: from, body: body)),
+              let plain = try? JSONEncoder().encode(SealedSender(from: from, fd: fd, body: body)),
               let box = try? AES.GCM.seal(plain, using: sealedKey(secret, eph: ephRaw, toDh: toRaw, to: to),
                                           nonce: AES.GCM.Nonce(), authenticating: Data("talka-scelle:\(to)".utf8)),
               let combined = box.combined
@@ -379,6 +407,12 @@ public enum TalkaCrypto {
     /// Ouvre une enveloppe scellée pour nous : (code de l'expéditeur,
     /// enveloppe ordinaire). L'expéditeur n'est prouvé qu'en ouvrant celle-ci.
     public static func openSealed(_ me: Identity, _ sealed: String) -> (from: String, body: String)? {
+        openSealedFrom(me, sealed).map { ($0.from, $0.body) }
+    }
+
+    /// Ouvre une enveloppe scellée : (code de l'expéditeur, son appareil
+    /// (vide pour un ancien client), enveloppe ordinaire).
+    public static func openSealedFrom(_ me: Identity, _ sealed: String) -> (from: String, fd: String, body: String)? {
         guard let data = unb64(sealed), data.count >= 65 + 12 + 16,
               let myDh = unb64(me.dh) else { return nil }
         let ephRaw = data.prefix(65)
@@ -390,7 +424,7 @@ public enum TalkaCrypto {
               let s = try? JSONDecoder().decode(SealedSender.self, from: plain),
               TalkaCode.normalize(s.from) == s.from
         else { return nil }
-        return (s.from, s.body)
+        return (s.from, TalkaV4.isDev(s.fd) ? s.fd : "", s.body)
     }
 
     // ----- Le code de verrouillage et la sauvegarde -----
@@ -587,5 +621,205 @@ public struct Backup: Codable, Equatable, Sendable {
         try c.encode(iv, forKey: .iv); try c.encode(data, forKey: .data)
         if m != 0 { try c.encode(m, forKey: .m) }
         if t != 0 { try c.encode(t, forKey: .t) }
+    }
+}
+
+// ----- Plusieurs appareils et boîtes tournantes (v4) -------------------------
+//
+// Comme `client/src/crypto.rs` (`docs/SECURITE.md` §7.11 à §7.13) : les
+// identifiants d'appareil, les boîtes aux lettres tournantes (une adresse qui
+// change chaque jour, que seuls l'expéditeur et le destinataire savent
+// calculer) et la liaison d'un nouvel appareil par QR code.
+
+public enum TalkaV4 {
+    /// Le relais de Talka : un seul. Son adresse entre dans la dérivation des
+    /// boîtes tournantes, qui ne valent que pour lui.
+    public static let relay = TalkaServer.official
+
+    /// Un identifiant d'appareil : 16 caractères hexadécimaux minuscules.
+    public static func isDev(_ dev: String) -> Bool {
+        dev.utf8.count == 16 && dev.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    /// Un nouvel identifiant d'appareil (8 octets aléatoires).
+    public static func newDev() -> String { randomId(8) }
+
+    /// Le jour d'un horodatage (ms Unix, UTC) : les boîtes tournantes
+    /// changent chaque jour.
+    public static func day(_ ms: Double) -> Int { Int(max(ms, 0) / 86_400_000) }
+
+    /// L'adresse d'une session v3 : `<code>/<dev>` (v4), ou le code.
+    public static func address(_ code: String, _ dev: String) -> String {
+        dev.isEmpty ? code : "\(code)/\(dev)"
+    }
+
+    /// La clé des boîtes entre deux codes : ECDH de leurs clés d'identité,
+    /// puis HKDF-SHA256 lié au relais (§7.13). Seuls les deux savent la
+    /// calculer.
+    public static func boitesKey(_ me: Identity, peerCode: String, peerDh: String) -> Data? {
+        guard let raw = unb64(peerDh),
+              let pub = try? P256.KeyAgreement.PublicKey(x963Representation: raw),
+              let secret = try? me.dhKey?.sharedSecretFromKeyAgreement(with: pub)
+        else { return nil }
+        let (a, b) = me.code < peerCode ? (me.code, peerCode) : (peerCode, me.code)
+        let key = secret.hkdfDerivedSymmetricKey(
+            using: SHA256.self, salt: Data("talka-boites-v1:\(relay)".utf8),
+            sharedInfo: Data("\(a):\(b)".utf8), outputByteCount: 32)
+        return key.withUnsafeBytes { Data($0) }
+    }
+
+    /// La boîte de `day` où l'on écrit à l'appareil `dev` de `to` :
+    /// base64url(HMAC-SHA256(clé, "talka-boite:<to>/<dev>:<jour>")[0..16]).
+    public static func boite(key: Data, to: String, dev: String, day: Int) -> String {
+        let mac = HMAC<SHA256>.authenticationCode(for: Data("talka-boite:\(to)/\(dev):\(day)".utf8), using: SymmetricKey(data: key))
+        return b64url(Data(mac).prefix(16))
+    }
+
+    public static func b64url(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    public static func unb64url(_ text: String) -> Data? {
+        var s = String(text.reversed().drop { $0 == "=" }.reversed())
+        guard !s.contains("+"), !s.contains("/"), s.count % 4 != 1 else { return nil }
+        s = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        s += String(repeating: "=", count: (4 - s.count % 4) % 4)
+        return Data(base64Encoded: s)
+    }
+
+    // ----- La liaison d'un appareil (§7.12) -----
+
+    /// Le préfixe d'un lien de liaison (QR code).
+    public static let linkPrefix = "talka-lien:"
+
+    /// Ce que montre le nouvel appareil : son `dev`, l'identifiant de liaison
+    /// et sa clé publique éphémère.
+    public struct LinkOffer: Equatable, Sendable {
+        public var dev: String
+        public var lid: Data
+        public var lk: Data
+
+        /// `talka-lien:<base64url(0x01 ‖ dev ‖ lid ‖ lk)>`.
+        public var text: String {
+            let devBytes = stride(from: 0, to: dev.count, by: 2).compactMap { i -> UInt8? in
+                let start = dev.index(dev.startIndex, offsetBy: i)
+                return UInt8(dev[start..<dev.index(start, offsetBy: 2)], radix: 16)
+            }
+            return linkPrefix + b64url(Data([1]) + Data(devBytes) + lid + lk)
+        }
+
+        /// Lit un lien de liaison (collé, ou lu dans un QR code).
+        public static func parse(_ text: String) -> LinkOffer? {
+            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard t.hasPrefix(linkPrefix), let data = unb64url(String(t.dropFirst(linkPrefix.count))) else { return nil }
+            let bytes = [UInt8](data)
+            guard bytes.count == 1 + 8 + 16 + 65, bytes[0] == 1,
+                  (try? P256.KeyAgreement.PublicKey(x963Representation: Data(bytes[25...]))) != nil
+            else { return nil }
+            return LinkOffer(dev: bytes[1..<9].map { String(format: "%02x", $0) }.joined(),
+                             lid: Data(bytes[9..<25]), lk: Data(bytes[25...]))
+        }
+
+        /// La boîte de liaison, où le nouvel appareil attend.
+        public var boite: String {
+            b64url(Data(SHA256.hash(data: Data("talka-lien:".utf8) + lid)).prefix(16))
+        }
+    }
+
+    /// Le côté secret de la liaison, gardé par le nouvel appareil le temps
+    /// qu'elle se fasse.
+    public struct LinkSecret: @unchecked Sendable {
+        public let offer: LinkOffer
+        let privateKey: P256.KeyAgreement.PrivateKey
+
+        public init() {
+            let key = P256.KeyAgreement.PrivateKey()
+            privateKey = key
+            offer = LinkOffer(dev: newDev(), lid: randomBytes(16), lk: key.publicKey.x963Representation)
+        }
+
+        /// Une offre déjà montrée et sa clé privée (32 octets) : les tests.
+        public init?(offer: LinkOffer, privateKey raw: Data) {
+            guard let key = try? P256.KeyAgreement.PrivateKey(rawRepresentation: raw),
+                  key.publicKey.x963Representation == offer.lk
+            else { return nil }
+            self.offer = offer
+            privateKey = key
+        }
+
+        /// La clé de liaison, à partir de la clé éphémère de l'appareil du
+        /// compte.
+        public func key(ek: Data) -> Data? {
+            guard let pub = try? P256.KeyAgreement.PublicKey(x963Representation: ek),
+                  let shared = try? privateKey.sharedSecretFromKeyAgreement(with: pub)
+            else { return nil }
+            return linkKey(shared, lid: offer.lid, ek: ek, lk: offer.lk)
+        }
+    }
+
+    static func linkKey(_ shared: SharedSecret, lid: Data, ek: Data, lk: Data) -> Data {
+        shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: lid,
+                                       sharedInfo: Data("talka-lien-v1:".utf8) + ek + lk, outputByteCount: 32)
+            .withUnsafeBytes { Data($0) }
+    }
+
+    /// L'appareil du compte répond à une offre : (sa clé éphémère publique,
+    /// la clé de liaison).
+    public static func linkAnswer(_ offer: LinkOffer) -> (ek: Data, key: Data)? {
+        guard let pub = try? P256.KeyAgreement.PublicKey(x963Representation: offer.lk) else { return nil }
+        let eph = P256.KeyAgreement.PrivateKey()
+        let ek = eph.publicKey.x963Representation
+        guard let shared = try? eph.sharedSecretFromKeyAgreement(with: pub) else { return nil }
+        return (ek, linkKey(shared, lid: offer.lid, ek: ek, lk: offer.lk))
+    }
+
+    /// Le code de vérification d'une liaison, le même sur les deux appareils.
+    public static func linkVerification(ek: Data, lk: Data) -> String {
+        let d = Array(SHA256.hash(data: Data("talka-lien-verif:".utf8) + ek + lk))
+        let n = (UInt32(d[0]) << 24 | UInt32(d[1]) << 16 | UInt32(d[2]) << 8 | UInt32(d[3])) % 1_000_000
+        return String(format: "%03d %03d", Int(n / 1000), Int(n % 1000))
+    }
+
+    /// La taille d'un morceau de liaison (en clair).
+    public static let linkChunk = 2 * 1024 * 1024
+
+    /// Chiffre ce que la liaison transporte, en morceaux : `{"e","i","n","c"}`
+    /// (JSON), à déposer dans la boîte de liaison.
+    public static func linkSeal(key: Data, lid: Data, ek: Data, plain: Data) -> [String]? {
+        var chunks: [Data] = []
+        var start = plain.startIndex
+        repeat {
+            let end = plain.index(start, offsetBy: linkChunk, limitedBy: plain.endIndex) ?? plain.endIndex
+            chunks.append(plain.subdata(in: start..<end))
+            start = end
+        } while start < plain.endIndex
+        let n = chunks.count
+        let lid64 = b64url(lid)
+        var out: [String] = []
+        for (i, chunk) in chunks.enumerated() {
+            guard let box = try? AES.GCM.seal(chunk, using: SymmetricKey(data: key), nonce: AES.GCM.Nonce(),
+                                              authenticating: Data("talka-lien:\(lid64):\(i)/\(n)".utf8)),
+                  let combined = box.combined,
+                  let json = try? JSONSerialization.data(withJSONObject: ["e": b64(ek), "i": i, "n": n, "c": b64(combined)] as [String: Any],
+                                                          options: [.sortedKeys]),
+                  let text = String(data: json, encoding: .utf8)
+            else { return nil }
+            out.append(text)
+        }
+        return out
+    }
+
+    /// Ouvre un morceau de liaison : (indice, nombre, clair).
+    public static func linkOpen(key: Data, lid: Data, chunk: [String: Any]) -> (i: Int, n: Int, plain: Data)? {
+        guard let i = chunk["i"] as? Int, let n = chunk["n"] as? Int, n > 0, i >= 0, i < n, n <= 64,
+              let bytes = (chunk["c"] as? String).flatMap(unb64), bytes.count >= 12 + 16,
+              let box = try? AES.GCM.SealedBox(combined: bytes),
+              let plain = try? AES.GCM.open(box, using: SymmetricKey(data: key),
+                                            authenticating: Data("talka-lien:\(b64url(lid)):\(i)/\(n)".utf8))
+        else { return nil }
+        return (i, n, plain)
     }
 }
