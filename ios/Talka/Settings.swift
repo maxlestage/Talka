@@ -18,7 +18,9 @@ struct SettingsTab: View {
     @State private var importing = false
     @State private var importData: Data?
     @State private var password = ""
-    @State private var backupURL: URL?
+    /// La sauvegarde chiffrée, prête à être enregistrée dans Fichiers.
+    @State private var backupFile: BackupFile?
+    @State private var savingBackup = false
     @State private var server = ""
     @State private var confirmWipe = false
 
@@ -167,15 +169,27 @@ struct SettingsTab: View {
                     .ignoresSafeArea()
                 }
                 .sheet(isPresented: $settingPin) { PinSetup() }
-                .sheet(item: Binding(get: { backupURL.map(SharedURL.init) }, set: { backupURL = $0?.url })) { s in
-                    ActivityView(items: [s.url])
+                // « Enregistrer dans Fichiers » : iCloud Drive, Sur mon iPhone…
+                .fileExporter(isPresented: $savingBackup, document: backupFile, contentType: .data,
+                              defaultFilename: model.backupFilename) { result in
+                    backupFile = nil
+                    switch result {
+                    case .success: model.show("Sauvegarde enregistrée ✓")
+                    case .failure(let error): model.show("Sauvegarde non enregistrée : \(error.localizedDescription)")
+                    }
                 }
                 .alert("Mot de passe de la sauvegarde", isPresented: $exporting) {
                     SecureField("Au moins 8 caractères", text: $password)
                     Button("Exporter") {
                         defer { password = "" }
                         guard password.count >= 8 else { return model.show("Mot de passe trop court (8 caractères au moins).") }
-                        backupURL = model.exportBackup(password: password)
+                        guard let data = model.engine?.exportBackup(password: password) else {
+                            return model.show("La sauvegarde n'a pas pu être créée.")
+                        }
+                        backupFile = BackupFile(data: data)
+                        // Après la fermeture de l'alerte : présentée pendant,
+                        // la fenêtre d'enregistrement ne s'ouvrait pas.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { savingBackup = true }
                     }
                     Button("Annuler", role: .cancel) { password = "" }
                 } message: {
@@ -325,5 +339,21 @@ struct PinSetup: View {
             Spacer()
         }
         .padding()
+    }
+}
+
+/// Une sauvegarde chiffrée, pour la fenêtre « Enregistrer dans Fichiers ».
+struct BackupFile: FileDocument {
+    static var readableContentTypes: [UTType] { [.data, .json] }
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
