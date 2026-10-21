@@ -3362,7 +3362,9 @@ async fn export_backup() {
 }
 
 async fn import_backup() {
-    let Some(f) = media::pick_file(".talka,application/json", None).await else {
+    // Aucun filtre : sur iPhone, l'extension « .talka », inconnue du
+    // système, rendait le fichier grisé. Le contenu est vérifié ensuite.
+    let Some(f) = media::pick_file("", None).await else {
         return;
     };
     let Some(text) = media::text_of(&f).await else {
