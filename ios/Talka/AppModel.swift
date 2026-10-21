@@ -31,6 +31,9 @@ final class AppModel {
     /// « Répondre en privé » : le message de groupe à citer dans la discussion
     /// à deux qui s'ouvre.
     var privateReply: Message?
+    /// Un résultat de recherche : le message à montrer dans la discussion
+    /// qui s'ouvre.
+    var reveal: String?
     @ObservationIgnored var hiddenAt: Date?
 
     /// L'étape de l'écran de chargement (`nil` : Talka est prêt).

@@ -537,6 +537,25 @@ public final class Engine {
         bump(id)
     }
 
+    /// La recherche dans toutes les discussions, comme le navigateur : les
+    /// messages qui contiennent `query` (accents et majuscules ignorés), les
+    /// plus récents d'abord. Ni messages système ou supprimés, ni capsule
+    /// scellée, ni discussion avec un contact bloqué.
+    public func searchMessages(_ query: String, limit: Int = 40) -> [Message] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 2 else { return [] }
+        let now = nowMs()
+        var found: [Message] = []
+        for c in chats.values where c.group || !blocked(c.id) {
+            for m in store.messagesOf(c.id)
+            where m.kind != "system" && !m.deleted && !m.sealed(for: me.code, now: now)
+                && "\(m.text) \(m.name)".range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                found.append(m)
+            }
+        }
+        return Array(found.sorted { $0.at > $1.at }.prefix(limit))
+    }
+
     /// Ce qu'on lit d'un message sur une ligne (épingle, favoris, réponse) :
     /// son texte, sauf s'il est supprimé ou si c'est une capsule encore
     /// scellée pour soi ; sinon son aperçu (« ⏳ Capsule temporelle »…).
