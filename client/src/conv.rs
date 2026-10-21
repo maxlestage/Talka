@@ -961,13 +961,20 @@ fn voice_player(m: &Message) -> El {
         });
     }
     {
-        let (p, bars, d) = (play_btn.clone(), bars.clone(), dur_el.clone());
+        let (p, bars, d, el) = (
+            play_btn.clone(),
+            bars.clone(),
+            dur_el.clone(),
+            audio.clone(),
+        );
         listen(&audio, "ended", move |_| {
             replace(&p, icon("play"));
             for b in query_all_in(&bars, "i") {
                 toggle_class(&b, "on", false);
             }
             d.set_text_content(Some(&fmt_dur(dur)));
+            toggle_class(&el, "playing", false);
+            play_next_voice(&el);
         });
     }
     {
@@ -1029,6 +1036,31 @@ fn voice_player(m: &Message) -> El {
                 .child(bars)
                 .child(h("div.voice-meta").child(dur_el).child(speed_btn)),
         )
+}
+
+/// Comme WhatsApp : un vocal fini, le suivant enchaîne s'il vient juste
+/// après (les séparateurs de jour et « non lus » ne comptent pas ; tout autre
+/// message arrête la lecture).
+fn play_next_voice(audio: &Element) {
+    let Some(row) = audio.closest(".msg-row").ok().flatten() else {
+        return;
+    };
+    let mut next = row.next_element_sibling();
+    while let Some(el) = next {
+        if el.class_list().contains("msg-row") {
+            if let Some(btn) = query_in(&el, ".bubble.voice .voice-play") {
+                let opts = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(&opts, &"block".into(), &"nearest".into());
+                let _ = js_sys::Reflect::set(&opts, &"behavior".into(), &"smooth".into());
+                let _ = call(&el, "scrollIntoView", &[opts.into()]);
+                if let Some(b) = btn.dyn_ref::<HtmlElement>() {
+                    b.click();
+                }
+            }
+            return;
+        }
+        next = el.next_element_sibling();
+    }
 }
 
 // ----- Les capsules temporelles -----
