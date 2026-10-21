@@ -18,13 +18,24 @@
 //! Les données d'avant Memoire (la base IndexedDB `talka-rs`, un magasin par
 //! sorte d'objet) sont reprises une fois, puis cette ancienne base est
 //! supprimée.
+//!
+//! **Chiffré au repos.** Chaque valeur part vers IndexedDB chiffrée
+//! (AES-256-GCM, [`crate::crypto::seal_row`]) avec la clé de l'appareil, et
+//! n'est déchiffrée qu'en mémoire : Talka affiche les messages en clair,
+//! le disque n'en garde que du chiffré. La clé de l'appareil (32 octets
+//! tirés une fois) est gardée dans une autre base (`talka-cle`), chiffrée
+//! par une clé WebCrypto **non exportable** : le navigateur ne la donne
+//! jamais, ni au code, ni à qui lirait les fichiers d'IndexedDB. Les
+//! valeurs d'avant (du texte en clair) sont relues, puis réécrites
+//! chiffrées une fois. La sauvegarde (`dump`), elle, ne change pas : elle
+//! a son propre chiffrement, par son mot de passe.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use js_sys::{Array, Promise};
+use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
 use memoire_orm::web::KeyValueStorage;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -34,7 +45,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{IdbDatabase, IdbOpenDbRequest, IdbRequest, IdbTransaction, IdbTransactionMode};
 
-use crate::dom::{get, window};
+use crate::crypto;
+use crate::dom::{await_promise, call, get, window};
 use crate::rows::{Rows, STORES};
 
 /// La base IndexedDB où Memoire garde ses lignes (une clé, une valeur).
@@ -42,6 +54,10 @@ const NAME: &str = "talka-memoire";
 const KV: &str = "kv";
 /// La base d'avant Memoire.
 const LEGACY: &str = "talka-rs";
+/// La base de la clé de l'appareil (à part : elle ne se lit pas avec le
+/// reste).
+const KEY_DB: &str = "talka-cle";
+const KEY_STORE: &str = "cle";
 
 thread_local! {
     static ROWS: RefCell<Option<Rows>> = const { RefCell::new(None) };
@@ -51,6 +67,8 @@ thread_local! {
     static RELEASED: Cell<bool> = const { Cell::new(false) };
     /// Les [`Batch`] ouverts : tant qu'il y en a, rien ne part vers IndexedDB.
     static HOLD: Cell<u32> = const { Cell::new(0) };
+    /// La clé de l'appareil, déchiffrée pour la session.
+    static DEVICE_KEY: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
 }
 
 /// Les écritures pas encore parties vers IndexedDB, dans l'ordre.
@@ -109,17 +127,137 @@ async fn open_idb(
     Ok(result?.unchecked_into())
 }
 
-/// Tout le contenu de la base de Memoire, pour la copie en mémoire.
-async fn load_all(db: &IdbDatabase) -> Result<BTreeMap<String, String>, JsValue> {
+// ----- La clé de l'appareil -----------------------------------------------------
+
+fn subtle() -> JsValue {
+    get(&get(&window(), "crypto"), "subtle")
+}
+
+fn aes_gcm(iv: &[u8]) -> Result<JsValue, JsValue> {
+    let alg = Object::new();
+    Reflect::set(&alg, &"name".into(), &"AES-GCM".into())?;
+    Reflect::set(&alg, &"iv".into(), &Uint8Array::from(iv).into())?;
+    Ok(alg.into())
+}
+
+/// Ouvre la clé de l'appareil gardée (`{wrap, iv, data}`).
+async fn unwrap_key(record: &JsValue) -> Result<Vec<u8>, JsValue> {
+    let iv = Uint8Array::new(&get(record, "iv")).to_vec();
+    let plain = await_promise(call(
+        &subtle(),
+        "decrypt",
+        &[aes_gcm(&iv)?, get(record, "wrap"), get(record, "data")],
+    ))
+    .await?;
+    let key = Uint8Array::new(&plain).to_vec();
+    if key.len() != 32 {
+        return Err(JsValue::from_str("clé"));
+    }
+    Ok(key)
+}
+
+/// La clé de l'appareil : lue (et ouverte), ou tirée la première fois. Elle
+/// est gardée chiffrée par une clé WebCrypto non exportable.
+async fn device_key() -> Result<Vec<u8>, JsValue> {
+    let db = open_idb(KEY_DB, |db| {
+        if !db.object_store_names().contains(KEY_STORE) {
+            let _ = db.create_object_store(KEY_STORE);
+        }
+    })
+    .await?;
+    let read = |db: &IdbDatabase| -> Result<IdbRequest, JsValue> {
+        db.transaction_with_str(KEY_STORE)?
+            .object_store(KEY_STORE)?
+            .get(&"repos".into())
+    };
+    let record = wait(&read(&db)?).await?;
+    if !record.is_undefined() && !record.is_null() {
+        let key = unwrap_key(&record).await;
+        db.close();
+        return key;
+    }
+    // La première fois : une clé d'emballage non exportable, et la clé de
+    // l'appareil chiffrée par elle.
+    let alg = Object::new();
+    Reflect::set(&alg, &"name".into(), &"AES-GCM".into())?;
+    Reflect::set(&alg, &"length".into(), &256.into())?;
+    let usages = Array::of2(&"encrypt".into(), &"decrypt".into());
+    let wrap = await_promise(call(
+        &subtle(),
+        "generateKey",
+        &[alg.into(), false.into(), usages.into()],
+    ))
+    .await?;
+    let key = crypto::random_bytes(32);
+    let iv = crypto::random_bytes(12);
+    let data = await_promise(call(
+        &subtle(),
+        "encrypt",
+        &[
+            aes_gcm(&iv)?,
+            wrap.clone(),
+            Uint8Array::from(key.as_slice()).into(),
+        ],
+    ))
+    .await?;
+    let record = Object::new();
+    Reflect::set(&record, &"wrap".into(), &wrap)?;
+    Reflect::set(
+        &record,
+        &"iv".into(),
+        &Uint8Array::from(iv.as_slice()).into(),
+    )?;
+    Reflect::set(&record, &"data".into(), &data)?;
+    let tx = db.transaction_with_str_and_mode(KEY_STORE, IdbTransactionMode::Readwrite)?;
+    // `add` : si un autre onglet l'a écrite entre-temps, c'est la sienne.
+    let added = match tx
+        .object_store(KEY_STORE)?
+        .add_with_key(&record, &"repos".into())
+    {
+        Ok(req) => wait(&req).await.is_ok(),
+        Err(_) => false,
+    };
+    let _ = JsFuture::from(done(&tx)).await;
+    let out = if added {
+        Ok(key)
+    } else {
+        let record = wait(&read(&db)?).await?;
+        unwrap_key(&record).await
+    };
+    db.close();
+    out
+}
+
+fn key() -> Option<Vec<u8>> {
+    DEVICE_KEY.with(|k| k.borrow().clone())
+}
+
+/// Tout le contenu de la base de Memoire, déchiffré, pour la copie en
+/// mémoire ; et les clés des valeurs encore en clair (d'avant le
+/// chiffrement), à réécrire.
+async fn load_all(
+    db: &IdbDatabase,
+    key: &[u8],
+) -> Result<(BTreeMap<String, String>, Vec<String>), JsValue> {
     let store = db.transaction_with_str(KV)?.object_store(KV)?;
     let keys = wait(&store.get_all_keys()?).await?;
     let values = wait(&store.get_all()?).await?;
     let (keys, values) = (Array::from(&keys), Array::from(&values));
-    Ok(keys
-        .iter()
-        .zip(values.iter())
-        .filter_map(|(k, v)| Some((k.as_string()?, v.as_string()?)))
-        .collect())
+    let mut out = BTreeMap::new();
+    let mut plain = Vec::new();
+    for (k, v) in keys.iter().zip(values.iter()) {
+        let Some(k) = k.as_string() else { continue };
+        if let Some(v) = v.as_string() {
+            plain.push(k.clone());
+            out.insert(k, v);
+        } else if v.is_instance_of::<Uint8Array>() {
+            // Illisible (abîmée) : laissée telle quelle sur le disque.
+            if let Some(v) = crypto::open_row(key, &k, &Uint8Array::new(&v).to_vec()) {
+                out.insert(k, v);
+            }
+        }
+    }
+    Ok((out, plain))
 }
 
 /// Envoie vers IndexedDB les écritures en attente, dans l'ordre (une
@@ -150,10 +288,21 @@ async fn flush() {
             break;
         };
         let done = done(&tx);
+        let device = key();
         for (key, value) in batch {
             let k = JsValue::from_str(&key);
             let _ = match value {
-                Some(v) => store.put_with_key(&JsValue::from_str(&v), &k).map(drop),
+                // Chiffrée ; en clair seulement si l'appareil n'a pas de clé.
+                Some(v) => {
+                    let sealed = device
+                        .as_deref()
+                        .and_then(|d| crypto::seal_row(d, &key, &v));
+                    let v = match sealed {
+                        Some(bytes) => Uint8Array::from(bytes.as_slice()).into(),
+                        None => JsValue::from_str(&v),
+                    };
+                    store.put_with_key(&v, &k).map(drop)
+                }
                 None => store.delete(&k).map(drop),
             };
         }
@@ -272,8 +421,14 @@ pub async fn open() -> Result<(), JsValue> {
         }
     })
     .await?;
-    let cache = load_all(&idb).await?;
+    let device = device_key().await?;
+    let (cache, plain) = load_all(&idb, &device).await?;
+    DEVICE_KEY.with(|k| *k.borrow_mut() = Some(device));
     IDB.with(|d| *d.borrow_mut() = Some(idb));
+    // Les valeurs d'avant le chiffrement : réécrites chiffrées, une fois.
+    for k in &plain {
+        enqueue(k, cache.get(k).map(String::as_str));
+    }
     let storage = IdbKv {
         cache: Arc::new(Mutex::new(cache)),
     };

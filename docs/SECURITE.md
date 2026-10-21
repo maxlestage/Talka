@@ -61,6 +61,19 @@ secret dans les journaux ; aucune primitive « maison ».
 | Android (Brocolis) | valeurs chiffrées AES-256-GCM par une clé `AndroidKeyStore` non exportable (StrongBox si présent) | matériel ; préférences exclues des sauvegardes et transferts |
 | Navigateur (Talka) | `brocolis_sealed` : clé tirée du code de verrouillage | code (faible seul) ; à terme passkey (§3.5) |
 | Navigateur (site Brocolis) | valeurs chiffrées par une clé WebCrypto **non extractible** gardée dans IndexedDB | le navigateur ne la donne jamais au code |
+| Navigateur (Talka) — toute la mémoire | chaque valeur d'IndexedDB (messages, contacts, clés…) chiffrée AES-256-GCM, liée à sa clé de ligne ; la clé de l'appareil est elle-même chiffrée par une clé WebCrypto **non extractible** (base `talka-cle`) | le navigateur ne donne jamais la clé d'emballage ; les fichiers d'IndexedDB ne montrent que du chiffré |
+| iPhone (Talka) — toute la mémoire | chaque JSON de la base SQLite chiffré AES-256-GCM (CryptoKit), lié à son magasin et sa clé ; clé de l'appareil dans le trousseau (`AfterFirstUnlock`, groupe de l'application), `secure_delete` | protection de données d'iOS **et** trousseau : une copie du fichier seul ne montre rien |
+
+Talka affiche les messages en clair ; seul le disque est chiffré. Les
+données d'avant sont réécrites chiffrées au premier lancement (sur
+l'iPhone, suivi d'un `VACUUM`). Limites : la clé de l'appareil est ouverte
+sans geste de l'utilisateur (comme l'application elle-même) : qui
+utiliserait le navigateur ou l'iPhone déverrouillé lirait les messages —
+c'est le rôle du code de verrouillage, et à terme d'une passkey (§3.5) qui
+protégerait aussi cette clé. Dans le navigateur, d'anciennes pages
+d'IndexedDB peuvent garder du texte d'avant tant que le navigateur ne les
+a pas compactées. La sauvegarde Talka garde son format (chiffrée par son
+mot de passe).
 
 ### 3.2 Clé protégée par une phrase secrète
 
