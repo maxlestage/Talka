@@ -344,10 +344,11 @@ fn mount() {
         }
     });
     listen_forever(&document(), "visibilitychange", |_| {
-        if visible()
-            && let Some(id) = conv::current()
-        {
-            spawn(async move { core::mark_read(&id).await });
+        if visible() {
+            spawn(crate::push::clear());
+            if let Some(id) = conv::current() {
+                spawn(async move { core::mark_read(&id).await });
+            }
         }
         update_badge();
     });
@@ -3182,7 +3183,7 @@ pub async fn open_settings() {
                 .child(
                     h("div.settings-group")
                         .child(h("h3").text("Notifications"))
-                        .child(toggle("Notifications", "Quand Talka est en arrière-plan", s.notify && notif_ok, |v| {
+                        .child(toggle("Notifications", if crate::push::available() { "Même quand Talka est fermé, sans rien dévoiler" } else { "Quand Talka est en arrière-plan" }, s.notify && notif_ok, |v| {
                             spawn(async move {
                                 if v {
                                     let p = await_promise(call(&get(&window(), "Notification"), "requestPermission", &[])).await.ok().and_then(|p| p.as_string()).unwrap_or_default();
@@ -3193,6 +3194,7 @@ pub async fn open_settings() {
                                     }
                                 }
                                 core::save_settings(move |s| s.notify = v).await;
+                                crate::push::sync().await;
                             })
                         }))
                         .child(toggle("Sons", "Messages, envois, appels", s.sound, |v| spawn(core::save_settings(move |s| s.sound = v)))),

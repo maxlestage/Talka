@@ -1217,7 +1217,10 @@ async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
         store::committed().await;
     }
     let body = sealed.body;
-    match net::send(&item.id, &item.to, &body, live).await {
+    // Les messages écrits (pas les accusés, réactions, profils) réveillent
+    // un destinataire hors ligne.
+    let wake = !live && !item.msg_id.is_empty();
+    match net::send(&item.id, &item.to, &body, live, wake).await {
         Ack::Ok => Ok(()),
         Ack::Err(e) => Err(e),
     }
