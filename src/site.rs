@@ -197,6 +197,35 @@ fn feature(icon: &str, title: &str, text: &str) -> Element {
         .child(p().text(text.to_owned()))
 }
 
+/// Une ligne du tableau « ce que voit le relais ».
+fn row(what: &str, now: &str, next: &str) -> Element {
+    tr().child(th().attr("scope", "row").text(what.to_owned()))
+        .child(td().text(now.to_owned()))
+        .child(td().class("next").text(next.to_owned()))
+}
+
+/// Une étape de la v4, avec son état (« En cours », « Prévu »).
+fn milestone(n: &str, state: &str, icon: &str, title: &str, text: &str) -> Element {
+    article()
+        .class("feature milestone reveal")
+        .child(
+            div()
+                .class("milestone-head")
+                .child(div().class("feature-icon").text(icon.to_owned()))
+                .child(
+                    span()
+                        .class(if state == "En cours" {
+                            "milestone-state now"
+                        } else {
+                            "milestone-state"
+                        })
+                        .text(format!("{n} · {state}")),
+                ),
+        )
+        .child(h3().text(title.to_owned()))
+        .child(p().text(text.to_owned()))
+}
+
 fn step(n: &str, title: &str, text: &str) -> Element {
     li().class("step reveal")
         .child(span().class("step-n").text(n.to_owned()))
@@ -346,13 +375,61 @@ pub fn home(site: &Site) -> Page {
                 .child(
                     div()
                         .class("features three")
-                        .child(feature("🔑", "Des clés à vous", "ECDH P-256 et AES-256-GCM, calculés sur votre appareil par du code Rust compilé en WebAssembly. Chaque conversation a sa propre clé."))
+                        .child(feature("🔑", "Une clé par message", "Protocole v3 : sessions à double cliquet, établies en hybride X25519 + ML-KEM-768 (résistant aux ordinateurs quantiques). Chaque message a sa clé, effacée dès qu'elle a servi."))
                         .child(feature("🧾", "Le code est une preuve", "Votre code est l'empreinte SHA-256 de vos clés publiques : le serveur ne peut pas glisser les siennes à la place."))
                         .child(feature("✍️", "Connexion signée", "Pour recevoir vos messages, votre appareil signe un défi du serveur (ECDSA). Sans votre clé, pas de connexion."))
                         .child(feature("🧹", "Rien ne traîne", "Un message attend au plus 30 jours sur le relais s'il n'est pas livré, puis disparaît."))
                         .child(feature("🛡️", "Un serveur blindé", "Pare-feu applicatif, limitation de débit, politique de contenu stricte et HTTPS : le bouclier de Paquets."))
                         .child(feature("🙈", "Aucune trace", "Ni numéro, ni e-mail, ni carnet d'adresses envoyé. Pas de publicité, pas de pisteur.")),
                 ),
+        );
+
+    // La v4 : ce qui arrive, présenté comme une feuille de route (rien n'est
+    // annoncé comme disponible avant d'être en ligne et vérifié).
+    let v4 = section()
+        .id("v4")
+        .class("section band")
+        .child(
+            div()
+                .class("wrap")
+                .child(span().class("kicker").text("En préparation : Talka v4"))
+                .child(h2().text("Un relais qui ne sait plus rien."))
+                .child(p().class("lead").text(
+                    "Aujourd'hui déjà, le relais ne lit rien et ne connaît ni votre numéro ni votre nom. \
+                     La v4 va plus loin : il ne saura plus qui écrit, ni vraiment à qui. \
+                     Elle arrive par étapes, chacune publiée seulement une fois testée.",
+                ))
+                .child(
+                    table()
+                        .class("compare reveal")
+                        .child(
+                            thead().child(
+                                tr().child(th().text("Ce que voit le relais"))
+                                    .child(th().text("Aujourd'hui (v3)"))
+                                    .child(th().text("Avec la v4")),
+                            ),
+                        )
+                        .child(
+                            tbody()
+                                .child(row("Votre numéro, votre e-mail", "Jamais", "Jamais"))
+                                .child(row("Le contenu des messages", "Chiffré, illisible", "Chiffré, illisible"))
+                                .child(row("Qui écrit", "Le code de l'expéditeur", "Personne : l'auteur n'est prouvé qu'au destinataire"))
+                                .child(row("À qui", "Le code du destinataire", "Une boîte aux lettres qui change chaque jour"))
+                                .child(row("Les notifications", "Pas de notification app fermée", "Un simple réveil, sans nom ni texte")),
+                        ),
+                )
+                .child(
+                    div()
+                        .class("features roadmap")
+                        .child(milestone("1", "En cours", "🔔", "Notifications sans fuite", "Recevoir ses messages app fermée, sur l'ordinateur et l'iPhone. La notification ne contient rien : c'est votre appareil qui déchiffre et affiche."))
+                        .child(milestone("2", "Prévu", "📱", "Plusieurs appareils", "Le même compte sur l'iPhone et l'ordinateur, liés par un QR code. Chaque appareil a ses propres clés ; chaque message part chiffré pour chacun."))
+                        .child(milestone("3", "Prévu", "🕶️", "Expéditeur scellé", "Le relais ne voit plus qui envoie : un jeton de remise prouve qu'on a le droit d'écrire, sans dire qui l'on est."))
+                        .child(milestone("4", "Prévu", "📮", "Boîtes aux lettres tournantes", "Entre contacts, les messages ne sont plus adressés à votre code mais à une boîte pseudonyme renouvelée chaque jour.")),
+                )
+                .child(p().class("muted small").text(
+                    "Compatible : un appareil v4 parle v3 avec un appareil qui ne l'a pas encore. \
+                     La spécification, les vecteurs de test communs au navigateur et à l'iPhone et le code sont publics.",
+                )),
         );
 
     let built = section()
@@ -429,6 +506,7 @@ pub fn home(site: &Site) -> Page {
             .child(features)
             .child(no_db)
             .child(security)
+            .child(v4)
             .child(built)
             .child(faq_section)
             .child(cta),
