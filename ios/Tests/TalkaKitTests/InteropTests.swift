@@ -54,6 +54,14 @@ final class InteropTests: XCTestCase {
         let g = e.createGroup(name: "iPhone et navigateur", members: [browser], avatar: "")
         e.send(g.id, Content(text: "Dans le groupe"))
         try await wait("message de groupe du navigateur", 60) { e.messages(g.id).contains { $0.text == "Réponse dans le groupe" } }
+        // Une photo trop grosse pour un jeton v3 : la pièce chiffrée à part,
+        // sa clé dans le message v3 ; et un document dans l'autre sens.
+        XCTAssertTrue(e.contact(browser)?.pj ?? false, "le navigateur annonce les pièces jointes en v3")
+        let photo = "data:image/png;base64," + String(repeating: "iVBO", count: 100_000)
+        e.send(browser, Content(kind: "image", data: photo))
+        try await wait("document du navigateur", 60) { e.messages(browser).contains { $0.kind == "file" && $0.name == "interop.bin" } }
+        let doc = try XCTUnwrap(e.messages(browser).first { $0.name == "interop.bin" })
+        XCTAssertGreaterThan(doc.data.count, 400_000, "le document est arrivé entier")
         try "fini".write(toFile: "\(dir)/swift.done", atomically: true, encoding: .utf8)
         try await Task.sleep(nanoseconds: 2_000_000_000)
     }
