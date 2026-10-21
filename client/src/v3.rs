@@ -61,6 +61,35 @@ pub fn bundle_message(bundle: &[u8]) -> Vec<u8> {
     [BUNDLE_CONTEXT, bundle].concat()
 }
 
+/// Ce que signe l'identité Talka pour publier le paquet d'un appareil (v4,
+/// `docs/SECURITE.md` §7.11) : le paquet est lié au code **et** à
+/// l'appareil.
+pub fn device_bundle_message(dev: &str, bundle: &[u8]) -> Vec<u8> {
+    [format!("talka-v4-appareil:{dev}:").as_bytes(), bundle].concat()
+}
+
+/// Le paquet d'un appareil (v4), comme `verify_bundle`.
+pub fn verify_device_bundle(
+    code: &str,
+    sign: &str,
+    dh: &str,
+    dev: &str,
+    bundle: &str,
+    sig: &str,
+) -> Option<KeyBundle> {
+    if !crypto::is_dev(dev)
+        || !crypto::verify_keys(code, sign, dh)
+        || bundle.len() > MAX_BUNDLE.div_ceil(3) * 4
+    {
+        return None;
+    }
+    let bytes = unb64(bundle)?;
+    if bytes.len() > MAX_BUNDLE || !crypto::verify(sign, &device_bundle_message(dev, &bytes), sig) {
+        return None;
+    }
+    KeyBundle::from_bytes(&bytes).ok()
+}
+
 /// L'heure du protocole : des secondes Unix (Talka compte en millisecondes).
 pub fn secs(ms: f64) -> u64 {
     (ms / 1000.0).max(0.0) as u64
@@ -197,6 +226,10 @@ impl Peer {
         self.sessions.iter_mut().find(|s| s.session_id() == *id)
     }
 
+    fn get_ref(&self, id: &[u8; 8]) -> Option<&Session> {
+        self.sessions.iter().find(|s| s.session_id() == *id)
+    }
+
     /// La session d'envoi : la courante, sinon la plus récente.
     fn sending(&mut self) -> Option<&mut Session> {
         let id = self
@@ -273,6 +306,13 @@ impl Engine {
         (!sig.is_empty()).then(|| (b64(&bytes), sig))
     }
 
+    /// Le paquet de cet appareil (v4), signé pour lui : (paquet, signature).
+    pub fn published_device(&self, me: &Identity, dev: &str) -> Option<(String, String)> {
+        let bytes = self.device.bundle().ok()?.to_bytes();
+        let sig = me.sign(&device_bundle_message(dev, &bytes));
+        (!sig.is_empty()).then(|| (b64(&bytes), sig))
+    }
+
     /// Les sessions d'un contact sont-elles déjà en mémoire ?
     pub fn is_loaded(&self, code: &str) -> bool {
         self.loaded.contains(code)
@@ -340,12 +380,26 @@ impl Engine {
         bundle: Option<&KeyBundle>,
         plain: &str,
     ) -> Option<Sealed> {
+        self.seal_to(me, peer_code, peer_code, peer_dh, bundle, plain)
+    }
+
+    /// Comme `seal`, pour un appareil d'un compte (v4) : la session est celle
+    /// de son adresse (`addr`, `<code>/<dev>`), l'enveloppe celle du code.
+    pub fn seal_to(
+        &mut self,
+        me: &Identity,
+        addr: &str,
+        peer_code: &str,
+        peer_dh: &str,
+        bundle: Option<&KeyBundle>,
+        plain: &str,
+    ) -> Option<Sealed> {
         let legacy =
             || crypto::seal(me, peer_code, peer_dh, plain).map(|body| Sealed { body, v3: false });
         if plain.len() > MAX_PLAINTEXT {
             return legacy();
         }
-        let token = self.encrypt(peer_code, bundle, plain);
+        let token = self.encrypt(addr, bundle, plain);
         match token {
             Some(token) => {
                 crypto::seal(me, peer_code, peer_dh, &token).map(|body| Sealed { body, v3: true })
@@ -388,13 +442,27 @@ impl Engine {
         body: &str,
         now: u64,
     ) -> Opened {
+        self.open_from(me, peer_code, peer_code, peer_dh, body, now)
+    }
+
+    /// Comme `open`, d'un appareil d'un compte (v4) : la session est celle
+    /// de son adresse (`addr`, `<code>/<dev>`).
+    pub fn open_from(
+        &mut self,
+        me: &Identity,
+        addr: &str,
+        peer_code: &str,
+        peer_dh: &str,
+        body: &str,
+        now: u64,
+    ) -> Opened {
         let Some(plain) = crypto::open(me, peer_code, peer_dh, body) else {
             return Opened::Failed(Failure::Envelope);
         };
         if !is_token(&plain) {
             return Opened::Legacy(plain);
         }
-        match self.decrypt(peer_code, &plain, now) {
+        match self.decrypt(addr, &plain, now) {
             Ok(Content::Text(wire)) => Opened::V3(wire),
             // Talka ne se sert pas (encore) des chaînes de groupe.
             Ok(Content::Distribution(_)) => Opened::Failed(Failure::V3(Erreur::Format)),
@@ -407,6 +475,25 @@ impl Engine {
         let token = Token::decode(text)?;
         let id = token.session_id().ok_or(Erreur::SessionInconnue)?;
         let rng = &mut hasard::system();
+        // v4 : une session ouverte avant de connaître ses appareils est
+        // rangée sous son code ; elle passe à l'adresse de l'appareil
+        // (`<code>/<dev>`) dès qu'un message dit lequel c'est.
+        if let Some((base, _)) = code.split_once('/')
+            && !self
+                .peers
+                .get(code)
+                .is_some_and(|p| p.get_ref(&id).is_some())
+            && let Some(old) = self.peers.get_mut(base)
+            && let Some(pos) = old.sessions.iter().position(|s| s.session_id() == id)
+        {
+            let s = old.sessions.remove(pos);
+            if old.current == Some(id) {
+                old.current = None;
+            }
+            self.dirty.insert(base.to_owned());
+            self.peers.entry(code.to_owned()).or_default().put(s);
+            self.dirty.insert(code.to_owned());
+        }
         let peer = self.peers.entry(code.to_owned()).or_default();
         if let Some(s) = peer.get(&id) {
             match s.decrypt(&token, now, rng) {
@@ -646,6 +733,104 @@ mod tests {
         );
         let after = send(&mut a, &b3, false, "{\"k\":4}");
         assert_eq!(recv(&mut b3, &a, &after), Opened::V3("{\"k\":4}".into()));
+    }
+
+    /// v4 : le paquet d'un appareil est lié à cet appareil ; une session par
+    /// appareil d'un même compte (les adresses `<code>/<dev>`).
+    #[test]
+    fn device_bundles_and_sessions_per_device() {
+        const D1: &str = "00000000000000b1";
+        const D2: &str = "00000000000000b2";
+        let mut a = side();
+        let mut b1 = side();
+        // B2 : un autre appareil du compte de B1 (la même identité, son
+        // propre appareil v3).
+        let mut b2 = Side {
+            id: b1.id.clone(),
+            engine: Engine::start(None, 1_000),
+        };
+        let b = b1.id.clone();
+        let (bundle, sig) = b1.engine.published_device(&b, D1).unwrap();
+        assert!(verify_device_bundle(&b.code, &b.sign, &b.dh, D1, &bundle, &sig).is_some());
+        // Présenté pour un autre appareil, ou comme un paquet d'avant : refusé.
+        assert!(verify_device_bundle(&b.code, &b.sign, &b.dh, D2, &bundle, &sig).is_none());
+        assert!(verify_bundle(&b.code, &b.sign, &b.dh, &bundle, &sig).is_none());
+        let p1 = verify_device_bundle(&b.code, &b.sign, &b.dh, D1, &bundle, &sig).unwrap();
+        let (bundle2, sig2) = b2.engine.published_device(&b, D2).unwrap();
+        let p2 = verify_device_bundle(&b.code, &b.sign, &b.dh, D2, &bundle2, &sig2).unwrap();
+        // A écrit à chacun : une session par adresse, l'enveloppe des codes.
+        let (addr1, addr2) = (format!("{}/{D1}", b.code), format!("{}/{D2}", b.code));
+        let m1 = a
+            .engine
+            .seal_to(&a.id, &addr1, &b.code, &b.dh, Some(&p1), "{\"k\":1}")
+            .unwrap();
+        let m2 = a
+            .engine
+            .seal_to(&a.id, &addr2, &b.code, &b.dh, Some(&p2), "{\"k\":2}")
+            .unwrap();
+        assert!(m1.v3 && m2.v3);
+        let from = format!("{}/00000000000000a1", a.id.code);
+        let (ac, adh) = (a.id.code.clone(), a.id.dh.clone());
+        let open = |side: &mut Side, body: &str| {
+            side.engine
+                .open_from(&side.id, &from, &ac, &adh, body, 2_000)
+        };
+        assert_eq!(open(&mut b1, &m1.body), Opened::V3("{\"k\":1}".into()));
+        assert_eq!(open(&mut b2, &m2.body), Opened::V3("{\"k\":2}".into()));
+        // Chacun ne lit que la sienne.
+        assert!(matches!(open(&mut b1, &m2.body), Opened::Failed(_)));
+    }
+
+    /// v4 : B (un appareil) écrit à A sans connaître ses appareils (à son
+    /// code) ; A, qui sait de quel appareil vient B, range la session sous
+    /// son adresse ; la réponse de A, dans cette session, se lit chez B
+    /// qui la cherche sous l'adresse de l'appareil de A.
+    #[test]
+    fn a_session_opened_before_knowing_devices_moves_to_the_device() {
+        let (mut a, mut b) = (side(), side());
+        let a_dev = format!("{}/00000000000000a1", a.id.code);
+        let b_dev = format!("{}/00000000000000b1", b.id.code);
+        // B écrit à « A » (le code seul), avec le paquet de l'appareil de A.
+        let first = b
+            .engine
+            .seal(
+                &b.id,
+                &a.id.code,
+                &a.id.dh,
+                Some(&bundle_of(&a)),
+                "{\"k\":1}",
+            )
+            .unwrap();
+        // A sait que c'est l'appareil b1 : la session est à l'adresse de b1.
+        assert_eq!(
+            a.engine
+                .open_from(&a.id, &b_dev, &b.id.code, &b.id.dh, &first.body, 2_000),
+            Opened::V3("{\"k\":1}".into())
+        );
+        let reply = a
+            .engine
+            .seal_to(&a.id, &b_dev, &b.id.code, &b.id.dh, None, "{\"k\":2}")
+            .unwrap();
+        assert!(reply.v3);
+        // B lit la réponse « de l'appareil a1 » : la session, rangée sous le
+        // code de A, passe à cette adresse.
+        assert_eq!(
+            b.engine
+                .open_from(&b.id, &a_dev, &a.id.code, &a.id.dh, &reply.body, 2_000),
+            Opened::V3("{\"k\":2}".into())
+        );
+        assert!(b.engine.has_session(&a_dev));
+        assert!(!b.engine.has_session(&a.id.code));
+        let again = b
+            .engine
+            .seal_to(&b.id, &a_dev, &a.id.code, &a.id.dh, None, "{\"k\":3}")
+            .unwrap();
+        assert!(again.v3);
+        assert_eq!(
+            a.engine
+                .open_from(&a.id, &b_dev, &b.id.code, &b.id.dh, &again.body, 2_000),
+            Opened::V3("{\"k\":3}".into())
+        );
     }
 
     #[test]
