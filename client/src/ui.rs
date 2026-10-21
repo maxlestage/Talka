@@ -363,6 +363,7 @@ pub fn event(e: Ev) {
         Ev::Chats | Ev::Profile => queue_side(),
         Ev::Contacts(code) => {
             queue_side();
+            spawn(crate::push::contacts_changed());
             let open = conv::current();
             if open.as_deref() == Some(code.as_str()) || open.as_deref().is_some_and(core::is_group)
             {
