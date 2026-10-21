@@ -108,9 +108,13 @@ final class CompatTests: XCTestCase {
         let profile = try XCTUnwrap(wires.compactMap { JSON.decode(Wire.self, $0) }.first {
             if case .profile = $0.body { return true } else { return false }
         })
-        guard case let .profile(_, _, wireNk, wirePj) = profile.body else { return XCTFail() }
+        guard case let .profile(_, _, wireNk, wirePj, devs, dv, bx) = profile.body else { return XCTFail() }
         XCTAssertEqual(wireNk, nk)
         XCTAssertTrue(wirePj, "le navigateur annonce les pièces jointes en v3")
+        // v4 : ses appareils, la version de la liste, et ses boîtes.
+        XCTAssertEqual(devs, [DevInfo(d: "00000000000000b1", nk: nk), DevInfo(d: "00000000000000b2")])
+        XCTAssertEqual(dv, 3)
+        XCTAssertTrue(bx)
         let store = try XCTUnwrap(v["store"] as? [String: Any])
         XCTAssertEqual(JSON.decode(Contact.self, try XCTUnwrap(store["contact"] as? String))?.nk, nk)
     }
@@ -237,7 +241,7 @@ final class CompatTests: XCTestCase {
 
     func testWires() throws {
         let wires = try XCTUnwrap(v["wires"] as? [String])
-        XCTAssertEqual(wires.count, 15)
+        XCTAssertEqual(wires.count, 16)
         for text in wires {
             let w = try XCTUnwrap(Wire.parse(text), text)
             if case .unknown = w.body { XCTFail("sorte inconnue : \(text)") }
@@ -277,6 +281,102 @@ final class CompatTests: XCTestCase {
         XCTAssertEqual(sealed.text, "À ouvrir plus tard")
         // Et un message ordinaire n'en a pas.
         XCTAssertNil(content.openAt)
+        // v4 : l'accusé dit quel appareil a reçu.
+        let receipt = try XCTUnwrap(Wire.parse(wires[1]))
+        XCTAssertEqual(receipt.body, .receipt(st: "read", ids: ["m1", "m2"], dev: "00000000000000b1"))
+        XCTAssertEqual(receipt.g, "g1")
+        // v4 : un message envoyé depuis un autre appareil du compte.
+        let sync = try XCTUnwrap(Wire.parse(wires[15]))
+        guard case let .sync(op, chat, inner, d) = sync.body else { return XCTFail("sync") }
+        XCTAssertEqual(op, "wire")
+        XCTAssertEqual(chat, try identity("b").code)
+        XCTAssertEqual(d, .null)
+        guard case let .msg(id11, _, _, sent) = try XCTUnwrap(inner).body else { return XCTFail("sync/msg") }
+        XCTAssertEqual(id11, "m11")
+        XCTAssertEqual(sent.text, "Envoyé de l'iPad")
+    }
+
+    /// v4 (`docs/SECURITE.md` §7.11 à §7.13) : les boîtes tournantes, le
+    /// paquet d'un appareil, l'expéditeur scellé avec son appareil et la
+    /// liaison, comme le navigateur.
+    func testV4() throws {
+        let a = try identity("a"), b = try identity("b")
+        let v4 = try XCTUnwrap(v["v4"] as? [String: Any])
+        XCTAssertEqual(v4["relais"] as? String, TalkaV4.relay)
+        let jour = try XCTUnwrap(v4["jour"] as? [String: Any])
+        XCTAssertEqual(TalkaV4.day(try XCTUnwrap(jour["ms"] as? Double)), jour["jour"] as? Int)
+        // La clé des boîtes, la même des deux côtés.
+        let ab = try XCTUnwrap(TalkaV4.boitesKey(a, peerCode: b.code, peerDh: b.dh))
+        XCTAssertEqual(b64(ab), v4["boites_ab"] as? String)
+        XCTAssertEqual(TalkaV4.boitesKey(b, peerCode: a.code, peerDh: a.dh), ab)
+        XCTAssertEqual(TalkaV4.boite(key: ab, to: b.code, dev: "00000000000000b1", day: 19_675), v4["boite_a_vers_b1"] as? String)
+        XCTAssertNotEqual(TalkaV4.boite(key: ab, to: b.code, dev: "00000000000000b1", day: 19_676), v4["boite_a_vers_b1"] as? String)
+        XCTAssertNotEqual(TalkaV4.boite(key: ab, to: b.code, dev: "00000000000000b2", day: 19_675), v4["boite_a_vers_b1"] as? String)
+        // L'expéditeur scellé dit de quel appareil il vient.
+        let opened = try XCTUnwrap(TalkaCrypto.openSealedFrom(b, try XCTUnwrap(v4["scelle_fd"] as? String)))
+        XCTAssertEqual(opened.from, a.code)
+        XCTAssertEqual(opened.fd, "00000000000000a1")
+        XCTAssertEqual(opened.body, "corps")
+        // Et ce que l'iPhone scelle s'ouvre pareil (sans `fd` : un ancien client).
+        let ours = try XCTUnwrap(TalkaCrypto.sealSender(from: a.code, fd: "00000000000000a2", to: b.code, toDh: b.dh, body: "x"))
+        XCTAssertEqual(TalkaCrypto.openSealedFrom(b, ours)?.fd, "00000000000000a2")
+        let old = try XCTUnwrap(TalkaCrypto.sealSender(from: a.code, to: b.code, toDh: b.dh, body: "x"))
+        XCTAssertEqual(TalkaCrypto.openSealedFrom(b, old)?.fd, "")
+        // Le paquet d'un appareil : lié au code et à l'appareil.
+        let paquet = try XCTUnwrap(v4["paquet"] as? [String: String])
+        let (pdev, pbundle, psig) = (paquet["dev"]!, paquet["bundle"]!, paquet["sig"]!)
+        XCTAssertNotNil(V3.verifyDeviceBundle(code: a.code, sign: a.sign, dh: a.dh, dev: pdev, bundle: pbundle, sig: psig))
+        XCTAssertNil(V3.verifyDeviceBundle(code: a.code, sign: a.sign, dh: a.dh, dev: "00000000000000a2", bundle: pbundle, sig: psig))
+        XCTAssertNil(V3.verifyBundle(code: a.code, sign: a.sign, dh: a.dh, bundle: pbundle, sig: psig))
+        XCTAssertNil(V3.verifyDeviceBundle(code: b.code, sign: b.sign, dh: b.dh, dev: pdev, bundle: pbundle, sig: psig))
+        // La liaison : le texte du QR code, sa boîte, la clé, les morceaux.
+        let lien = try XCTUnwrap(v4["lien"] as? [String: Any])
+        let offer = try XCTUnwrap(TalkaV4.LinkOffer.parse(try XCTUnwrap(lien["texte"] as? String)))
+        XCTAssertEqual(offer.dev, "00000000000000c3")
+        XCTAssertEqual(offer.lid, Data(repeating: 7, count: 16))
+        XCTAssertEqual(offer.text, lien["texte"] as? String)
+        XCTAssertEqual(offer.boite, lien["boite"] as? String)
+        XCTAssertNil(TalkaV4.LinkOffer.parse("talka-lien:AAAA"))
+        XCTAssertNil(TalkaV4.LinkOffer.parse(try identity("a").code))
+        let secret = try XCTUnwrap(TalkaV4.LinkSecret(offer: offer, privateKey: try XCTUnwrap(unb64(try XCTUnwrap(lien["lk_priv"] as? String)))))
+        let ek = try XCTUnwrap(unb64(try XCTUnwrap(lien["ek"] as? String)))
+        let key = try XCTUnwrap(secret.key(ek: ek))
+        XCTAssertEqual(b64(key), lien["cle"] as? String)
+        XCTAssertEqual(TalkaV4.linkVerification(ek: ek, lk: offer.lk), lien["verif"] as? String)
+        let morceaux = try XCTUnwrap(lien["morceaux"] as? [String])
+        var plain = Data()
+        for m in morceaux {
+            let chunk = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(m.utf8)) as? [String: Any])
+            let part = try XCTUnwrap(TalkaV4.linkOpen(key: key, lid: offer.lid, chunk: chunk))
+            XCTAssertEqual(part.n, morceaux.count)
+            plain += part.plain
+            // Une autre clé n'ouvre rien.
+            XCTAssertNil(TalkaV4.linkOpen(key: Data(repeating: 1, count: 32), lid: offer.lid, chunk: chunk))
+        }
+        XCTAssertEqual(String(data: plain, encoding: .utf8), lien["clair"] as? String)
+        // Et dans l'autre sens : ce que l'iPhone répond s'ouvre chez le nouvel appareil.
+        let fresh = TalkaV4.LinkSecret()
+        let parsed = try XCTUnwrap(TalkaV4.LinkOffer.parse(fresh.offer.text))
+        XCTAssertEqual(parsed, fresh.offer)
+        let answer = try XCTUnwrap(TalkaV4.linkAnswer(parsed))
+        XCTAssertEqual(fresh.key(ek: answer.ek), answer.key)
+        let big = Data((0..<(TalkaV4.linkChunk + 10)).map { UInt8($0 & 0xff) })
+        let chunks = try XCTUnwrap(TalkaV4.linkSeal(key: answer.key, lid: parsed.lid, ek: answer.ek, plain: big))
+        XCTAssertEqual(chunks.count, 2)
+        var back = [Data?](repeating: nil, count: 2)
+        for text in chunks.reversed() {
+            let chunk = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+            let part = try XCTUnwrap(TalkaV4.linkOpen(key: answer.key, lid: parsed.lid, chunk: chunk))
+            back[part.i] = part.plain
+        }
+        XCTAssertEqual(back.compactMap { $0 }.reduce(Data(), +), big)
+        XCTAssertEqual(TalkaV4.linkVerification(ek: answer.ek, lk: parsed.lk).count, 7)
+        // Les identifiants d'appareil.
+        XCTAssertTrue(TalkaV4.isDev(TalkaV4.newDev()))
+        XCTAssertFalse(TalkaV4.isDev("00000000000000A1"))
+        XCTAssertFalse(TalkaV4.isDev("00000000000000a"))
+        XCTAssertEqual(TalkaV4.unb64url(TalkaV4.b64url(Data([0xfb, 0xff, 0x01]))), Data([0xfb, 0xff, 0x01]))
+        XCTAssertNil(TalkaV4.unb64url("+/"))
     }
 
     func isEmptyValue(_ v: Any) -> Bool {
@@ -305,6 +405,12 @@ final class CompatTests: XCTestCase {
         XCTAssertEqual(JSON.decode(CallEntry.self, store["call"]!)?.dur, 42)
         XCTAssertEqual(JSON.decode(OutItem.self, store["outbox"]!)?.msgId, "m1")
         XCTAssertEqual(JSON.decode(OutItem.self, store["outbox"]!)?.boot, "B00T")
+        // v4 : les appareils déjà servis.
+        let out = try XCTUnwrap(JSON.decode(OutItem.self, store["outbox"]!))
+        XCTAssertEqual(out.sent, ["00000000000000b1"])
+        XCTAssertEqual(out.got, [])
+        XCTAssertEqual(JSON.decode(OutItem.self, JSON.encode(out)), out)
+        XCTAssertFalse(JSON.encode(out).contains("\"got\""), "comme le navigateur : une liste vide n'est pas écrite")
         XCTAssertEqual(JSON.decode(Settings.self, store["settings"]!), Settings())
         XCTAssertEqual(JSON.decode(Profile.self, store["profile"]!)?.name, "Léa")
         // Et dans l'autre sens : ce que garde l'iPhone se relit à l'identique.

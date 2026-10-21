@@ -63,6 +63,8 @@ public enum JSONValue: Codable, Equatable, Sendable {
 
     public var string: String? { if case .string(let s) = self { s } else { nil } }
     public var number: Double? { if case .number(let n) = self { n } else { nil } }
+    public var bool: Bool? { if case .bool(let b) = self { b } else { nil } }
+    public var array: [JSONValue]? { if case .array(let a) = self { a } else { nil } }
 }
 
 public struct Profile: Codable, Equatable, Sendable {
@@ -192,11 +194,18 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
     /// Il nous a déjà écrit en v3 : l'ancien format, que le relais pourrait
     /// rejouer, ne change plus rien chez nous.
     public var v3 = false
+    /// Ses appareils (v4), tels qu'il les annonce : on écrit à chacun. Vide :
+    /// un seul appareil, d'avant la v4.
+    public var devs: [DevInfo] = []
+    /// La version de cette liste (la plus grande l'emporte).
+    public var dv = 0
+    /// Il lit ses boîtes aux lettres tournantes (v4) : on lui écrit là.
+    public var bx = false
 
     public var id: String { code }
 
     enum CodingKeys: String, CodingKey {
-        case code, name, about, avatar, sign, dh, blocked, saved, jeton, nk, fp, v3
+        case code, name, about, avatar, sign, dh, blocked, saved, jeton, nk, fp, v3, devs, dv, bx
         case profileName = "profile_name"
         case addedAt = "added_at"
         case profileV = "profile_v"
@@ -220,6 +229,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         profileV = c.v(.profileV, 0); sentProfileV = c.v(.sentProfileV, 0)
         jeton = c.v(.jeton, ""); jetonSent = c.v(.jetonSent, false); nk = c.v(.nk, ""); fp = c.v(.fp, ""); v3 = c.v(.v3, false)
         jetonPerso = c.v(.jetonPerso, false); jetonEpoch = c.v(.jetonEpoch, 0); pj = c.v(.pj, false)
+        devs = c.v(.devs, []); dv = c.v(.dv, 0); bx = c.v(.bx, false)
     }
 
     /// Comme le navigateur : le jeton n'est écrit que s'il y en a un.
@@ -239,6 +249,100 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         if !nk.isEmpty { try c.encode(nk, forKey: .nk) }
         if !fp.isEmpty { try c.encode(fp, forKey: .fp) }
         if v3 { try c.encode(v3, forKey: .v3) }
+        if !devs.isEmpty { try c.encode(devs, forKey: .devs) }
+        if dv != 0 { try c.encode(dv, forKey: .dv) }
+        if bx { try c.encode(bx, forKey: .bx) }
+    }
+}
+
+// ----- Plusieurs appareils (v4, `docs/SECURITE.md` §7.11) -----
+
+/// Un appareil d'un contact (v4) : son identifiant, et sa clé de
+/// notification (l'aperçu de ses notifications lui est chiffré).
+public struct DevInfo: Codable, Equatable, Sendable {
+    public var d: String
+    public var nk = ""
+
+    public init(d: String, nk: String = "") {
+        self.d = d; self.nk = nk
+    }
+
+    enum CodingKeys: String, CodingKey { case d, nk }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        d = c.v(.d, ""); nk = c.v(.nk, "")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(d, forKey: .d)
+        if !nk.isEmpty { try c.encode(nk, forKey: .nk) }
+    }
+}
+
+/// Un appareil de notre compte (v4, `kv/appareils`).
+public struct AccountDevice: Codable, Equatable, Identifiable, Sendable {
+    public var dev: String
+    /// « iPhone », « Chrome sur Mac »…
+    public var name = ""
+    /// Quand il a été lié.
+    public var at: Double = 0
+    /// Sa clé de notification.
+    public var nk = ""
+
+    public var id: String { dev }
+
+    public init(dev: String, name: String = "", at: Double = 0, nk: String = "") {
+        self.dev = dev; self.name = name; self.at = at; self.nk = nk
+    }
+
+    enum CodingKeys: String, CodingKey { case dev, name, at, nk }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        dev = c.v(.dev, ""); name = c.v(.name, ""); at = c.v(.at, 0); nk = c.v(.nk, "")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(dev, forKey: .dev); try c.encode(name, forKey: .name); try c.encode(at, forKey: .at)
+        if !nk.isEmpty { try c.encode(nk, forKey: .nk) }
+    }
+}
+
+/// Six appareils au plus par compte.
+public let maxDevices = 6
+
+/// Les appareils de notre compte (v4) : six au plus ; `v` avance à chaque
+/// changement, la plus grande l'emporte.
+public struct Devices: Codable, Equatable, Sendable {
+    public var v = 0
+    public var list: [AccountDevice] = []
+
+    public init(v: Int = 0, list: [AccountDevice] = []) {
+        self.v = v; self.list = list
+    }
+
+    enum CodingKeys: String, CodingKey { case v, list }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        v = c.v(.v, 0); list = c.v(.list, [])
+    }
+
+    public func has(_ dev: String) -> Bool { list.contains { $0.dev == dev } }
+
+    /// Ce que voient les contacts (dans le profil).
+    public var announced: [DevInfo] { list.map { DevInfo(d: $0.dev, nk: $0.nk) } }
+
+    /// La liste reçue d'un autre de nos appareils : gardée si elle est plus
+    /// récente (et bien formée).
+    @discardableResult
+    public mutating func merge(_ other: Devices) -> Bool {
+        guard other.v > v, other.list.count <= maxDevices, other.list.allSatisfy({ TalkaV4.isDev($0.dev) }) else { return false }
+        self = other
+        return true
     }
 }
 
@@ -545,20 +649,35 @@ public struct OutItem: Codable, Equatable, Sendable {
     /// gardé jusqu'à l'accusé de réception, et renvoyé si le relais a
     /// redémarré entre-temps. Vide : pas encore parti.
     public var boot = ""
+    /// v4 : les appareils du destinataire qui l'ont déjà (déposé pour eux).
+    public var sent: [String] = []
+    /// v4 : ceux qui l'ont reçu (accusé de réception de cet appareil).
+    public var got: [String] = []
 
     enum CodingKeys: String, CodingKey {
-        case id, to, payload, chat, seq, boot
+        case id, to, payload, chat, seq, boot, sent, got
         case msgId = "msg_id"
     }
 
-    public init(id: String, to: String, payload: String, chat: String, msgId: String, seq: Double) {
+    public init(id: String, to: String, payload: String, chat: String, msgId: String, seq: Double, sent: [String] = []) {
         self.id = id; self.to = to; self.payload = payload; self.chat = chat; self.msgId = msgId; self.seq = seq
+        self.sent = sent
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.v(.id, ""); to = c.v(.to, ""); payload = c.v(.payload, ""); chat = c.v(.chat, "")
         msgId = c.v(.msgId, ""); seq = c.v(.seq, 0); boot = c.v(.boot, "")
+        sent = c.v(.sent, []); got = c.v(.got, [])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(to, forKey: .to); try c.encode(payload, forKey: .payload)
+        try c.encode(chat, forKey: .chat); try c.encode(msgId, forKey: .msgId); try c.encode(seq, forKey: .seq)
+        try c.encode(boot, forKey: .boot)
+        if !sent.isEmpty { try c.encode(sent, forKey: .sent) }
+        if !got.isEmpty { try c.encode(got, forKey: .got) }
     }
 }
 
@@ -630,8 +749,8 @@ public struct GroupInfo: Codable, Equatable, Sendable {
 /// Ce qui voyage, chiffré, d'un appareil à l'autre (`k` en donne la sorte).
 public enum Body: Equatable, Sendable {
     case msg(id: String, at: Double, pn: String, content: Content)
-    /// `st` : `delivered` ou `read`.
-    case receipt(st: String, ids: [String])
+    /// `st` : `delivered` ou `read` ; `dev` : l'appareil qui a reçu (v4).
+    case receipt(st: String, ids: [String], dev: String = "")
     case react(id: String, emoji: String)
     case edit(id: String, text: String)
     case delete(id: String)
@@ -639,13 +758,21 @@ public enum Body: Equatable, Sendable {
     /// `jeton` : le jeton de remise de l'expéditeur (expéditeur scellé).
     /// `nk` : sa clé de notification (navigateur), pour l'aperçu chiffré.
     /// `pj` : cette version chiffre tout en v3, pièces jointes comprises.
-    case profile(Profile, jeton: String = "", nk: String = "", pj: Bool = false)
+    /// `devs`, `dv` : ses appareils et la version de cette liste (v4) ;
+    /// `bx` : il lit ses boîtes aux lettres tournantes (v4).
+    case profile(Profile, jeton: String = "", nk: String = "", pj: Bool = false,
+                 devs: [DevInfo] = [], dv: Int = 0, bx: Bool = false)
     case group(op: String, note: String)
     case timer(secs: Int)
     case status(id: String, kind: String, text: String, bg: String, data: String, at: Double)
     case statusSeen(id: String)
     case statusDelete(id: String)
     case call(op: String, callId: String, video: Bool, sdp: String, cand: JSONValue?)
+    /// Entre les appareils d'un même compte (v4, `docs/SECURITE.md` §7.11) :
+    /// ce que l'un a fait, que les autres refont. Accepté seulement de nos
+    /// propres appareils. `c` : la discussion ; `w` : ce que l'appareil a
+    /// envoyé dans la discussion (`op` = `wire`) ; `d` : le reste.
+    indirect case sync(op: String, c: String = "", w: Wire? = nil, d: JSONValue = .null)
     /// Une sorte inconnue (une version plus récente) : ignorée.
     case unknown(String)
 }
@@ -682,12 +809,14 @@ public struct Wire: Codable, Equatable, Sendable {
         switch kind {
         case "msg":
             body = .msg(id: s("id"), at: c.v(K("at"), 0), pn: s("pn"), content: try Content(from: decoder))
-        case "receipt": body = .receipt(st: s("st"), ids: c.v(K("ids"), []))
+        case "receipt": body = .receipt(st: s("st"), ids: c.v(K("ids"), []), dev: s("dev"))
         case "react": body = .react(id: s("id"), emoji: s("emoji"))
         case "edit": body = .edit(id: s("id"), text: s("text"))
         case "delete": body = .delete(id: s("id"))
         case "typing": body = .typing(on: c.v(K("on"), false))
-        case "profile": body = .profile(try Profile(from: decoder), jeton: s("jeton"), nk: s("nk"), pj: c.v(K("pj"), false))
+        case "profile":
+            body = .profile(try Profile(from: decoder), jeton: s("jeton"), nk: s("nk"), pj: c.v(K("pj"), false),
+                            devs: c.v(K("devs"), []), dv: c.v(K("dv"), 0), bx: c.v(K("bx"), false))
         case "group": body = .group(op: s("op"), note: s("note"))
         case "timer": body = .timer(secs: c.v(K("secs"), 0))
         case "status":
@@ -696,6 +825,8 @@ public struct Wire: Codable, Equatable, Sendable {
         case "status-delete": body = .statusDelete(id: s("id"))
         case "call":
             body = .call(op: s("op"), callId: s("call_id"), video: c.v(K("video"), false), sdp: s("sdp"), cand: c.v(K("cand"), nil))
+        case "sync":
+            body = .sync(op: s("op"), c: s("c"), w: c.v(K("w"), nil), d: c.v(K("d"), JSONValue.null))
         default: body = .unknown(kind)
         }
         grp = c.v(K("grp"), nil)
@@ -711,16 +842,21 @@ public struct Wire: Codable, Equatable, Sendable {
             try put("k", "msg"); try put("id", id); try put("at", at)
             if !pn.isEmpty { try put("pn", pn) }
             try content.encode(to: encoder)
-        case let .receipt(st, ids): try put("k", "receipt"); try put("st", st); try put("ids", ids)
+        case let .receipt(st, ids, dev):
+            try put("k", "receipt"); try put("st", st); try put("ids", ids)
+            if !dev.isEmpty { try put("dev", dev) }
         case let .react(id, emoji): try put("k", "react"); try put("id", id); try put("emoji", emoji)
         case let .edit(id, text): try put("k", "edit"); try put("id", id); try put("text", text)
         case let .delete(id): try put("k", "delete"); try put("id", id)
         case let .typing(on): try put("k", "typing"); try put("on", on)
-        case let .profile(p, jeton, nk, pj):
+        case let .profile(p, jeton, nk, pj, devs, dv, bx):
             try put("k", "profile"); try p.encode(to: encoder)
             if !jeton.isEmpty { try put("jeton", jeton) }
             if !nk.isEmpty { try put("nk", nk) }
             if pj { try put("pj", pj) }
+            if !devs.isEmpty { try put("devs", devs) }
+            if dv != 0 { try put("dv", dv) }
+            if bx { try put("bx", bx) }
         case let .group(op, note): try put("k", "group"); try put("op", op); try put("note", note)
         case let .timer(secs): try put("k", "timer"); try put("secs", secs)
         case let .status(id, kind, text, bg, data, at):
@@ -732,6 +868,11 @@ public struct Wire: Codable, Equatable, Sendable {
             try put("k", "call"); try put("op", op); try put("call_id", callId); try put("video", video)
             try put("sdp", sdp)
             if let cand { try put("cand", cand) }
+        case let .sync(op, chat, w, d):
+            try put("k", "sync"); try put("op", op)
+            if !chat.isEmpty { try put("c", chat) }
+            if let w { try put("w", w) }
+            if d != .null { try put("d", d) }
         case let .unknown(k): try put("k", k)
         }
         if let grp { try put("grp", grp) }
