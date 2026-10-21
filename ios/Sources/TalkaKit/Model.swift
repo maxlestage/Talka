@@ -161,11 +161,14 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
     /// L'empreinte de ses clés donnée par son lien d'invitation : les clés
     /// trouvées pour son code doivent y correspondre.
     public var fp = ""
+    /// Il nous a déjà écrit en v3 : l'ancien format, que le relais pourrait
+    /// rejouer, ne change plus rien chez nous.
+    public var v3 = false
 
     public var id: String { code }
 
     enum CodingKeys: String, CodingKey {
-        case code, name, about, avatar, sign, dh, blocked, saved, jeton, nk, fp
+        case code, name, about, avatar, sign, dh, blocked, saved, jeton, nk, fp, v3
         case profileName = "profile_name"
         case addedAt = "added_at"
         case profileV = "profile_v"
@@ -184,7 +187,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         about = c.v(.about, ""); avatar = c.v(.avatar, ""); sign = c.v(.sign, ""); dh = c.v(.dh, "")
         blocked = c.v(.blocked, false); saved = c.v(.saved, false); addedAt = c.v(.addedAt, 0)
         profileV = c.v(.profileV, 0); sentProfileV = c.v(.sentProfileV, 0)
-        jeton = c.v(.jeton, ""); jetonSent = c.v(.jetonSent, false); nk = c.v(.nk, ""); fp = c.v(.fp, "")
+        jeton = c.v(.jeton, ""); jetonSent = c.v(.jetonSent, false); nk = c.v(.nk, ""); fp = c.v(.fp, ""); v3 = c.v(.v3, false)
     }
 
     /// Comme le navigateur : le jeton n'est écrit que s'il y en a un.
@@ -200,6 +203,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         if jetonSent { try c.encode(jetonSent, forKey: .jetonSent) }
         if !nk.isEmpty { try c.encode(nk, forKey: .nk) }
         if !fp.isEmpty { try c.encode(fp, forKey: .fp) }
+        if v3 { try c.encode(v3, forKey: .v3) }
     }
 }
 
@@ -727,5 +731,17 @@ extension Chat {
         var newAdmins = admins.filter { $0 != from }
         if newAdmins.isEmpty, let first = rest.first { newAdmins = [first] }
         return grp.members == rest && grp.admins == newAdmins && grp.name == name && grp.avatar == avatar
+    }
+}
+
+extension Body {
+    /// Ce qui change un état déjà là (et qu'un rejeu suffirait à défaire) :
+    /// refusé dans l'ancien format d'un contact passé en v3. Comme
+    /// `Body::changes_state` du navigateur.
+    public var changesState: Bool {
+        switch self {
+        case .timer, .edit, .delete, .group, .call, .statusDelete: true
+        default: false
+        }
     }
 }

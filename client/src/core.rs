@@ -2019,6 +2019,7 @@ async fn receive(env: &Value) {
             None => Opened::Failed(Failure::Envelope),
         });
     save_v3().await;
+    let legacy = matches!(opened, Opened::Legacy(_));
     let plain = match opened {
         Opened::Legacy(plain) | Opened::V3(plain) => plain,
         // Déjà lu : le relais l'a renvoyé.
@@ -2032,18 +2033,31 @@ async fn receive(env: &Value) {
             return;
         }
     };
-    // Prouvé : ses clés sont gardées (s'il est nouveau).
-    if contact(&from).is_none_or(|c| c.sign.is_empty()) {
-        let mut c = contact(&from).unwrap_or_else(|| peer.clone());
+    // Prouvé : ses clés sont gardées (s'il est nouveau), et son passage en v3.
+    let known = contact(&from);
+    if known
+        .as_ref()
+        .is_none_or(|c| c.sign.is_empty() || (!legacy && !c.v3))
+    {
+        let mut c = known.clone().unwrap_or_else(|| peer.clone());
         c.sign = peer.sign.clone();
         c.dh = peer.dh.clone();
+        c.v3 |= !legacy;
         save_contact(c).await;
     }
     let Ok(wire) = serde_json::from_str::<Wire>(&plain) else {
         return;
     };
+    let live = env["live"].as_bool().unwrap_or(false);
+    // L'ancien format n'a pas de protection contre le rejeu : d'un contact
+    // passé en v3, il ne change plus d'état (un relais qui rejouerait une
+    // vieille minuterie, modification ou offre d'appel n'y gagne rien).
+    if legacy && !live && known.is_some_and(|c| c.v3) && wire.body.changes_state() {
+        dom::warn(&format!("ancien format refusé de {from} (déjà en v3)"));
+        return;
+    }
     let ts = env["ts"].as_f64().unwrap_or_else(now);
-    handle(&from, wire, ts, env["live"].as_bool().unwrap_or(false)).await;
+    handle(&from, wire, ts, live).await;
 }
 
 /// La discussion d'un groupe, créée ou mise à jour par `grp` ; `true` si

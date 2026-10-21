@@ -231,8 +231,12 @@ async fn screen(check: Check) -> String {
     let _ = document().body().expect("body").append_child(&host);
     let d = Deferred::<String>::new();
     let s = d.sender();
-    let fails = Rc::new(Cell::new(0u32));
-    let until = Rc::new(Cell::new(0.0f64));
+    // Les essais manqués survivent à un rechargement de la page.
+    let saved: (u32, f64) = store::local_get("talka.essais")
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or((0, 0.0));
+    let fails = Rc::new(Cell::new(saved.0));
+    let until = Rc::new(Cell::new(saved.1));
     let h2 = host.clone();
     let pad = pin_pad(
         "Talka est verrouillé",
@@ -256,6 +260,7 @@ async fn screen(check: Check) -> String {
                 pad.info("Vérification…");
                 sleep(30).await;
                 if check(pin.clone()).await {
+                    store::local_set("talka.essais", "[0,0]");
                     pad.destroy();
                     host.remove();
                     s.send(Some(pin));
@@ -268,6 +273,10 @@ async fn screen(check: Check) -> String {
                     } else {
                         pad.error("Code incorrect");
                     }
+                    store::local_set(
+                        "talka.essais",
+                        &format!("[{},{}]", fails.get(), until.get()),
+                    );
                 }
             });
         },
