@@ -21,7 +21,8 @@ L'application iOS de Talka, en Swift et SwiftUI (iOS 17 et plus). Elle parle le 
 - **Infos** : nom local du contact, **numéro de sécurité** (le même sur les deux appareils), blocage ; membres et admins d'un groupe, photo, nom, ajout et retrait.
 - **Actus** : texte sur fond de couleur ou photo, 24 heures, avec qui les a vues.
 - **Appels audio et vidéo** (WebRTC, de pair à pair, DTLS-SRTP) : l'offre, la réponse et les candidats passent chiffrés, comme les messages. Un iPhone appelle un ordinateur.
-- **Réglages** : profil, confirmations de lecture, « en ligne » masqué, contacts bloqués, **code PIN** et Face ID, thème, taille du texte, notifications, sons, serveur, **sauvegarde chiffrée** (exporter, restaurer), tout effacer.
+- **Réglages** : profil, confirmations de lecture, « en ligne » masqué, contacts bloqués ; **verrouillage et sécurité** comme le navigateur : code de 6 à 12 chiffres qui **chiffre aussi la base** (Argon2id), Face ID, verrouillage automatique, effacement après 10 codes faux, Talka masqué pendant un enregistrement de l'écran ; aperçu des notifications (nom et message, nom seulement, rien) ; thème, taille du texte, Entrée pour envoyer (clavier), sons, **sauvegarde chiffrée** (exporter, restaurer), tout effacer. Pas de serveur à choisir : un seul relais, intégré.
+- **iPad** : la liste des discussions et la discussion côte à côte, sur tout l'écran, dans toutes les orientations et en multitâche (Split View, Stage Manager) ; une fenêtre étroite repasse en une colonne, comme sur l'iPhone.
 
 Tout reste sur l'iPhone, dans une base SQLite protégée par iOS : le serveur ne fait que passer des messages chiffrés, et les garde au plus 30 jours pour un destinataire hors ligne.
 

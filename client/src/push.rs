@@ -141,7 +141,8 @@ fn share_contacts(reg: &JsValue) {
         .filter(|c| c.saved && !c.blocked && !c.dh.is_empty())
         .map(|c| serde_json::json!({ "code": c.code, "dh": c.dh, "name": c.name }))
         .collect();
-    let msg = serde_json::json!({ "t": "carnet", "list": list });
+    // Et ce que la notification a le droit de montrer (Réglages → Aperçu).
+    let msg = serde_json::json!({ "t": "carnet", "list": list, "apercu": core::settings().notify_preview });
     if let Ok(v) = js_sys::JSON::parse(&msg.to_string()) {
         let _ = call(&worker, "postMessage", &[v]);
     }

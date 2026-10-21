@@ -208,6 +208,19 @@ pub fn pin_pad(title: &str, subtitle: &str, on_done: impl Fn(String, Pad) + 'sta
 
 type Check = Rc<dyn Fn(String) -> Pin<Box<dyn Future<Output = bool>>>>;
 
+/// Au-delà de ce nombre de codes faux, tout est effacé (si choisi).
+pub const WIPE_AFTER: u32 = 10;
+
+/// « Effacer après 10 codes faux » : gardé hors de la mémoire chiffrée,
+/// pour être lu avant qu'elle s'ouvre.
+pub fn wipe_after_fails() -> bool {
+    store::local_get("talka.effacer10").as_deref() == Some("1")
+}
+
+pub fn set_wipe_after_fails(on: bool) {
+    store::local_set("talka.effacer10", if on { "1" } else { "0" });
+}
+
 /// L'écran verrouillé : se termine quand le bon code est tapé, et le rend
 /// (il ouvre les clés Brocolis).
 pub async fn lock_screen() -> String {
@@ -266,6 +279,14 @@ async fn screen(check: Check) -> String {
                     s.send(Some(pin));
                 } else {
                     fails.set(fails.get() + 1);
+                    // Choisi dans les réglages : au dixième code faux, tout
+                    // est effacé (une sauvegarde le rendra).
+                    if wipe_after_fails() && fails.get() >= WIPE_AFTER {
+                        pad.error("10 codes faux : Talka efface tout.");
+                        store::forget_everything().await;
+                        let _ = crate::dom::window().location().reload();
+                        return;
+                    }
                     if fails.get() >= 5 {
                         let wait = (15.0 * 2f64.powi(fails.get() as i32 - 5)).min(300.0);
                         until.set(now() + wait * 1000.0);
@@ -282,5 +303,25 @@ async fn screen(check: Check) -> String {
         },
     );
     let _ = host.append_child(&pad.el);
+    let forgot = h("button.link.lock-forgot")
+        .attr("type", "button")
+        .text("Code oublié ?")
+        .click(|| {
+            crate::dom::spawn(async {
+                if crate::dom::confirm_box(
+                    "Code oublié",
+                    "Sans lui, la mémoire de Talka sur cet appareil ne s'ouvre plus. Vous pouvez tout effacer, puis restaurer une sauvegarde.",
+                    "Tout effacer",
+                    true,
+                )
+                .await
+                {
+                    store::forget_everything().await;
+                    let _ = crate::dom::window().location().reload();
+                }
+            });
+        })
+        .el();
+    let _ = host.append_child(&forgot);
     d.wait().await.unwrap_or_default()
 }

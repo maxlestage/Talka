@@ -95,15 +95,30 @@ public struct Settings: Codable, Equatable, Sendable {
     public var fontSize = 15
     /// Verrouillage automatique : secondes passées hors de Talka.
     public var lockAfter = 0
-    /// L'adresse du serveur Talka.
+    /// Autrefois, l'adresse d'un autre relais ; relue des anciens réglages,
+    /// jamais utilisée : il n'y a plus qu'un relais (`TalkaServer.official`).
     public var server = ""
     /// Les messages plus vieux que ça (en jours) s'effacent de l'appareil,
     /// sauf les messages importants (⭐). 0 : gardés pour toujours.
     public var keepDays = keepDaysDefault
+    /// Ce que montrent les notifications : `all` (le nom et le message),
+    /// `name` (le nom seulement), `none` (rien : « Nouveau message »).
+    public var notifyPreview = "all"
+
+    /// Le titre et le texte d'une notification, selon `notifyPreview`
+    /// (comme `Settings::notification` du navigateur).
+    public func notification(title: String, body: String) -> (title: String, body: String) {
+        switch notifyPreview {
+        case "none": ("Talka", "Nouveau message")
+        case "name": (title, "Nouveau message")
+        default: (title, body)
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case theme, notify, sound, wallpaper, server
         case keepDays = "keep_days"
+        case notifyPreview = "notify_preview"
         case readReceipts = "read_receipts"
         case hideOnline = "hide_online"
         case presenceDot = "presence_dot"
@@ -124,6 +139,7 @@ public struct Settings: Codable, Equatable, Sendable {
         lockAfter = c.v(.lockAfter, d.lockAfter); server = c.v(.server, d.server)
         presenceDot = c.v(.presenceDot, d.presenceDot)
         keepDays = c.v(.keepDays, d.keepDays)
+        notifyPreview = c.v(.notifyPreview, d.notifyPreview)
     }
 }
 
@@ -734,6 +750,12 @@ public struct Wire: Codable, Equatable, Sendable {
 
 /// L'heure en millisecondes, comme `Date.now()`.
 public func nowMs() -> Double { Date().timeIntervalSince1970 * 1000 }
+
+/// Le relais de Talka : un seul, le même pour le navigateur, l'iPhone et
+/// l'iPad. Il n'y a plus de serveur à choisir.
+public enum TalkaServer {
+    public static let official = "https://talka-maxlestage-e497dd868a8c.herokuapp.com"
+}
 
 /// JSON ↔ structures, comme serde_json.
 public enum JSON {

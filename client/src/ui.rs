@@ -238,6 +238,7 @@ fn boot_step(text: &str) {
 
 /// Démarre l'application : verrouillage, accueil, ou discussions.
 pub async fn boot() {
+    track_height();
     crate::tabs::claim().await;
     // La mémoire protégée par le code ou une passkey : l'ouvrir d'abord.
     let mut pin = None;
@@ -290,35 +291,7 @@ pub async fn boot() {
 }
 
 async fn start_core() {
-    // Sur GitHub Pages sans relais configuré : demander son adresse.
-    let settings: crate::model::Settings = store::read("kv", "settings").await.unwrap_or_default();
-    if settings.server.is_empty()
-        && meta("talka-api").is_empty()
-        && window()
-            .location()
-            .hostname()
-            .is_ok_and(|h| h.ends_with(".github.io"))
-    {
-        ask_server().await;
-    }
     core::start().await;
-}
-
-async fn ask_server() {
-    loop {
-        let Some(url) = prompt_box("Adresse du serveur Talka", "Cette page n'est reliée à aucun relais. Entrez l'adresse du serveur Talka (par exemple https://talka.herokuapp.com).", "https://", "url", "Enregistrer", 200).await else {
-            continue;
-        };
-        let url = url.trim().trim_end_matches('/').to_owned();
-        if url.starts_with("https://") || url.starts_with("http://localhost") {
-            let mut s: crate::model::Settings =
-                store::read("kv", "settings").await.unwrap_or_default();
-            s.server = url;
-            store::write("kv", "settings", &s).await;
-            return;
-        }
-        toast("L'adresse doit commencer par https://");
-    }
 }
 
 /// Le verrouillage automatique, quand on quitte Talka.
@@ -1306,11 +1279,13 @@ fn notify(chat: &Chat, body: &str) {
     {
         return;
     }
+    // L'écran verrouillé ne montre que ce qu'on a choisi.
+    let (title, body) = s.notification(&core::chat_title(chat), body);
     let opts = web_sys::NotificationOptions::new();
     opts.set_body(&body.chars().take(200).collect::<String>());
     opts.set_icon(&asset("icons/icon-192.png"));
     opts.set_tag(&chat.id);
-    if let Ok(n) = web_sys::Notification::new_with_options(&core::chat_title(chat), &opts) {
+    if let Ok(n) = web_sys::Notification::new_with_options(&title, &opts) {
         let id = chat.id.clone();
         let nn = n.clone();
         listen_forever(&n, "click", move |_| {
@@ -3219,6 +3194,7 @@ pub async fn open_settings() {
                         &[
                             ("0", "Dès que je quitte Talka"),
                             ("60", "Après 1 minute"),
+                            ("300", "Après 5 minutes"),
                             ("900", "Après 15 minutes"),
                             ("3600", "Après 1 heure"),
                         ],
@@ -3227,6 +3203,12 @@ pub async fn open_settings() {
                             let n = v.parse().unwrap_or(0);
                             spawn(core::save_settings(move |s| s.lock_after = n))
                         },
+                    ))
+                    .child(toggle(
+                        "Effacer après 10 codes faux",
+                        "Au dixième code faux, Talka efface tout sur cet appareil",
+                        crate::lock::wipe_after_fails(),
+                        crate::lock::set_wipe_after_fails,
                     ))
                     .child(setting(
                         "lock",
@@ -3300,6 +3282,12 @@ pub async fn open_settings() {
                                 crate::push::sync().await;
                             })
                         }))
+                        .child(select("Aperçu", &[("all", "Nom et message"), ("name", "Nom seulement"), ("none", "Rien (« Nouveau message »)")], &s.notify_preview, |v| {
+                            spawn(async move {
+                                core::save_settings(move |s| s.notify_preview = v).await;
+                                crate::push::contacts_changed().await;
+                            })
+                        }))
                         .child(toggle("Sons", "Messages, envois, appels", s.sound, |v| spawn(core::save_settings(move |s| s.sound = v)))),
                 )
                 .child(
@@ -3314,18 +3302,6 @@ pub async fn open_settings() {
                         .child(h("h3").text("Aide"))
                         .child(setting("info", "À propos de Talka", "Le site, la confidentialité, les questions", false, || {
                             let _ = window().open_with_url_and_target(&format!("{}/", meta("talka-base")), "_blank");
-                        }))
-                        .child((!meta("talka-api").is_empty() || !core::settings().server.is_empty()).then(|| {
-                            setting("server", "Serveur", &net::api_base(), false, || {
-                                spawn(async {
-                                    let current = core::settings().server;
-                                    if let Some(url) = prompt_box("Adresse du serveur Talka", "Laissez vide pour utiliser celui de la page.", &current, "url", "Enregistrer", 200).await {
-                                        let url = url.trim().trim_end_matches('/').to_owned();
-                                        core::save_settings(move |s| s.server = url).await;
-                                        window().location().reload().ok();
-                                    }
-                                })
-                            })
                         }))
                         .child(setting("trash", "Supprimer toutes mes données", "Efface votre code, vos contacts et vos discussions de cet appareil", true, || spawn(wipe())))
                         .child(h("p.muted.tiny.center").text("Talka · fait avec Paquets 📦 · écrit en Rust 🦀")),

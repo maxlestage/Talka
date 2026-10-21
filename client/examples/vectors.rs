@@ -141,6 +141,19 @@ fn main() {
     let plain = &wire_json[0];
     let sealed = crypto::seal(&a, &b.code, &b.dh, plain).unwrap();
     let pin = crypto::hash_pin("2580");
+    let cle = {
+        let salt = crypto::random_bytes(16);
+        let device = crypto::random_bytes(32);
+        let user = crypto::argon2id("258036", &salt, crypto::ARGON_M, crypto::ARGON_T).unwrap();
+        json!({
+            "code": "258036",
+            "salt": crypto::b64(&salt),
+            "m": crypto::ARGON_M,
+            "t": crypto::ARGON_T,
+            "device": crypto::b64(&device),
+            "locked": crypto::b64(&crypto::lock_device_key(&user, &device).unwrap()),
+        })
+    };
     let backup_data = json!({ "app": "talka", "at": 1.0, "data": { "kv": [["identity", serde_json::to_string(&a).unwrap()]] } }).to_string();
     let backup = crypto::encrypt_backup("motdepasse", &backup_data).unwrap();
 
@@ -282,6 +295,9 @@ fn main() {
         "challenge": { "nonce": "abc", "sig": a.sign_challenge("abc") },
         "safety": crypto::safety_number((&a.code, &a.sign, &a.dh), (&b.code, &b.sign, &b.dh)),
         "pin": { "pin": "2580", "hash": pin },
+        // La clé de l'appareil chiffrée par le code de verrouillage (le
+        // navigateur dans `talka-cle`, l'iPhone dans son trousseau).
+        "cle": cle,
         "backup": { "password": "motdepasse", "file": backup, "plain": backup_data },
         "wires": wire_json,
         "store": {
