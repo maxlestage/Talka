@@ -26,6 +26,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Le QR code de votre code, dessiné dans le navigateur.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+# Et lu par la caméra là où le navigateur ne sait pas le faire (Safari,
+# Firefox : pas de `BarcodeDetector`).
+rqrr = "0.10"
 # La mémoire de Talka : Memoire ORM (moteur en mémoire, en pur Rust), dont
 # les lignes sont gardées dans IndexedDB (voir `store`).
 memoire-orm = { git = "https://github.com/maxlestage/Memoire", default-features = false, features = ["memory", "web"] }
@@ -78,6 +81,7 @@ web-sys = { version = "0.3", features = [
   "HtmlSelectElement",
   "HtmlTextAreaElement",
   "HtmlVideoElement",
+  "ImageData",
   "DomStringList",
   "IdbCursorDirection",
   "IdbCursorWithValue",
