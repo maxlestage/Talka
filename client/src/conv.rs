@@ -907,6 +907,7 @@ fn voice_player(m: &Message) -> El {
     let speed = Rc::new(Cell::new(1.0f64));
     let speed_btn = h("button.voice-speed")
         .attr("type", "button")
+        .attr("aria-label", "Vitesse de lecture : 1×")
         .text("1×")
         .el();
     let (data, dur) = (m.data.clone(), m.dur);
@@ -935,14 +936,16 @@ fn voice_player(m: &Message) -> El {
             };
             s.set(next);
             a.set_playback_rate(next);
-            sb.set_text_content(Some(&format!(
+            let label = format!(
                 "{}×",
                 if next == 1.5 {
                     "1,5".to_owned()
                 } else {
                     format!("{next}")
                 }
-            )));
+            );
+            sb.set_text_content(Some(&label));
+            let _ = sb.set_attribute("aria-label", &format!("Vitesse de lecture : {label}"));
         });
     }
     {
@@ -960,6 +963,14 @@ fn voice_player(m: &Message) -> El {
             d.set_text_content(Some(&fmt_dur(a.current_time())));
         });
     }
+    // Mis en pause d'ailleurs (un autre vocal qui démarre) : le bouton le dit.
+    {
+        let p = play_btn.clone();
+        listen(&audio, "pause", move |_| {
+            replace(&p, icon("play"));
+            let _ = p.set_attribute("aria-label", "Lire");
+        });
+    }
     {
         let (p, bars, d, el) = (
             play_btn.clone(),
@@ -969,6 +980,7 @@ fn voice_player(m: &Message) -> El {
         );
         listen(&audio, "ended", move |_| {
             replace(&p, icon("play"));
+            let _ = p.set_attribute("aria-label", "Lire");
             for b in query_all_in(&bars, "i") {
                 toggle_class(&b, "on", false);
             }
@@ -1003,9 +1015,11 @@ fn voice_player(m: &Message) -> El {
                 a.set_playback_rate(s.get());
                 play(&a);
                 replace(&p, icon("pause"));
+                let _ = p.set_attribute("aria-label", "Pause");
             } else {
                 let _ = a.pause();
                 replace(&p, icon("play"));
+                let _ = p.set_attribute("aria-label", "Lire");
             }
         });
     }
