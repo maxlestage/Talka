@@ -4210,6 +4210,21 @@ pub async fn import_backup(password: &str, file: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Cet appareil quitte le compte (avant de tout effacer) : nos autres
+/// appareils et les contacts ne lui écrivent plus. Au mieux : sans réseau,
+/// il reste dans la liste jusqu'à ce qu'un autre appareil le retire.
+pub async fn leave_account() {
+    let me = my_dev();
+    let mut list = devices();
+    if siblings().is_empty() || !list.has(&me) || net::state() != State::Online {
+        return;
+    }
+    list.list.retain(|d| d.dev != me);
+    list.v += 1;
+    devices_changed(list, true).await;
+    flush().await;
+}
+
 pub async fn wipe_everything() {
     crate::push::forget().await;
     net::stop();

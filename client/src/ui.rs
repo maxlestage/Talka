@@ -3722,6 +3722,8 @@ async fn wipe() {
     {
         return;
     }
+    // Lié à d'autres appareils : il quitte d'abord le compte.
+    core::leave_account().await;
     core::wipe_everything().await;
     let _ = window().location().reload();
 }
