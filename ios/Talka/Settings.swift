@@ -79,6 +79,18 @@ struct SettingsTab: View {
                         Stepper("Taille du texte : \(e.settings.fontSize)", value: setting(e, \.fontSize), in: 12...22)
                     }
                     Section {
+                        Picker("Conserver les messages", selection: setting(e, \.keepDays)) {
+                            Text("1 mois").tag(30)
+                            Text("3 mois").tag(90)
+                            Text("1 an").tag(365)
+                            Text("Toujours").tag(0)
+                        }
+                    } header: {
+                        Text("Discussions")
+                    } footer: {
+                        Text("Plus vieux, ils s'effacent de cet iPhone, sauf les messages importants ⭐.")
+                    }
+                    Section {
                         Toggle("Notifications", isOn: Binding(get: { e.settings.notify }, set: { on in
                             if on {
                                 Task {

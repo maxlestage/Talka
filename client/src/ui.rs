@@ -3178,7 +3178,12 @@ pub async fn open_settings() {
                             spawn(core::save_settings(move |s| s.font_size = n))
                         }))
                         .child(setting("palette", "Fond d'écran", "Pour toutes les discussions", false, || conv::wallpaper_dialog(None)))
-                        .child(toggle("Entrée pour envoyer", "Sur ordinateur ; Maj + Entrée va à la ligne", s.enter_sends, |v| spawn(core::save_settings(move |s| s.enter_sends = v)))),
+                        .child(toggle("Entrée pour envoyer", "Sur ordinateur ; Maj + Entrée va à la ligne", s.enter_sends, |v| spawn(core::save_settings(move |s| s.enter_sends = v))))
+                        .child(select("Conserver les messages", &[("30", "1 mois"), ("90", "3 mois"), ("365", "1 an"), ("0", "Toujours")], &s.keep_days.to_string(), |v| {
+                            let days = v.parse().unwrap_or(crate::model::KEEP_DAYS);
+                            spawn(core::save_settings(move |s| s.keep_days = days))
+                        }))
+                        .child(h("p.muted.small.pad").text("Plus vieux, ils s'effacent de cet appareil, sauf les messages importants ⭐.")),
                 )
                 .child(
                     h("div.settings-group")
