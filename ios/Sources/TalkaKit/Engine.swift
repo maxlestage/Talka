@@ -723,7 +723,7 @@ public final class Engine {
     public func clearChat(_ id: String) {
         buryAll(id)
         store.deleteMessages(of: id)
-        updateChat(id) { $0.last = nil; $0.unread = 0 }
+        updateChat(id) { $0.last = nil; $0.unread = 0; $0.mentioned = false }
         bump(id)
     }
 
@@ -1066,11 +1066,29 @@ public final class Engine {
         store.allMessages().filter(\.starred).sorted { $0.at > $1.at }
     }
 
+    /// Le libellé d'une mention (« @Léa ») : le nom que chacun s'est choisi,
+    /// le même sur tous les appareils (à défaut, celui qu'on lui a donné).
+    /// Comme `core::mention_label` du navigateur.
+    public func mentionLabel(_ code: String) -> String {
+        if code == me.code { return profile.name }
+        guard let c = contacts[code] else { return TalkaCode.pretty(code) }
+        if !c.profileName.isEmpty { return c.profileName }
+        return c.name.isEmpty ? TalkaCode.pretty(code) : c.name
+    }
+
+    /// Les membres d'un groupe à proposer pour « @… », et ceux que `text`
+    /// mentionne.
+    public func mentionCandidates(_ chat: Chat) -> [(code: String, label: String)] {
+        chat.members.filter { $0 != me.code }.map { ($0, mentionLabel($0)) }
+    }
+
     public func forward(_ m: Message, to chats: [String]) {
         var content = m.content
         content.reply = nil
         content.fwd = true
         content.openAt = nil
+        // Une mention ne suit pas un message transféré.
+        content.mentions = []
         for id in chats { send(id, content) }
     }
 
@@ -1185,7 +1203,9 @@ public final class Engine {
         if settings.readReceipts {
             for (code, ids) in bySender { queueReceipt(code, chat, ids, "read") }
         }
-        if c.unread > 0 || c.markedUnread { updateChat(chat) { $0.unread = 0; $0.markedUnread = false } }
+        if c.unread > 0 || c.markedUnread || c.mentioned {
+            updateChat(chat) { $0.unread = 0; $0.markedUnread = false; $0.mentioned = false }
+        }
     }
 
     func onEnvelope(_ env: [String: Any]) {
@@ -1403,6 +1423,8 @@ public final class Engine {
             // Une capsule s'ouvre au plus tard dans dix ans.
             let mAt = min(at, ts + 60_000)
             if let open = safe.openAt { safe.openAt = open > mAt ? min(open, mAt + capsuleMaxMs) : nil }
+            // Les mentions : seulement des membres du groupe (50 au plus).
+            safe.mentions = c.group ? Array(safe.mentions.filter { c.members.contains($0) }.prefix(50)) : []
             var m = Message(chat: c.id, id: id, from: from, at: mAt, content: safe)
             if let ttl = wire.ttl { m.exp = m.at + Double(ttl) * 1000 }
             // La citation : celle de notre copie du message cité, jamais ce que
@@ -1423,7 +1445,14 @@ public final class Engine {
                 saveContact(sender)
             }
             let active = activeChat == c.id && foreground
-            if active { m.readByMe = true } else { c.unread += 1; saveChat(c) }
+            if active {
+                m.readByMe = true
+            } else {
+                c.unread += 1
+                // Mentionné : « @ » dans la liste, jusqu'à la lecture.
+                if m.mentions.contains(me.code) { c.mentioned = true }
+                saveChat(c)
+            }
             storeMessage(m)
             queueReceipt(from, c.id, [id], "delivered")
             if active, settings.readReceipts { queueReceipt(from, c.id, [id], "read") }
