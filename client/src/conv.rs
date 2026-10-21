@@ -194,6 +194,21 @@ fn chat_menu(chat: &Chat, at: At) {
             ),
             item("search", "Rechercher", toggle_search),
             item("timer", "Messages éphémères", move || timer_dialog(&i2)),
+            item("download", "Exporter la discussion", {
+                let id = chat.id.clone();
+                move || {
+                    let id = id.clone();
+                    spawn(async move {
+                        if let Some((name, text)) = core::export_chat(&id).await {
+                            let url = format!(
+                                "data:text/plain;charset=utf-8,{}",
+                                String::from(js_sys::encode_uri_component(&text))
+                            );
+                            download(&name, &url);
+                        }
+                    })
+                }
+            }),
             item(
                 "lock",
                 if chat.brocolis.is_empty() {

@@ -596,6 +596,27 @@ public final class Engine {
         m.kind == "text" && !m.deleted && !m.sealed(for: me.code, now: now) ? Brocolis.masked(m.text) : Self.preview(m)
     }
 
+    /// Une discussion en texte, comme le navigateur (« Exporter la
+    /// discussion ») : (nom du fichier, texte). Ce qu'on lit dans la
+    /// discussion, rien d'autre : une capsule scellée reste scellée.
+    public func exportChat(_ chatId: String, now: Double = nowMs()) -> (filename: String, text: String)? {
+        guard let c = chat(chatId) else { return nil }
+        let t = title(c)
+        var out = "Discussion Talka « \(t) », exportée le \(exportStamp(now)).\nChiffrée de bout en bout dans Talka ; ce fichier, lui, ne l'est pas.\n\n"
+        for m in messages(chatId) where (m.exp ?? .infinity) > now {
+            let author: String?
+            if m.kind == "system" || m.from == "system" {
+                author = nil
+            } else if m.from == me.code {
+                author = profile.name.isEmpty ? "Vous" : profile.name
+            } else {
+                author = displayName(m.from)
+            }
+            out += exportLine(exportStamp(m.at), author: author, text: readable(m, now: now)) + "\n"
+        }
+        return (exportFilename(t), out)
+    }
+
     public static func preview(_ m: Message) -> String {
         if m.deleted { return "🚫 Message supprimé" }
         // Ni l'aperçu de la liste, ni la notification ne trahissent une capsule.
@@ -1313,6 +1334,25 @@ public func nextVoice(after id: String, in messages: [Message], now: Double = no
     let next = messages[i + 1]
     guard next.kind == "voice", !next.deleted, next.exp.map({ $0 > now }) ?? true else { return nil }
     return next.id
+}
+
+/// « 21/10/2026 23:21 - Léa : Bonjour » (comme `talka_web::model::export_line`).
+public func exportLine(_ stamp: String, author: String?, text: String) -> String {
+    author.map { "\(stamp) - \($0) : \(text)" } ?? "\(stamp) - \(text)"
+}
+
+/// « Talka - Léa.txt », sans les caractères interdits dans un nom de fichier.
+public func exportFilename(_ title: String) -> String {
+    let clean = String(title.map { "/\\:*?\"<>|".contains($0) || $0.isNewline ? "_" : $0 })
+    return "Talka - \(clean.trimmingCharacters(in: .whitespaces)).txt"
+}
+
+/// « 21/10/2026 23:21 », à l'heure de l'appareil.
+public func exportStamp(_ ms: Double) -> String {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "fr_FR")
+    f.dateFormat = "dd/MM/yyyy HH:mm"
+    return f.string(from: Date(timeIntervalSince1970: ms / 1000))
 }
 
 public func formatDuration(_ s: Double) -> String {
