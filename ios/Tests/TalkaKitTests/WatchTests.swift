@@ -285,3 +285,24 @@ final class SearchTests: XCTestCase {
         XCTAssertEqual(e.searchMessages("samedi").map(\.text), ["Le cinéma de Samédi est complet"])
     }
 }
+
+final class VoiceChainTests: XCTestCase {
+    func message(_ id: String, _ kind: String, deleted: Bool = false, exp: Double? = nil) -> Message {
+        var m = Message(chat: "c", id: id, from: "WGSEAJNSZJ", at: 0, content: Content(kind: kind))
+        m.deleted = deleted
+        m.exp = exp
+        return m
+    }
+
+    func testOnlyTheVoiceRightAfterChains() {
+        let list = [message("a", "voice"), message("b", "voice"), message("c", "text"), message("d", "voice"),
+                    message("e", "voice", deleted: true), message("f", "voice", exp: 10), message("g", "voice")]
+        XCTAssertEqual(nextVoice(after: "a", in: list, now: 100), "b")
+        XCTAssertNil(nextVoice(after: "b", in: list, now: 100))
+        XCTAssertNil(nextVoice(after: "d", in: list, now: 100))
+        XCTAssertNil(nextVoice(after: "e", in: list, now: 100))
+        XCTAssertEqual(nextVoice(after: "e", in: list, now: 5), "f")
+        XCTAssertNil(nextVoice(after: "g", in: list, now: 100))
+        XCTAssertNil(nextVoice(after: "inconnu", in: list, now: 100))
+    }
+}

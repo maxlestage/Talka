@@ -1249,6 +1249,15 @@ public final class Engine {
 }
 
 /// `2:05`.
+/// Le vocal qui enchaîne quand `id` se termine (comme WhatsApp) : le message
+/// juste après, s'il est lui aussi un vocal (supprimé ou expiré : non).
+public func nextVoice(after id: String, in messages: [Message], now: Double = nowMs()) -> String? {
+    guard let i = messages.firstIndex(where: { $0.id == id }), i + 1 < messages.count else { return nil }
+    let next = messages[i + 1]
+    guard next.kind == "voice", !next.deleted, next.exp.map({ $0 > now }) ?? true else { return nil }
+    return next.id
+}
+
 public func formatDuration(_ s: Double) -> String {
     let t = max(0, Int(s.rounded()))
     return "\(t / 60):" + String(format: "%02d", t % 60)
