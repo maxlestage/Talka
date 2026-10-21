@@ -161,7 +161,25 @@ public struct Identity: Codable, Equatable, Sendable {
     public var jeton: String {
         guard let dh = unb64(dhPriv) else { return "" }
         let digest = Data(SHA256.hash(data: Data("talka-jeton-nonce:".utf8) + dh))
-        let nonce = b64(digest.prefix(16))
+        return jeton(nonce: b64(digest.prefix(16)))
+    }
+
+    /// Le nonce du jeton de remise donné à `contact`, à l'époque `epoch`
+    /// (elle avance quand on le bloque : l'ancien jeton est révoqué), comme
+    /// `Identity::jeton_nonce` du navigateur.
+    public func jetonNonce(for contact: String, epoch: Int) -> String {
+        guard let dh = unb64(dhPriv) else { return "" }
+        let digest = Data(SHA256.hash(data: Data("talka-jeton-nonce:".utf8) + dh + Data(":\(contact):\(epoch)".utf8)))
+        return b64(digest.prefix(16))
+    }
+
+    /// Le jeton de remise pour `contact` : un par contact, révocable.
+    public func jeton(for contact: String, epoch: Int) -> String {
+        jeton(nonce: jetonNonce(for: contact, epoch: epoch))
+    }
+
+    func jeton(nonce: String) -> String {
+        guard !nonce.isEmpty else { return "" }
         let sig = sign(TalkaCrypto.jetonMessage(code, nonce))
         return sig.isEmpty ? "" : "\(nonce).\(sig)"
     }
