@@ -415,12 +415,16 @@ select.field {
 }
 
 /* ----- Le squelette (téléphone : une colonne, la discussion glisse
-   par-dessus la liste) ----- */
+   par-dessus la liste) -----
+   `--app-h` : la hauteur réelle de la fenêtre, mesurée (dom::track_height).
+   Installée sur l'écran d'accueil d'un iPhone ou d'un iPad, l'application
+   passe sous la barre d'état, et `100dvh` y laisse une bande vide en bas. */
 
 .layout {
   position: relative;
   height: 100%;
   height: 100dvh;
+  height: var(--app-h, 100dvh);
   width: 100%;
   overflow: hidden;
   overflow: clip;
@@ -1986,6 +1990,7 @@ label.list-item {
   max-width: 100%;
   max-height: 92%;
   max-height: 92dvh;
+  max-height: calc(var(--app-h, 100dvh) * 0.92);
   overflow: hidden;
   padding-bottom: var(--safe-bottom);
   border-radius: 18px 18px 0 0;
@@ -2003,8 +2008,9 @@ label.list-item {
 .settings-modal {
   height: 100%;
   height: 100dvh;
+  height: var(--app-h, 100dvh);
   max-height: 100% !important;
-  max-height: 100dvh !important;
+  max-height: var(--app-h, 100dvh) !important;
   border-radius: 0;
   padding-top: var(--safe-top);
 }
@@ -2599,7 +2605,7 @@ label.list-item {
 
 .story-img img {
   max-width: 100%;
-  max-height: calc(100dvh - 180px);
+  max-height: calc(var(--app-h, 100dvh) - 180px);
   object-fit: contain;
 }
 
@@ -2650,7 +2656,7 @@ label.list-item {
 
 .viewer img {
   max-width: 100%;
-  max-height: calc(100dvh - 140px);
+  max-height: calc(var(--app-h, 100dvh) - 140px);
   object-fit: contain;
 }
 
@@ -2990,6 +2996,7 @@ body.locked .lock-screen {
   justify-content: center;
   min-height: 100%;
   min-height: 100dvh;
+  min-height: var(--app-h, 100dvh);
   padding: calc(16px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
   background: var(--panel);
 }
@@ -3255,7 +3262,7 @@ body.locked .lock-screen {
 
   .modal {
     width: min(440px, 100%);
-    max-height: min(86dvh, 760px);
+    max-height: min(calc(var(--app-h, 100dvh) * 0.86), 760px);
     padding-bottom: 0;
     border-radius: 16px;
     box-shadow: 0 17px 50px rgba(11, 20, 26, 0.3);
@@ -3268,7 +3275,7 @@ body.locked .lock-screen {
 
   .settings-modal {
     height: auto;
-    max-height: min(86dvh, 760px) !important;
+    max-height: min(calc(var(--app-h, 100dvh) * 0.86), 760px) !important;
     padding-top: 0;
     border-radius: 16px;
   }
@@ -3298,7 +3305,7 @@ body.locked .lock-screen {
   }
 
   .layout {
-    height: calc(100dvh - 38px);
+    height: calc(var(--app-h, 100dvh) - 38px);
     margin-top: 19px;
     box-shadow: 0 6px 18px rgba(11, 20, 26, 0.12);
   }

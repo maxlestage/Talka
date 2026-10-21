@@ -30,11 +30,26 @@ pub struct Settings {
     pub font_size: u32,
     /// Verrouillage automatique : secondes passées hors de Talka.
     pub lock_after: u32,
-    /// Sur GitHub Pages sans relais configuré : l'adresse choisie.
+    /// Autrefois, l'adresse d'un autre relais ; gardé pour relire les
+    /// anciens réglages, jamais utilisé (il n'y a plus qu'un relais).
     pub server: String,
     /// Les messages plus vieux que ça (en jours) s'effacent de l'appareil,
     /// sauf les messages importants (⭐). 0 : gardés pour toujours.
     pub keep_days: u32,
+    /// Ce que montrent les notifications : « all » (le nom et le message),
+    /// « name » (le nom seulement), « none » (rien : « Nouveau message »).
+    pub notify_preview: String,
+}
+
+impl Settings {
+    /// Le titre et le texte d'une notification, selon `notify_preview`.
+    pub fn notification(&self, title: &str, body: &str) -> (String, String) {
+        match self.notify_preview.as_str() {
+            "none" => ("Talka".into(), "Nouveau message".into()),
+            "name" => (title.into(), "Nouveau message".into()),
+            _ => (title.into(), body.into()),
+        }
+    }
 }
 
 impl Default for Settings {
@@ -52,6 +67,7 @@ impl Default for Settings {
             lock_after: 0,
             server: String::new(),
             keep_days: KEEP_DAYS,
+            notify_preview: "all".into(),
         }
     }
 }

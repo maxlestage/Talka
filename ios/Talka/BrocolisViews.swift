@@ -16,7 +16,7 @@ func copySecret(_ text: String) {
 }
 
 let brocolisAbout = "Brocolis chiffre vos messages une seconde fois, avec des clés que vous partagez avec vos proches dans l'app Brocolis 🥦. Talka les chiffre déjà de bout en bout ; seuls ceux qui ont la clé ouvrent cette seconde couche, ici ou dans l'app Brocolis (clavier, Partager)."
-let brocolisStrength = "Chaque clé : 256 bits tirés au hasard (AES-256-GCM) ; le base64 n'est que sa façon de s'écrire. Le point faible, c'est le partage : envoyez-la par Talka plutôt que par un canal en clair, et comparez son empreinte de vive voix. Sur l'iPhone, les clés sont dans le trousseau, pour cet appareil seulement."
+let brocolisStrength = "Chaque clé : 256 bits tirés au hasard (AES-256-GCM) ; le base64 n'est que sa façon de s'écrire. Le point faible, c'est le partage : envoyez-la par Talka plutôt que par un canal en clair, et comparez son empreinte de vive voix. Sur l'iPhone et l'iPad, les clés sont dans le trousseau, pour cet appareil seulement."
 
 /// L'empreinte d'une clé, à comparer de vive voix.
 struct BrocolisFingerprint: View {
@@ -234,7 +234,7 @@ struct ExportBrocolisKey: View {
                 } header: {
                     Text("En clair (déconseillé)")
                 } footer: {
-                    Text("Qui la voit peut lire tous les messages qu'elle chiffre. Demande Face ID ou le code de l'iPhone ; le presse-papiers reste sur cet iPhone et s'efface au bout de deux minutes.")
+                    Text("Qui la voit peut lire tous les messages qu'elle chiffre. Demande Face ID ou le code de l'appareil ; le presse-papiers reste sur cet appareil et s'efface au bout de deux minutes.")
                 }
             }
             .navigationTitle("Exporter la clé")
@@ -379,7 +379,7 @@ struct BrocolisKeyCard: View {
             } else if let have {
                 Text("✓ Dans vos clés (« \(have.name) »)").font(.caption).foregroundStyle(.secondary)
             } else if m.data.isEmpty {
-                Text("Clé oubliée sur cet iPhone.").font(.caption).foregroundStyle(.secondary)
+                Text("Clé oubliée sur cet appareil.").font(.caption).foregroundStyle(.secondary)
             } else {
                 Button {
                     do {

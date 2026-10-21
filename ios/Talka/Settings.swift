@@ -1,5 +1,5 @@
 // L'onglet Réglages : le profil, le code, la confidentialité, le verrou,
-// l'apparence, les notifications, le serveur, la sauvegarde.
+// l'apparence, les notifications, la sauvegarde.
 
 import PhotosUI
 import LocalAuthentication
@@ -22,8 +22,8 @@ struct SettingsTab: View {
     /// La sauvegarde chiffrée, prête à être enregistrée dans Fichiers.
     @State private var backupFile: BackupFile?
     @State private var savingBackup = false
-    @State private var server = ""
     @State private var confirmWipe = false
+    @State private var confirmRemovePin = false
 
     var body: some View {
         NavigationStack {
@@ -55,34 +55,7 @@ struct SettingsTab: View {
                     } footer: {
                         Text("Une seconde couche de chiffrement, avec les clés de l'app Brocolis.")
                     }
-                    Section {
-                        if let bio = model.biometryName ?? (LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) ? "le code de l'iPhone" : nil) {
-                            Toggle("Protéger mes messages par \(bio)", isOn: Binding(
-                                get: { model.vaultProtected },
-                                set: { on in Task { await model.protectVault(on) } }))
-                        }
-                    } header: {
-                        Text("Protection des messages")
-                    } footer: {
-                        Text("Vos messages sont chiffrés sur cet iPhone. Protégés, ils ne s'ouvrent qu'avec votre visage, votre empreinte ou le code de l'iPhone : même quelqu'un qui aurait l'iPhone déverrouillé ne pourrait pas ouvrir Talka.")
-                    }
-                    Section("Verrouillage") {
-                        if model.hasPin {
-                            if let bio = model.biometryName {
-                                Toggle(bio, isOn: Binding(get: { model.faceID }, set: { model.faceID = $0 }))
-                            }
-                            Picker("Verrouiller", selection: setting(e, \.lockAfter)) {
-                                Text("Immédiatement").tag(0)
-                                Text("Après 1 minute").tag(60)
-                                Text("Après 5 minutes").tag(300)
-                                Text("Après 1 heure").tag(3600)
-                            }
-                            Button("Changer le code PIN") { settingPin = true }
-                            Button("Retirer le code PIN", role: .destructive) { model.setPin(nil) }
-                        } else {
-                            Button("Définir un code PIN") { settingPin = true }
-                        }
-                    }
+                    security(e)
                     Section("Apparence") {
                         Picker("Thème", selection: setting(e, \.theme)) {
                             Text("Automatique").tag("auto")
@@ -102,10 +75,11 @@ struct SettingsTab: View {
                             Text("1 an").tag(365)
                             Text("Toujours").tag(0)
                         }
+                        Toggle("Entrée pour envoyer", isOn: setting(e, \.enterSends))
                     } header: {
                         Text("Discussions")
                     } footer: {
-                        Text("Plus vieux, ils s'effacent de cet iPhone, sauf les messages importants ⭐.")
+                        Text("Plus vieux, ils s'effacent de cet appareil, sauf les messages importants ⭐. Entrée pour envoyer : avec un clavier (iPad, Mac), Maj + Entrée va à la ligne.")
                     }
                     Section {
                         Toggle("Notifications", isOn: Binding(get: { e.settings.notify }, set: { on in
@@ -113,33 +87,22 @@ struct SettingsTab: View {
                                 Task {
                                     let ok = await Notifier.requestPermission()
                                     e.saveSettings { $0.notify = ok }
-                                    if !ok { model.show("Autorisez les notifications de Talka dans les Réglages de l'iPhone.") }
+                                    if !ok { model.show("Autorisez les notifications de Talka dans les Réglages de l'appareil.") }
                                 }
                             } else {
                                 e.saveSettings { $0.notify = false }
                             }
                         }))
+                        Picker("Aperçu", selection: setting(e, \.notifyPreview)) {
+                            Text("Nom et message").tag("all")
+                            Text("Nom seulement").tag("name")
+                            Text("Rien (« Nouveau message »)").tag("none")
+                        }
                         Toggle("Sons", isOn: setting(e, \.sound))
                     } header: {
                         Text("Notifications")
                     } footer: {
-                        Text("Talka prévient quand l'application est ouverte ou en arrière-plan récent : aucun message ne passe par les serveurs d'Apple.")
-                    }
-                    Section {
-                        TextField("Serveur", text: $server)
-                            .keyboardType(.URL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .onSubmit {
-                                let s = server.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                                guard URL(string: s)?.host != nil, s != model.serverString else { return }
-                                model.changeServer(s == AppModel.builtInServer ? "" : s)
-                            }
-                        LabeledContent("État", value: e.netState == .online ? "Connecté" : e.netState == .connecting ? "Connexion…" : "Hors ligne")
-                    } header: {
-                        Text("Serveur")
-                    } footer: {
-                        Text("Le serveur ne fait que passer les messages chiffrés. Vos contacts doivent utiliser le même.")
+                        Text("Talka prévient quand l'application est ouverte ou en arrière-plan récent : aucun message ne passe par les serveurs d'Apple. L'aperçu choisit ce que montre l'écran verrouillé.")
                     }
                     Section {
                         Button { exporting = true } label: { Label("Exporter une sauvegarde", systemImage: "square.and.arrow.up") }
@@ -148,7 +111,7 @@ struct SettingsTab: View {
                     } header: {
                         Text("Sauvegarde")
                     } footer: {
-                        Text("La sauvegarde est chiffrée avec un mot de passe. Elle se restaure sur un iPhone comme dans un navigateur.")
+                        Text("La sauvegarde est chiffrée avec un mot de passe. Elle se restaure sur un iPhone, un iPad ou dans un navigateur.")
                     }
                     Section {
                         Button("Tout effacer", role: .destructive) { confirmWipe = true }
@@ -160,7 +123,6 @@ struct SettingsTab: View {
                 .onAppear {
                     name = e.profile.name
                     about = e.profile.about
-                    server = model.serverString
                 }
                 .onChange(of: photo) { _, item in
                     guard let item else { return }
@@ -229,7 +191,15 @@ struct SettingsTab: View {
                     }
                     Button("Annuler", role: .cancel) { password = "" }
                 } message: {
-                    Text("Les données de cet iPhone seront remplacées par celles de la sauvegarde.")
+                    Text("Les données de cet appareil seront remplacées par celles de la sauvegarde.")
+                }
+                .confirmationDialog("Retirer le code ?", isPresented: $confirmRemovePin, titleVisibility: .visible) {
+                    Button("Retirer le code", role: .destructive) {
+                        model.setPin(nil)
+                        model.show("Code retiré")
+                    }
+                } message: {
+                    Text("Talka s'ouvrira sans code, et vos messages ne seront plus chiffrés par lui (ils restent chiffrés par l'appareil).")
                 }
                 .confirmationDialog("Tout effacer ?", isPresented: $confirmWipe, titleVisibility: .visible) {
                     Button("Effacer le code, les contacts et les messages", role: .destructive) { model.wipe() }
@@ -238,6 +208,73 @@ struct SettingsTab: View {
                 }
             }
         }
+    }
+
+    /// Le verrou de Talka, comme dans le navigateur : le code (qui chiffre
+    /// aussi les messages), Face ID, le délai, l'effacement après 10 codes
+    /// faux ; et l'écran caché pendant un enregistrement.
+    @ViewBuilder func security(_ e: Engine) -> some View {
+        let bio = model.biometryName
+        Section {
+            if model.hasPin {
+                Button {
+                    settingPin = true
+                } label: {
+                    SettingLabel(title: "Changer le code de verrouillage", detail: "Talka demande votre code à l'ouverture", icon: "lock.fill")
+                }
+                if let bio {
+                    Toggle(isOn: Binding(get: { model.faceID }, set: { model.faceID = $0 })) {
+                        SettingLabel(title: bio, detail: "Ouvre Talka sans taper le code", icon: bio == "Touch ID" ? "touchid" : "faceid")
+                    }
+                }
+                Picker(selection: setting(e, \.lockAfter)) {
+                    Text("Dès que je quitte Talka").tag(0)
+                    Text("Après 1 minute").tag(60)
+                    Text("Après 5 minutes").tag(300)
+                    Text("Après 15 minutes").tag(900)
+                    Text("Après 1 heure").tag(3600)
+                } label: {
+                    SettingLabel(title: "Verrouillage automatique", detail: nil, icon: "timer")
+                }
+                Toggle(isOn: Binding(get: { model.wipeAfterFails }, set: { model.wipeAfterFails = $0 })) {
+                    SettingLabel(title: "Effacer après 10 codes faux", detail: "Au dixième code faux, Talka efface tout sur cet appareil", icon: "trash")
+                }
+                Button(role: .destructive) {
+                    confirmRemovePin = true
+                } label: {
+                    SettingLabel(title: "Retirer le code de verrouillage", detail: nil, icon: "lock.open", tint: .red)
+                }
+            } else {
+                Button {
+                    settingPin = true
+                } label: {
+                    SettingLabel(title: "Code de verrouillage", detail: "6 à 12 chiffres, qui chiffrent aussi vos messages sur cet appareil", icon: "lock.fill")
+                }
+                if let name = bio ?? (LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) ? "le code de l'appareil" : nil) {
+                    Toggle(isOn: Binding(get: { model.vaultProtected }, set: { on in Task { await model.protectVault(on) } })) {
+                        SettingLabel(title: "Protéger mes messages par \(name)", detail: "Ils ne s'ouvrent qu'avec votre visage, votre empreinte ou le code de l'appareil", icon: "faceid")
+                    }
+                }
+            }
+            Toggle(isOn: Binding(get: { model.hideWhenCaptured }, set: { model.hideWhenCaptured = $0 })) {
+                SettingLabel(title: "Masquer pendant un enregistrement", detail: "Enregistrement, recopie (AirPlay) ou partage de l'écran : Talka se cache", icon: "eye.slash")
+            }
+        } header: {
+            Text("Verrouillage et sécurité")
+        } footer: {
+            Text(securityFooter(bio))
+        }
+    }
+
+    func securityFooter(_ bio: String?) -> String {
+        if !model.hasPin {
+            return "Vos messages sont chiffrés sur cet appareil par une clé que seul Talka peut lire. Avec un code, ils ne s'ouvrent plus sans lui, même pour quelqu'un qui copierait les fichiers. Dans le sélecteur d'apps, Talka montre toujours un écran neutre."
+        }
+        if !model.codeEncrypts {
+            return "Tapez votre code une fois au prochain déverrouillage : il chiffrera aussi vos messages sur cet appareil."
+        }
+        let face = bio.map { " (ou \($0))" } ?? ""
+        return "Votre code chiffre aussi vos messages sur cet appareil : sans lui\(face), ils ne s'ouvrent pas, même si quelqu'un copie les fichiers ou a l'appareil déverrouillé. Dans le sélecteur d'apps, Talka montre toujours un écran neutre."
     }
 
     @ViewBuilder func profile(_ e: Engine) -> some View {
@@ -373,5 +410,27 @@ struct BackupFile: FileDocument {
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: data)
+    }
+}
+
+/// Une ligne de réglage : une icône, un titre et une précision, comme dans
+/// le navigateur.
+struct SettingLabel: View {
+    let title: String
+    let detail: String?
+    let icon: String
+    var tint: Color = .primary
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).foregroundStyle(tint)
+                if let detail {
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        } icon: {
+            Image(systemName: icon).foregroundStyle(tint == .red ? Color.red : Color.secondary)
+        }
     }
 }
