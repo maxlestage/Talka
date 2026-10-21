@@ -80,16 +80,22 @@ final class CompatTests: XCTestCase {
         let ap = try XCTUnwrap(v["apercu"] as? [String: Any])
         let nk = try XCTUnwrap(ap["nk"] as? String), plain = try XCTUnwrap(ap["plain"] as? String)
         let priv = try XCTUnwrap(unb64(try XCTUnwrap(ap["nk_priv"] as? String)))
+        let a = try identity("a"), b = try identity("b")
+        let contacts = { (code: String) in code == a.code ? a.dh : nil }
         XCTAssertTrue(TalkaCrypto.validNk(nk))
         XCTAssertFalse(TalkaCrypto.validNk("abc"))
-        XCTAssertEqual(TalkaCrypto.openApercu(nkPriv: priv, sealed: try XCTUnwrap(ap["sealed"] as? String)), plain)
-        let mine = try XCTUnwrap(TalkaCrypto.sealApercu(nk: nk, plain: "{\"t\":\"🙂\"}"))
-        XCTAssertEqual(TalkaCrypto.openApercu(nkPriv: priv, sealed: mine), "{\"t\":\"🙂\"}")
-        XCTAssertNil(TalkaCrypto.openApercu(nkPriv: Data(repeating: 7, count: 32), sealed: mine))
+        let opened = try XCTUnwrap(TalkaCrypto.openApercu(nkPriv: priv, sealed: try XCTUnwrap(ap["sealed"] as? String), dhOf: contacts))
+        XCTAssertEqual(opened.from, a.code)
+        XCTAssertEqual(opened.plain, plain)
+        let mine = try XCTUnwrap(TalkaCrypto.sealApercu(b, nk: nk, plain: "{\"t\":\"🙂\"}"))
+        XCTAssertEqual(TalkaCrypto.openApercu(nkPriv: priv, sealed: mine, dhOf: { $0 == b.code ? b.dh : nil })?.plain, "{\"t\":\"🙂\"}")
+        // Un inconnu, ou B qui se ferait passer pour A : rien.
+        XCTAssertNil(TalkaCrypto.openApercu(nkPriv: priv, sealed: mine, dhOf: contacts))
+        XCTAssertNil(TalkaCrypto.openApercu(nkPriv: priv, sealed: mine, dhOf: { _ in a.dh }))
+        XCTAssertNil(TalkaCrypto.openApercu(nkPriv: Data(repeating: 7, count: 32), sealed: mine, dhOf: { _ in b.dh }))
 
         let wires = try XCTUnwrap(v["wires"] as? [String])
         let msg = try XCTUnwrap(JSON.decode(Wire.self, wires[0]))
-        let a = try identity("a")
         let ours = try XCTUnwrap(Engine.apercu(me: a.code, name: "Léa", wire: msg))
         let parse = { (s: String) in try JSONSerialization.jsonObject(with: Data(s.utf8)) as? [String: String] }
         XCTAssertEqual(try parse(ours), try parse(plain))

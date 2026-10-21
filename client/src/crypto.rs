@@ -406,17 +406,32 @@ pub fn open_sealed(me: &Identity, sealed: &str) -> Option<(String, String)> {
 // Ce que la notification affiche (« Léa : Bonjour »), chiffré par
 // l'expéditeur pour la clé de notification du destinataire : une clé P-256
 // tirée et gardée par le service worker du navigateur (non exportable), dont
-// la moitié publique voyage dans le profil chiffré. Même construction que
-// l'enveloppe scellée (éphémère, ECDH, HKDF-SHA256, AES-256-GCM), avec ses
-// propres étiquettes ; le service worker l'ouvre avec WebCrypto.
-// Sans confidentialité persistante : la clé de notification ne change pas.
-// Elle ne sert qu'à cet aperçu, jamais aux messages.
+// la moitié publique voyage dans le profil chiffré. Le service worker l'ouvre
+// avec WebCrypto.
+//
+// Authentifié : la clé mêle un ECDH éphémère et un ECDH avec la clé
+// d'identité (`dh`) de l'expéditeur. Seul qui détient la clé privée d'un
+// contact peut faire afficher un aperçu en son nom ; le service worker ne
+// connaît que vos contacts (leur `dh`, donnés par Talka). Sans
+// confidentialité persistante : la clé de notification ne change pas. Elle
+// ne sert qu'à cet aperçu, jamais aux messages.
+//
+// base64(0x02 ‖ code de l'expéditeur (10) ‖ éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag)
 
-fn apercu_key(shared: &[u8], eph: &[u8], nk: &[u8]) -> Option<Aes256Gcm> {
+const APERCU_V: u8 = 2;
+
+fn apercu_key(
+    eph_shared: &[u8],
+    static_shared: &[u8],
+    eph: &[u8],
+    nk: &[u8],
+    from: &str,
+) -> Option<Aes256Gcm> {
     let salt = [eph, nk].concat();
+    let ikm = [eph_shared, static_shared].concat();
     let mut key = [0u8; 32];
-    Hkdf::<Sha256>::new(Some(&salt), shared)
-        .expand(b"talka-apercu-v1", &mut key)
+    Hkdf::<Sha256>::new(Some(&salt), &ikm)
+        .expand(format!("talka-apercu-v2:{from}").as_bytes(), &mut key)
         .ok()?;
     Aes256Gcm::new_from_slice(&key).ok()
 }
@@ -426,57 +441,82 @@ pub fn valid_nk(nk: &str) -> bool {
     unb64(nk).is_some_and(|b| b.len() == 65 && PublicKey::from_sec1_bytes(&b).is_ok())
 }
 
-/// Chiffre un aperçu (du JSON) pour la clé de notification `nk` (65 octets,
-/// base64) : base64(éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag).
-pub fn seal_apercu(nk: &str, plain: &str) -> Option<String> {
+/// Chiffre un aperçu (du JSON) de `me` pour la clé de notification `nk`.
+pub fn seal_apercu(me: &Identity, nk: &str, plain: &str) -> Option<String> {
     let nk_raw = unb64(nk)?;
     let public = PublicKey::from_sec1_bytes(&nk_raw).ok()?;
+    if me.code.len() != 10 {
+        return None;
+    }
     let eph = SecretKey::random(&mut OsRng);
     let eph_raw = raw(&eph.public_key());
-    let shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
-    let cipher = apercu_key(shared.raw_secret_bytes(), &eph_raw, &nk_raw)?;
+    let eph_shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
+    let static_shared =
+        p256::ecdh::diffie_hellman(me.dh_key()?.to_nonzero_scalar(), public.as_affine());
+    let cipher = apercu_key(
+        eph_shared.raw_secret_bytes(),
+        static_shared.raw_secret_bytes(),
+        &eph_raw,
+        &nk_raw,
+        &me.code,
+    )?;
     let iv = random_bytes(12);
+    let aad = format!("talka-apercu:{}", me.code);
     let ct = cipher
         .encrypt(
             Nonce::from_slice(&iv),
             Payload {
                 msg: plain.as_bytes(),
-                aad: b"talka-apercu",
+                aad: aad.as_bytes(),
             },
         )
         .ok()?;
-    let mut out = eph_raw;
+    let mut out = vec![APERCU_V];
+    out.extend(me.code.as_bytes());
+    out.extend(eph_raw);
     out.extend(iv);
     out.extend(ct);
     Some(b64(&out))
 }
 
 /// Ouvre un aperçu avec la clé privée de notification (32 octets) : ce que
-/// fait le service worker, ici pour les tests et les vecteurs.
-pub fn open_apercu(nk_priv: &[u8], sealed: &str) -> Option<String> {
+/// fait le service worker, ici pour les tests et les vecteurs. `dh_of`
+/// donne la clé `dh` d'un contact connu ; un inconnu, un faussaire ou un
+/// aperçu abîmé : `None`. Renvoie (code de l'expéditeur, aperçu).
+pub fn open_apercu(
+    nk_priv: &[u8],
+    sealed: &str,
+    dh_of: impl Fn(&str) -> Option<String>,
+) -> Option<(String, String)> {
     let bytes = unb64(sealed)?;
-    if bytes.len() < 65 + 12 + 16 {
+    if bytes.len() < 1 + 10 + 65 + 12 + 16 || bytes[0] != APERCU_V {
         return None;
     }
+    let from = std::str::from_utf8(&bytes[1..11]).ok()?.to_owned();
+    let from_dh = PublicKey::from_sec1_bytes(&unb64(&dh_of(&from)?)?).ok()?;
     let secret = SecretKey::from_slice(nk_priv).ok()?;
-    let (eph_raw, rest) = bytes.split_at(65);
-    let public = PublicKey::from_sec1_bytes(eph_raw).ok()?;
-    let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+    let (eph_raw, rest) = bytes[11..].split_at(65);
+    let eph = PublicKey::from_sec1_bytes(eph_raw).ok()?;
+    let eph_shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), eph.as_affine());
+    let static_shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), from_dh.as_affine());
     let cipher = apercu_key(
-        shared.raw_secret_bytes(),
+        eph_shared.raw_secret_bytes(),
+        static_shared.raw_secret_bytes(),
         eph_raw,
         &raw(&secret.public_key()),
+        &from,
     )?;
+    let aad = format!("talka-apercu:{from}");
     let pt = cipher
         .decrypt(
             Nonce::from_slice(&rest[..12]),
             Payload {
                 msg: &rest[12..],
-                aad: b"talka-apercu",
+                aad: aad.as_bytes(),
             },
         )
         .ok()?;
-    String::from_utf8(pt).ok()
+    Some((from, String::from_utf8(pt).ok()?))
 }
 
 // ----- La mémoire de l'appareil, chiffrée au repos ---------------------------
@@ -725,17 +765,34 @@ mod tests {
 
     #[test]
     fn notification_preview() {
+        let (a, b) = (Identity::create(0.0), Identity::create(0.0));
         let nk = SecretKey::random(&mut OsRng);
         let nk_pub = b64(&raw(&nk.public_key()));
-        let sealed = seal_apercu(&nk_pub, r#"{"n":"Léa","t":"Bonjour 👋"}"#).unwrap();
+        let plain = r#"{"n":"Léa","t":"Bonjour 👋"}"#;
+        let sealed = seal_apercu(&a, &nk_pub, plain).unwrap();
         assert!(!sealed.contains("Bonjour"));
+        let contacts = |code: &str| (code == a.code).then(|| a.dh.clone());
         assert_eq!(
-            open_apercu(&nk.to_bytes(), &sealed).as_deref(),
-            Some(r#"{"n":"Léa","t":"Bonjour 👋"}"#)
+            open_apercu(&nk.to_bytes(), &sealed, contacts),
+            Some((a.code.clone(), plain.to_owned()))
         );
+        // Un inconnu ne fait rien afficher.
+        assert!(open_apercu(&nk.to_bytes(), &sealed, |_| None).is_none());
+        // B se fait passer pour A (il met le code de A) : refusé.
+        let mut forged = Identity::create(0.0);
+        forged.code = a.code.clone();
+        let fake = seal_apercu(&forged, &nk_pub, plain).unwrap();
+        assert!(open_apercu(&nk.to_bytes(), &fake, contacts).is_none());
+        // A sous le nom de B, ou une autre clé de notification : refusé.
+        let swapped = {
+            let mut raw_bytes = unb64(&sealed).unwrap();
+            raw_bytes[1..11].copy_from_slice(b.code.as_bytes());
+            b64(&raw_bytes)
+        };
+        assert!(open_apercu(&nk.to_bytes(), &swapped, |_| Some(b.dh.clone())).is_none());
         let other = SecretKey::random(&mut OsRng);
-        assert!(open_apercu(&other.to_bytes(), &sealed).is_none());
-        assert!(seal_apercu("pas une clé", "x").is_none());
+        assert!(open_apercu(&other.to_bytes(), &sealed, contacts).is_none());
+        assert!(seal_apercu(&a, "pas une clé", "x").is_none());
         assert!(valid_nk(&nk_pub));
         assert!(!valid_nk("pas une clé") && !valid_nk(&b64(&[4; 65])));
     }
