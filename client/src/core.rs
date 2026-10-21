@@ -248,6 +248,9 @@ pub fn on_net(state: State) {
         publish_v3();
         spawn(flush());
         spawn(refresh_missing_keys());
+        if net::sealed_supported() {
+            spawn(share_jeton());
+        }
     }
 }
 
@@ -502,7 +505,22 @@ pub async fn save_profile(f: impl FnOnce(&mut Profile)) {
 }
 
 fn profile_body() -> Body {
-    Body::Profile { profile: profile() }
+    Body::Profile {
+        profile: profile(),
+        jeton: me().jeton(),
+    }
+}
+
+/// Notre jeton de remise, pour les contacts qui ne l'ont pas encore (une
+/// fois) : ils pourront nous écrire sans que le relais sache qui écrit.
+async fn share_jeton() {
+    for mut c in contacts() {
+        if c.saved && !c.blocked && !c.jeton_sent {
+            c.jeton_sent = true;
+            save_contact(c.clone()).await;
+            enqueue(&c.code, Wire::new(profile_body()), None, None, false).await;
+        }
+    }
 }
 
 // ----- Contacts --------------------------------------------------------------
@@ -1220,6 +1238,20 @@ async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
     // Les messages écrits (pas les accusés, réactions, profils) réveillent
     // un destinataire hors ligne.
     let wake = !live && !item.msg_id.is_empty();
+    // L'expéditeur scellé : le relais ne sait pas qui écrit (une connexion
+    // anonyme, et le jeton de remise du destinataire).
+    if !peer.jeton.is_empty() && net::sealed_supported() {
+        let outer = crypto::seal_sender(&me().code, &peer.code, &peer.dh, &body).ok_or("crypto")?;
+        match net::send_sealed(&item.id, &peer, &outer, live, wake).await {
+            Ack::Ok => return Ok(()),
+            // Son jeton ne vaut plus : on l'oublie, et cet envoi part comme avant.
+            Ack::Err(e) if e == "jeton" => {
+                update_contact(&peer.code, |c| c.jeton.clear()).await;
+            }
+            // Pas de repli silencieux : l'envoi réessaiera, toujours scellé.
+            Ack::Err(e) => return Err(e),
+        }
+    }
     match net::send(&item.id, &item.to, &body, live, wake).await {
         Ack::Ok => Ok(()),
         Ack::Err(e) => Err(e),
@@ -1800,7 +1832,20 @@ pub fn on_envelope(env: Value) {
 }
 
 async fn receive(env: &Value) {
-    let from = env["from"].as_str().unwrap_or("").to_owned();
+    // Scellé : l'expéditeur est dans l'enveloppe, que nous seuls ouvrons ;
+    // l'enveloppe intérieure le prouve ensuite (sa clé de paire).
+    let unsealed = if env["sealed"].as_bool() == Some(true) {
+        let Some(opened) = crypto::open_sealed(&me(), env["body"].as_str().unwrap_or("")) else {
+            return;
+        };
+        Some(opened)
+    } else {
+        None
+    };
+    let from = match &unsealed {
+        Some((from, _)) => from.clone(),
+        None => env["from"].as_str().unwrap_or("").to_owned(),
+    };
     if from.is_empty() || blocked(&from) {
         return;
     }
@@ -1808,7 +1853,10 @@ async fn receive(env: &Value) {
         return;
     };
     load_v3(&from).await;
-    let body = env["body"].as_str().unwrap_or("");
+    let body = match &unsealed {
+        Some((_, body)) => body.as_str(),
+        None => env["body"].as_str().unwrap_or(""),
+    };
     // Le message, et l'état de session qui l'a ouvert : une seule
     // transaction IndexedDB.
     let _batch = store::batch();
@@ -1901,12 +1949,20 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> Option<Chat> {
 async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
     let me = my_code();
     match &wire.body {
-        Body::Profile { profile } => {
+        Body::Profile { profile, jeton } => {
             let mut c = contact(from).unwrap_or_else(|| Contact {
                 code: from.to_owned(),
                 added_at: now(),
                 ..Default::default()
             });
+            // Son jeton de remise, s'il est bien signé par sa clé.
+            if *jeton != c.jeton
+                && !jeton.is_empty()
+                && crypto::verify_jeton(from, &c.sign, &c.dh, jeton)
+            {
+                c.jeton = jeton.clone();
+                save_contact(c.clone()).await;
+            }
             if profile.v >= c.profile_v {
                 c.profile_name = profile.name.chars().take(40).collect();
                 c.about = profile.about.chars().take(140).collect();
@@ -2089,9 +2145,11 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             }
             // Votre profil, pour qui ne l'a pas encore.
             if let Some(mut sender) = contact(from)
-                && sender.sent_profile_v < profile().v
+                && (sender.sent_profile_v < profile().v
+                    || (!sender.jeton_sent && net::sealed_supported()))
             {
                 sender.sent_profile_v = profile().v;
+                sender.jeton_sent = net::sealed_supported();
                 save_contact(sender).await;
                 enqueue(from, Wire::new(profile_body()), None, None, false).await;
             }

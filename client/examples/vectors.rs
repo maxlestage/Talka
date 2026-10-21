@@ -71,6 +71,7 @@ fn main() {
                 avatar: String::new(),
                 v: 2,
             },
+            jeton: String::new(),
         }),
         Wire::new(Body::Group {
             op: "update".into(),
