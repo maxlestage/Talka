@@ -2396,13 +2396,13 @@ pub async fn flush() {
                     } else {
                         store::remove("outbox", &item.id).await;
                     }
-                    if !item.msg_id.is_empty() {
+                    if !item.msg_id.is_empty() && item.to != my_code() {
                         mark_sent(&item.chat, &item.msg_id, &item.to).await;
                     }
                 }
                 Err(e) if e == "size" || e == "code" => {
                     store::remove("outbox", &item.id).await;
-                    if !item.msg_id.is_empty() {
+                    if !item.msg_id.is_empty() && item.to != my_code() {
                         mark_failed(&item.chat, &item.msg_id).await;
                         if e == "size" {
                             dom::toast("Message trop lourd : il n'a pas pu partir.");
@@ -2429,6 +2429,14 @@ pub async fn flush() {
 /// de ce destinataire ? Au-delà de 30 jours (la durée des boîtes aux
 /// lettres), on n'insiste plus.
 async fn still_unconfirmed(item: &OutItem) -> bool {
+    // Pour nos autres appareils : chacun dit l'avoir reçu (`sync`/`got`).
+    if item.to == my_code() {
+        let pending = siblings().iter().any(|d| !item.got.contains(d));
+        return pending
+            && get_message(&item.chat, &item.msg_id)
+                .await
+                .is_some_and(|m| !m.deleted && now() - m.at < 30.0 * 24.0 * 3600.0 * 1000.0);
+    }
     // v4 : chaque appareil du destinataire doit l'avoir reçu.
     let devs: Vec<String> = targets(&item.to)
         .into_iter()
@@ -2551,8 +2559,18 @@ pub async fn send_message(chat_id: &str, mut content: Content) -> Option<Message
     for code in &to {
         enqueue(code, wire.clone(), Some(chat_id), Some(&id), false).await;
     }
-    // Nos autres appareils l'affichent aussi (v4).
-    sync("wire", chat_id, Some(wire), Value::Null).await;
+    // Nos autres appareils l'affichent aussi (v4) : gardé, comme pour un
+    // destinataire, jusqu'à ce que chacun l'ait (et renvoyé si le relais
+    // redémarre entre-temps).
+    if !siblings().is_empty() {
+        let w = Wire::new(Body::Sync {
+            op: "wire".into(),
+            c: chat_id.to_owned(),
+            w: Some(Box::new(wire)),
+            d: Value::Null,
+        });
+        enqueue(&my_code(), w, Some(chat_id), Some(&id), false).await;
+    }
     if chat(chat_id).is_some_and(|c| !c.draft.is_empty()) {
         update_chat(chat_id, |c| c.draft.clear()).await;
     }
@@ -3521,6 +3539,10 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             if active && settings().read_receipts {
                 queue_receipt(from, &c.id, &[id], "read");
             }
+            // Lu ici, sous nos yeux : lu sur nos autres appareils aussi.
+            if active {
+                sync("read", &c.id, None, serde_json::json!({ "at": m.at })).await;
+            }
             // Votre profil, pour qui ne l'a pas encore.
             if let Some(mut sender) = contact(from)
                 && !sender.blocked
@@ -3683,8 +3705,42 @@ async fn sync(op: &str, c: &str, w: Option<Wire>, d: Value) {
 async fn handle_sync(fd: &str, op: &str, c: &str, w: Option<Wire>, d: Value) {
     match op {
         "wire" => {
-            if let Some(w) = w {
-                apply_own_wire(c, w).await;
+            let Some(w) = w else { return };
+            let id = match &w.body {
+                Body::Msg { id, .. } => Some(id.clone()),
+                _ => None,
+            };
+            apply_own_wire(c, w).await;
+            // Un message : l'appareil qui l'a envoyé sait que nous l'avons.
+            if let Some(id) = id {
+                let got = Wire::new(Body::Sync {
+                    op: "got".into(),
+                    c: c.to_owned(),
+                    w: None,
+                    d: serde_json::json!({ "ids": [id] }),
+                });
+                enqueue_to(&my_code(), Some(fd), got).await;
+            }
+        }
+        "got" => {
+            let me = my_code();
+            for id in d["ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                let key = format!("{id}:{me}");
+                if let Some(mut item) = store::read::<OutItem>("outbox", &key).await {
+                    if !item.got.iter().any(|x| x == fd) {
+                        item.got.push(fd.to_owned());
+                    }
+                    if item.boot.is_empty() || still_unconfirmed(&item).await {
+                        store::write("outbox", &key, &item).await;
+                    } else {
+                        store::remove("outbox", &key).await;
+                    }
+                }
             }
         }
         "read" => read_here(c, d["at"].as_f64().unwrap_or(0.0)).await,
