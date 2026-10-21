@@ -186,6 +186,14 @@ struct ConversationView: View {
                 e.activeChat = chatId
                 e.markRead(chatId)
                 if text.isEmpty { text = chat.draft }
+                // Arrivé par un résultat de recherche : le message, au milieu.
+                if let id = model.reveal {
+                    model.reveal = nil
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(350))
+                        jumpTo = id
+                    }
+                }
                 // Arrivé par « Répondre en privé » : la réponse est prête.
                 if let m = model.privateReply, m.from == chatId {
                     model.privateReply = nil
