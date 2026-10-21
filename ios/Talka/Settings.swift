@@ -195,7 +195,9 @@ struct SettingsTab: View {
                 } message: {
                     Text("Il sera demandé pour restaurer. Sans lui, la sauvegarde est illisible.")
                 }
-                .fileImporter(isPresented: $importing, allowedContentTypes: [.data, .json]) { result in
+                // Tous les fichiers : « .talka », inconnu du système, était grisé
+                // avec [.data, .json]. Le contenu est vérifié à la restauration.
+                .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
                     guard let url = try? result.get() else { return }
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
