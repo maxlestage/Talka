@@ -272,6 +272,15 @@ public final class Engine {
 
     /// Les clés d'un code, vérifiées : le code doit être leur empreinte.
     func keys(for code: String) async -> Contact? {
+        guard let c = await fetchKeys(code) else { return nil }
+        if contacts[code]?.sign.isEmpty ?? true { saveContact(c) }
+        return c
+    }
+
+    /// Les clés d'un code (gardées, ou demandées au relais et vérifiées), sans
+    /// rien enregistrer : un message scellé n'ajoute son expéditeur qu'une
+    /// fois prouvé (l'enveloppe intérieure ouverte).
+    func fetchKeys(_ code: String) async -> Contact? {
         if let c = contacts[code], !c.sign.isEmpty, !c.dh.isEmpty { return c }
         guard let found = await relay.lookup(code),
               let sign = found["sign"] as? String, let dh = found["dh"] as? String,
@@ -279,10 +288,26 @@ public final class Engine {
         else { return nil }
         // Relu après l'attente : un nom donné entre-temps n'est pas écrasé.
         var c = contacts[code] ?? Contact(code: code)
+        // Le lien d'invitation donnait l'empreinte de ses clés : ce ne sont
+        // pas elles. Quelqu'un d'autre se présente sous ce code.
+        if !c.fp.isEmpty, TalkaCode.fingerprint(sign: sign, dh: dh) != c.fp {
+            onKeysMismatch?(code)
+            return nil
+        }
         c.sign = sign
         c.dh = dh
-        saveContact(c)
         return c
+    }
+
+    /// Les clés trouvées pour un code ne sont pas celles de son lien.
+    public var onKeysMismatch: ((String) -> Void)?
+    /// Les empreintes des liens d'invitation ouverts, par code.
+    var fingerprints: [String: String] = [:]
+
+    /// Un lien d'invitation donne l'empreinte des clés de ce code : elle sera
+    /// vérifiée quand il sera ajouté.
+    public func expectFingerprint(_ code: String, _ fp: String) {
+        if TalkaCode.validFingerprint(fp) { fingerprints[code] = fp }
     }
 
     func refreshMissingKeys() async {
@@ -292,8 +317,13 @@ public final class Engine {
     }
 
     public enum AddError: Error, LocalizedError {
-        case yourself
-        public var errorDescription: String? { "C'est votre propre code 🙂" }
+        case yourself, keysMismatch
+        public var errorDescription: String? {
+            switch self {
+            case .yourself: "C'est votre propre code 🙂"
+            case .keysMismatch: "Les clés de ce code ne correspondent pas au lien d'invitation : quelqu'un se fait peut-être passer pour lui."
+            }
+        }
     }
 
     /// Ajoute un contact par son code ; `true` s'il est joignable tout de suite.
@@ -301,6 +331,10 @@ public final class Engine {
     public func addContact(_ code: String, name: String) async throws -> Bool {
         guard code != me.code else { throw AddError.yourself }
         var c = contacts[code] ?? Contact(code: code)
+        if let fp = fingerprints.removeValue(forKey: code) {
+            if !c.sign.isEmpty, TalkaCode.fingerprint(sign: c.sign, dh: c.dh) != fp { throw AddError.keysMismatch }
+            c.fp = fp
+        }
         c.saved = true
         let n = String(name.trimmingCharacters(in: .whitespaces).prefix(40))
         if !n.isEmpty { c.name = n }
@@ -386,6 +420,17 @@ public final class Engine {
 
     var allBrocolisKeys: [SymmetricKey] { brocolisKeys.compactMap { Brocolis.key(base64: $0.key) } }
 
+    /// Les clés qui ouvrent les jetons reçus dans `chat` : celles liées à
+    /// cette discussion, et celles liées à aucune. Pas la clé partagée avec
+    /// quelqu'un d'autre : un jeton capturé ailleurs et renvoyé ici ne s'ouvre
+    /// pas (ni ne se recopie en clair dans une réponse). Comme le navigateur.
+    func brocolisKeys(for chat: String) -> [SymmetricKey] {
+        let used = Set(chats.values.flatMap(\.brocolis))
+        let here = Set(chats[chat]?.brocolis ?? [])
+        return brocolisKeys.filter { here.contains($0.id) || !used.contains($0.id) }
+            .compactMap { Brocolis.key(base64: $0.key) }
+    }
+
     func sealText(_ c: Chat, _ text: String) -> String {
         Brocolis.seal(text, keys: chatBrocolis(c).compactMap { Brocolis.key(base64: $0.key) })
     }
@@ -408,12 +453,13 @@ public final class Engine {
     @discardableResult
     func openMessage(_ m: inout Message) -> Bool {
         var changed = false
+        let keys = brocolisKeys(for: m.chat)
         if Brocolis.hasToken(m.text) {
-            let o = Brocolis.open(m.text, keys: allBrocolisKeys)
+            let o = Brocolis.open(m.text, keys: keys)
             if o.opened > 0 { m.text = o.text; m.bro = true; changed = true }
         }
         if var r = m.reply, Brocolis.hasToken(r.text) {
-            let o = Brocolis.open(r.text, keys: allBrocolisKeys)
+            let o = Brocolis.open(r.text, keys: keys)
             if o.opened > 0 { r.text = o.text; m.reply = r; changed = true }
         }
         return changed
@@ -692,7 +738,7 @@ public final class Engine {
         // elle : le relais le transmet sans pouvoir le lire.
         let apercu = wake && !peer.nk.isEmpty
             ? JSON.decode(Wire.self, item.payload).flatMap { Self.apercu(me: me.code, name: profile.name, wire: $0) }
-                .flatMap { TalkaCrypto.sealApercu(nk: peer.nk, plain: $0) }
+                .flatMap { TalkaCrypto.sealApercu(me, nk: peer.nk, plain: $0) }
             : nil
         // L'expéditeur scellé : le relais ne sait pas qui écrit (une connexion
         // anonyme, et le jeton de remise du destinataire).
@@ -709,20 +755,19 @@ public final class Engine {
     }
 
     /// L'aperçu d'une notification pour le destinataire, en JSON : qui écrit
-    /// (`n`), quoi (`t`, comme la liste des discussions) et la discussion
-    /// (`c`, vue de chez lui). Seulement pour les messages écrits ; comme
-    /// `core::apercu_of` du navigateur.
+    /// (`n`, notre nom choisi), le groupe (`g`), quoi (`t`, comme la liste
+    /// des discussions) et la discussion (`c`, vue de chez lui). Seulement
+    /// pour les messages écrits ; comme `Wire::apercu` du navigateur.
     public static func apercu(me: String, name: String, wire: Wire) -> String? {
         guard case let .msg(_, _, _, content) = wire.body else { return nil }
         let m = Message(chat: "", id: "", from: me, at: 0, content: content)
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        var n = trimmed.isEmpty ? TalkaCode.pretty(me) : String(trimmed.prefix(40))
-        var c = me
-        if let id = wire.groupId {
-            c = "g:\(id)"
-            if let g = wire.grp, !g.name.isEmpty { n += " · \(g.name.prefix(40))" }
-        }
-        let obj: [String: String] = ["n": n, "t": String(preview(m).prefix(120)), "c": c]
+        var obj: [String: String] = [
+            "n": trimmed.isEmpty ? TalkaCode.pretty(me) : String(trimmed.prefix(40)),
+            "t": String(preview(m).prefix(120)),
+            "c": wire.groupId.map { "g:\($0)" } ?? me,
+        ]
+        if let g = wire.grp, !g.name.isEmpty { obj["g"] = String(g.name.prefix(40)) }
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else { return nil }
         return String(data: data, encoding: .utf8)
     }
@@ -1036,7 +1081,7 @@ public final class Engine {
             guard let opened = TalkaCrypto.openSealed(me, body) else { return }
             (from, body) = (opened.from, opened.body)
         }
-        guard !from.isEmpty, !blocked(from), let peer = await keys(for: from) else { return }
+        guard !from.isEmpty, !blocked(from), let peer = await fetchKeys(from) else { return }
         loadV3(from)
         var repair = false
         // Le message, et l'état de session qui l'a ouvert : une seule
@@ -1048,7 +1093,23 @@ public final class Engine {
             let device = saveV3Sessions()
             switch opened {
             case .legacy(let plain), .v3(let plain):
-                if let wire = Wire.parse(plain) {
+                let legacy: Bool
+                if case .legacy = opened { legacy = true } else { legacy = false }
+                // Prouvé : ses clés sont gardées (s'il est nouveau), et son
+                // passage en v3.
+                let known = contacts[from]
+                if known == nil || known!.sign.isEmpty || (!legacy && !known!.v3) {
+                    var c = known ?? peer
+                    c.sign = peer.sign; c.dh = peer.dh
+                    if !legacy { c.v3 = true }
+                    saveContact(c)
+                }
+                let live = env["live"] as? Bool ?? false
+                // L'ancien format n'a pas de protection contre le rejeu : d'un
+                // contact passé en v3, il ne change plus d'état.
+                if let wire = Wire.parse(plain), legacy, !live, known?.v3 == true, wire.body.changesState {
+                    v3Log("ancien format refusé de \(from) (déjà en v3)")
+                } else if let wire = Wire.parse(plain) {
                     handle(from, wire, ts: env["ts"] as? Double ?? nowMs(), live: env["live"] as? Bool ?? false)
                 }
             // Déjà lu (le relais l'a renvoyé), ou pas pour nous.
@@ -1068,10 +1129,15 @@ public final class Engine {
         if repair { repairV3(from) }
     }
 
-    func groupChat(_ from: String, _ grp: GroupInfo, at: Double) -> Chat? {
+    /// La discussion d'un groupe, créée ou mise à jour par `grp` ; `applied` :
+    /// cette description a été appliquée (un groupe ne change que par ses
+    /// admins, voir `Chat.accepts`).
+    func groupChat(_ from: String, _ grp: GroupInfo, at: Double) -> (chat: Chat?, applied: Bool) {
         let id = "g:\(grp.id)"
         guard var c = chats[id] else {
-            guard grp.members.contains(me.code) else { return nil }
+            // Un nouveau groupe : créé par un de ses admins, qui nous y met.
+            guard grp.members.contains(me.code), grp.admins.contains(from), grp.members.contains(from)
+            else { return (nil, false) }
             var c = Chat(id: id)
             c.group = true
             c.name = grp.name; c.avatar = grp.avatar; c.members = grp.members; c.admins = grp.admins
@@ -1079,15 +1145,14 @@ public final class Engine {
             saveChat(c)
             systemMessage(id, "\(displayName(from)) vous a ajouté au groupe « \(grp.name) ».", at: at)
             relay.watch(grp.members.filter { $0 != me.code })
-            return c
+            return (c, true)
         }
-        if grp.v > c.v {
-            let wasIn = c.members.contains(me.code)
-            c.name = grp.name; c.avatar = grp.avatar; c.members = grp.members; c.admins = grp.admins; c.v = grp.v
-            if grp.members.contains(me.code) { c.left = false } else if wasIn { c.left = true }
-            saveChat(c)
-        }
-        return c
+        guard c.accepts(from, grp) else { return (c, false) }
+        let wasIn = c.members.contains(me.code)
+        c.name = grp.name; c.avatar = grp.avatar; c.members = grp.members; c.admins = grp.admins; c.v = grp.v
+        if grp.members.contains(me.code) { c.left = false } else if wasIn { c.left = true }
+        saveChat(c)
+        return (c, true)
     }
 
     func handle(_ from: String, _ wire: Wire, ts: Double, live: Bool) {
@@ -1158,19 +1223,24 @@ public final class Engine {
 
         // Le reste appartient à une discussion.
         var chat: Chat?
+        var applied = false
         if let grp = wire.grp {
             // L'annonce « vous a ajouté » se range juste avant le premier message.
             var at = ts
             if case let .msg(_, mAt, _, _) = wire.body { at = min(mAt, ts) - 1 }
-            chat = groupChat(from, grp, at: at)
+            (chat, applied) = groupChat(from, grp, at: at)
         } else if let g = wire.g {
             chat = chats["g:\(g)"]
         } else {
+            // Un message de groupe hors d'un groupe : ignoré.
+            if case .group = wire.body { return }
             chat = ensureDirectChat(from)
         }
         guard var c = chat else { return }
+        // Dans un groupe, seuls ses membres parlent ; qui vient de le quitter
+        // (sa description appliquée à l'instant) l'annonce encore.
         if c.group, !c.members.contains(from) {
-            if case .group = wire.body {} else { return }
+            guard applied, case .group(let op, _) = wire.body, op == "leave" else { return }
         }
 
         switch wire.body {
@@ -1186,6 +1256,18 @@ public final class Engine {
             if let open = safe.openAt { safe.openAt = open > mAt ? min(open, mAt + capsuleMaxMs) : nil }
             var m = Message(chat: c.id, id: id, from: from, at: mAt, content: safe)
             if let ttl = wire.ttl { m.exp = m.at + Double(ttl) * 1000 }
+            // La citation : celle de notre copie du message cité, jamais ce que
+            // l'expéditeur prétend (« Vous : je te dois 500 € »).
+            if var r = m.reply {
+                if let orig = store.message(c.id, r.id) {
+                    r.from = orig.from
+                    r.text = String(readable(orig).prefix(140))
+                } else {
+                    r.from = ""
+                    r.text = String(r.text.prefix(140))
+                }
+                m.reply = r
+            }
             openMessage(&m)
             if var sender = contacts[from], sender.profileName.isEmpty, !pn.isEmpty {
                 sender.profileName = String(pn.prefix(40))
@@ -1223,7 +1305,7 @@ public final class Engine {
             if m.from == me.code, !emoji.isEmpty { onReaction?(c, from, emoji) }
         case let .edit(id, text):
             guard var m = store.message(c.id, id), m.from == from, !m.deleted else { return }
-            let opened = Brocolis.open(String(text.prefix(65_536)), keys: allBrocolisKeys)
+            let opened = Brocolis.open(String(text.prefix(65_536)), keys: brocolisKeys(for: c.id))
             m.text = opened.text
             m.bro = opened.opened > 0
             m.edited = true
@@ -1243,9 +1325,10 @@ public final class Engine {
         case let .group(op, note):
             if op == "leave" {
                 systemMessage(c.id, "\(displayName(from)) a quitté le groupe.", at: ts)
-            } else if op != "create", !note.isEmpty {
-                let text = note.hasPrefix("Vous avez") ? "\(displayName(from)) a" + note.dropFirst("Vous avez".count) : note
-                systemMessage(c.id, text, at: ts)
+            } else if op != "create", applied, c.group, note.hasPrefix("Vous avez ") {
+                // Seulement les annonces que Talka écrit, d'un admin dont la
+                // mise à jour vient d'être appliquée : pas de faux message système.
+                systemMessage(c.id, "\(displayName(from)) a " + note.dropFirst("Vous avez ".count).prefix(200), at: ts)
             }
         default:
             break

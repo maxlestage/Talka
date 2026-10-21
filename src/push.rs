@@ -272,7 +272,10 @@ pub const SERVICE_WORKER: &str = r#"// Talka : les notifications quand l'applica
 // Le relais n'apporte qu'un réveil, et parfois un aperçu que l'expéditeur a
 // chiffré pour la clé de notification de cet appareil : le relais ne peut pas
 // le lire. Cette clé est tirée et gardée ici (IndexedDB, non exportable) ;
-// seule sa moitié publique sort, pour les contacts.
+// seule sa moitié publique sort, pour les contacts. L'aperçu n'est montré
+// que s'il vient vraiment d'un de vos contacts (sa clé d'identité entre
+// dans le déchiffrement) : Talka donne ici leur carnet (code, clé, nom que
+// vous leur avez donné), gardé chiffré par une autre clé non exportable.
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 
@@ -319,31 +322,75 @@ async function cle() {
   return k;
 }
 
-// Ouvre un aperçu : éphémère (65) ‖ iv (12) ‖ chiffré, comme
-// talka_web::crypto::seal_apercu (ECDH, HKDF-SHA256, AES-256-GCM).
+// Le carnet : vos contacts, chiffrés par une clé AES non exportable.
+async function carnetCle() {
+  let k = await lire("ck");
+  if (!k) {
+    k = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+    await ecrire("ck", k);
+  }
+  return k;
+}
+
+async function garderCarnet(list) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await carnetCle(), texte(JSON.stringify(list)));
+  await ecrire("carnet", { iv, data });
+}
+
+async function carnet() {
+  const c = await lire("carnet");
+  if (!c) return {};
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: c.iv }, await carnetCle(), c.data);
+  const out = {};
+  for (const e of JSON.parse(new TextDecoder().decode(pt))) out[e.code] = e;
+  return out;
+}
+
+const point = (raw) => crypto.subtle.importKey("raw", raw, { name: "ECDH", namedCurve: "P-256" }, false, []);
+
+// Ouvre un aperçu : 0x02 ‖ code (10) ‖ éphémère (65) ‖ iv (12) ‖ chiffré,
+// comme talka_web::crypto::seal_apercu (ECDH éphémère et ECDH avec la clé
+// d'identité de l'expéditeur, HKDF-SHA256, AES-256-GCM). Seulement d'un
+// contact du carnet ; sinon `null`.
 async function ouvrir(sealed) {
   const k = await lire("nk");
   if (!k) return null;
   const b = unb64(sealed);
-  const eph = b.slice(0, 65);
-  const pub = await crypto.subtle.importKey("raw", eph, { name: "ECDH", namedCurve: "P-256" }, false, []);
-  const ikm = await crypto.subtle.deriveBits({ name: "ECDH", public: pub }, k.priv, 256);
+  if (b.length < 1 + 10 + 65 + 12 + 16 || b[0] !== 2) return null;
+  const from = new TextDecoder().decode(b.slice(1, 11));
+  const contact = (await carnet())[from];
+  if (!contact) return null;
+  const eph = b.slice(11, 76);
+  const e1 = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: await point(eph) }, k.priv, 256));
+  const e2 = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: await point(unb64(contact.dh)) }, k.priv, 256));
+  const ikm = new Uint8Array(64);
+  ikm.set(e1, 0);
+  ikm.set(e2, 32);
   const hk = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveKey"]);
   const salt = new Uint8Array(130);
   salt.set(eph, 0);
   salt.set(unb64(k.pub), 65);
   const aes = await crypto.subtle.deriveKey(
-    { name: "HKDF", hash: "SHA-256", salt, info: texte("talka-apercu-v1") },
+    { name: "HKDF", hash: "SHA-256", salt, info: texte("talka-apercu-v2:" + from) },
     hk, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
   const pt = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: b.slice(65, 77), additionalData: texte("talka-apercu") }, aes, b.slice(77));
-  return JSON.parse(new TextDecoder().decode(pt));
+    { name: "AES-GCM", iv: b.slice(76, 88), additionalData: texte("talka-apercu:" + from) }, aes, b.slice(88));
+  return { a: JSON.parse(new TextDecoder().decode(pt)), contact };
 }
 
 // L'application demande la clé publique (pour la donner à ses contacts).
+// Et lui donne le carnet de vos contacts (à chaque connexion, et quand il
+// change).
 self.addEventListener("message", (e) => {
   if (e.data && e.data.t === "nk" && e.ports[0]) {
     e.waitUntil(cle().then((k) => e.ports[0].postMessage({ nk: k.pub }), () => e.ports[0].postMessage({})));
+  }
+  if (e.data && e.data.t === "carnet" && Array.isArray(e.data.list)) {
+    const list = e.data.list
+      .filter((c) => typeof c.code === "string" && c.code.length === 10 && typeof c.dh === "string")
+      .map((c) => ({ code: c.code, dh: c.dh, name: String(c.name || "").slice(0, 80) }));
+    e.waitUntil(garderCarnet(list));
   }
 });
 
@@ -356,11 +403,14 @@ self.addEventListener("push", (e) => {
     let titre = "Talka", corps = "Nouveau message", tag = "talka";
     try {
       const d = e.data ? e.data.json() : null;
-      const a = d && d.a ? await ouvrir(d.a) : null;
-      if (a) {
-        titre = String(a.n || "Talka").slice(0, 80);
-        corps = String(a.t || corps).slice(0, 200);
-        tag = "talka-" + String(a.c || "");
+      const o = d && d.a ? await ouvrir(d.a) : null;
+      if (o) {
+        // Le nom que vous lui avez donné, sinon celui qu'il s'est choisi.
+        const nom = o.contact.name || (o.a.n ? "~" + o.a.n : "Talka");
+        titre = (nom + (o.a.g ? " · " + o.a.g : "")).slice(0, 80);
+        corps = String(o.a.t || corps).slice(0, 200);
+        const c = String(o.a.c || "");
+        tag = "talka-" + (c.startsWith("g:") ? c : o.contact.code);
       }
     } catch (_) {
       // Illisible : le réveil seul.

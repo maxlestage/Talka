@@ -9,6 +9,7 @@
 // - le code de verrouillage et la sauvegarde : PBKDF2-SHA256.
 
 import Foundation
+import BrocolisProto
 
 #if canImport(CryptoKit)
 import CryptoKit
@@ -59,6 +60,31 @@ public enum TalkaCode {
         if let code = normalize(text) { return code }
         let tail = text.split(whereSeparator: { $0 == "/" || $0 == "=" || $0 == "#" }).last.map(String.init) ?? ""
         return normalize(tail)
+    }
+
+    /// L'empreinte des clés d'un code (96 bits, base64url, 16 caractères),
+    /// comme `crypto::fingerprint` du navigateur : dans les liens
+    /// d'invitation, elle démasque d'autres clés donnant le même code.
+    public static func fingerprint(sign: String, dh: String) -> String {
+        let h = Data(SHA256.hash(data: Data("talka-empreinte:\(sign):\(dh)".utf8))).prefix(12)
+        return h.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func validFingerprint(_ fp: String) -> Bool {
+        fp.count == 16 && fp.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+    }
+
+    /// L'empreinte d'un lien d'invitation (`/c/<empreinte>/<code>` ou
+    /// `#k=<empreinte>&add=<code>`), s'il en a une.
+    public static func fingerprint(in text: String) -> String? {
+        let parts = text.split(whereSeparator: { "/#&?".contains($0) }).map(String.init)
+        if let i = parts.firstIndex(of: "c"), i + 2 < parts.count, validFingerprint(parts[i + 1]) {
+            return parts[i + 1]
+        }
+        return parts.first { $0.hasPrefix("k=") }.map { String($0.dropFirst(2)) }.flatMap { validFingerprint($0) ? $0 : nil }
     }
 }
 
@@ -166,10 +192,14 @@ public enum TalkaCrypto {
         return TalkaCode.of(sign: s, dh: d) == code
     }
 
-    /// Le numéro de sécurité d'une conversation, le même des deux côtés.
-    public static func safetyNumber(_ a: String, _ b: String) -> String {
-        let (x, y) = a < b ? (a, b) : (b, a)
-        let h = Array(SHA256.hash(data: Data("talka-safety:\(x):\(y)".utf8)))
+    /// Le numéro de sécurité d'une conversation, le même des deux côtés. Il
+    /// porte sur les clés publiques complètes (code, `sign`, `dh` de chacun),
+    /// pas seulement sur les codes (50 bits), comme le navigateur.
+    public static func safetyNumber(_ a: (code: String, sign: String, dh: String),
+                                    _ b: (code: String, sign: String, dh: String)) -> String {
+        let (x, y) = a.code < b.code ? (a, b) : (b, a)
+        let text = "talka-safety-v2:\(x.code):\(x.sign):\(x.dh)|\(y.code):\(y.sign):\(y.dh)"
+        let h = Array(SHA256.hash(data: Data(text.utf8)))
         var groups: [String] = []
         for i in 0..<12 {
             let high = Int(h[i * 2]) << 8
@@ -256,7 +286,10 @@ public enum TalkaCrypto {
     //
     // Chiffré pour la clé de notification du destinataire (son navigateur la
     // garde, non exportable, dans son service worker) : le relais le
-    // transmet sans le lire. Comme `crypto::seal_apercu` du navigateur.
+    // transmet sans le lire. Authentifié : la clé mêle un ECDH éphémère et
+    // un ECDH avec notre clé d'identité ; le service worker n'affiche que
+    // l'aperçu d'un contact. Comme `crypto::seal_apercu` du navigateur :
+    // base64(0x02 ‖ code (10) ‖ éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag).
 
     /// Une clé de notification valable : un point P-256 (65 octets, base64).
     public static func validNk(_ nk: String) -> Bool {
@@ -264,40 +297,48 @@ public enum TalkaCrypto {
         return (try? P256.KeyAgreement.PublicKey(x963Representation: raw)) != nil
     }
 
-    private static func apercuKey(_ secret: SharedSecret, eph: Data, nk: Data) -> SymmetricKey {
-        secret.hkdfDerivedSymmetricKey(using: SHA256.self, salt: eph + nk,
-                                       sharedInfo: Data("talka-apercu-v1".utf8), outputByteCount: 32)
+    private static func apercuKey(_ e: SharedSecret, _ s: SharedSecret, eph: Data, nk: Data, from: String) -> SymmetricKey {
+        let ikm = e.withUnsafeBytes { Data($0) } + s.withUnsafeBytes { Data($0) }
+        return HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: ikm), salt: eph + nk,
+                                      info: Data("talka-apercu-v2:\(from)".utf8), outputByteCount: 32)
     }
 
-    /// Chiffre un aperçu (du JSON) pour la clé `nk` :
-    /// base64(éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag).
-    public static func sealApercu(nk: String, plain: String) -> String? {
-        guard let nkRaw = unb64(nk),
-              let pub = try? P256.KeyAgreement.PublicKey(x963Representation: nkRaw)
+    /// Chiffre un aperçu (du JSON) de `me` pour la clé `nk`.
+    public static func sealApercu(_ me: Identity, nk: String, plain: String) -> String? {
+        guard me.code.utf8.count == 10, let nkRaw = unb64(nk),
+              let pub = try? P256.KeyAgreement.PublicKey(x963Representation: nkRaw),
+              let mine = me.dhKey
         else { return nil }
         let eph = P256.KeyAgreement.PrivateKey()
         let ephRaw = eph.publicKey.x963Representation
-        guard let secret = try? eph.sharedSecretFromKeyAgreement(with: pub),
-              let box = try? AES.GCM.seal(Data(plain.utf8), using: apercuKey(secret, eph: ephRaw, nk: nkRaw),
-                                          nonce: AES.GCM.Nonce(), authenticating: Data("talka-apercu".utf8)),
+        guard let e = try? eph.sharedSecretFromKeyAgreement(with: pub),
+              let st = try? mine.sharedSecretFromKeyAgreement(with: pub),
+              let box = try? AES.GCM.seal(Data(plain.utf8), using: apercuKey(e, st, eph: ephRaw, nk: nkRaw, from: me.code),
+                                          nonce: AES.GCM.Nonce(), authenticating: Data("talka-apercu:\(me.code)".utf8)),
               let combined = box.combined
         else { return nil }
-        return b64(ephRaw + combined)
+        return b64(Data([2]) + Data(me.code.utf8) + ephRaw + combined)
     }
 
     /// Ouvre un aperçu avec la clé privée de notification (32 octets) : ce
     /// que fait le service worker du navigateur ; ici pour les tests.
-    public static func openApercu(nkPriv: Data, sealed: String) -> String? {
-        guard let data = unb64(sealed), data.count >= 65 + 12 + 16,
-              let key = try? P256.KeyAgreement.PrivateKey(rawRepresentation: nkPriv),
-              let eph = try? P256.KeyAgreement.PublicKey(x963Representation: data.prefix(65)),
-              let secret = try? key.sharedSecretFromKeyAgreement(with: eph),
-              let box = try? AES.GCM.SealedBox(combined: data.dropFirst(65)),
-              let plain = try? AES.GCM.open(box, using: apercuKey(secret, eph: Data(data.prefix(65)),
-                                                                  nk: key.publicKey.x963Representation),
-                                            authenticating: Data("talka-apercu".utf8))
+    /// `dhOf` : la clé `dh` d'un contact connu. (expéditeur, aperçu).
+    public static func openApercu(nkPriv: Data, sealed: String, dhOf: (String) -> String?) -> (from: String, plain: String)? {
+        guard let data = unb64(sealed), data.count >= 1 + 10 + 65 + 12 + 16, data.first == 2,
+              let from = String(data: data.subdata(in: data.startIndex + 1 ..< data.startIndex + 11), encoding: .utf8),
+              let dh = dhOf(from).flatMap(unb64),
+              let fromKey = try? P256.KeyAgreement.PublicKey(x963Representation: dh),
+              let key = try? P256.KeyAgreement.PrivateKey(rawRepresentation: nkPriv)
         else { return nil }
-        return String(data: plain, encoding: .utf8)
+        let ephRaw = data.subdata(in: data.startIndex + 11 ..< data.startIndex + 76)
+        guard let eph = try? P256.KeyAgreement.PublicKey(x963Representation: ephRaw),
+              let e = try? key.sharedSecretFromKeyAgreement(with: eph),
+              let st = try? key.sharedSecretFromKeyAgreement(with: fromKey),
+              let box = try? AES.GCM.SealedBox(combined: data.subdata(in: data.startIndex + 76 ..< data.endIndex)),
+              let plain = try? AES.GCM.open(box, using: apercuKey(e, st, eph: ephRaw, nk: key.publicKey.x963Representation, from: from),
+                                            authenticating: Data("talka-apercu:\(from)".utf8))
+        else { return nil }
+        return String(data: plain, encoding: .utf8).map { (from, $0) }
     }
 
     /// Scelle `body` (une enveloppe ordinaire de `from` pour `to`) :
@@ -366,22 +407,49 @@ public enum TalkaCrypto {
         #endif
     }
 
+    /// Argon2id, comme le navigateur (`crypto::argon2id`) : 19 Mio, 2 passes
+    /// pour le code ; 46 Mio, 1 passe pour la sauvegarde.
+    public static let argonM: UInt32 = 19_456, argonT: UInt32 = 2
+    public static let backupM: UInt32 = 47_104, backupT: UInt32 = 1
+    /// Les nouveaux codes : 6 chiffres au moins (4 ou 5 restent acceptés).
+    public static let pinMin = 6, pinMax = 12
+
+    public static func argon2id(_ secret: String, salt: Data, m: UInt32, t: UInt32) -> Data? {
+        (try? Argon2.hash(variant: .id, password: Array(secret.utf8), salt: Array(salt),
+                          memoryKiB: m, passes: t, lanes: 1, length: 32)).map { Data($0) }
+    }
+
     public static func hashPin(_ pin: String) -> PinHash {
         let salt = randomBytes(16)
-        return PinHash(salt: b64(salt), hash: b64(pbkdf2(pin, salt: salt, rounds: pinRounds)))
+        return PinHash(salt: b64(salt), hash: b64(argon2id(pin, salt: salt, m: argonM, t: argonT) ?? Data()),
+                       v: 2, m: argonM, t: argonT)
+    }
+
+    /// Comparaison en temps constant.
+    static func same(_ a: Data, _ b: Data) -> Bool {
+        a.count == b.count && zip(a, b).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
     }
 
     public static func checkPin(_ pin: String, _ stored: PinHash) -> Bool {
-        guard let salt = unb64(stored.salt) else { return false }
-        return b64(pbkdf2(pin, salt: salt, rounds: pinRounds)) == stored.hash
+        guard let salt = unb64(stored.salt), let hash = unb64(stored.hash) else { return false }
+        switch stored.v {
+        case 0, 1:
+            return same(pbkdf2(pin, salt: salt, rounds: pinRounds), hash)
+        case 2 where (8...(1 << 20)).contains(stored.m) && (1...10).contains(stored.t):
+            return argon2id(pin, salt: salt, m: stored.m, t: stored.t).map { same($0, hash) } ?? false
+        default:
+            return false
+        }
     }
 
     public static func encryptBackup(password: String, plain: String) -> Backup? {
         let salt = randomBytes(16)
-        let key = SymmetricKey(data: pbkdf2(password, salt: salt, rounds: backupRounds))
+        guard let raw = argon2id(password, salt: salt, m: backupM, t: backupT) else { return nil }
+        let key = SymmetricKey(data: raw)
         let nonce = AES.GCM.Nonce()
         guard let box = try? AES.GCM.seal(Data(plain.utf8), using: key, nonce: nonce) else { return nil }
-        return Backup(talka: 2, salt: b64(salt), iv: b64(Data(nonce)), data: b64(box.ciphertext + box.tag))
+        return Backup(talka: 3, salt: b64(salt), iv: b64(Data(nonce)), data: b64(box.ciphertext + box.tag),
+                      m: backupM, t: backupT)
     }
 
     public enum BackupError: Error, LocalizedError {
@@ -395,11 +463,20 @@ public enum TalkaCrypto {
     }
 
     public static func decryptBackup(password: String, file: Backup) throws -> String {
-        guard file.talka == 2, let salt = unb64(file.salt), let iv = unb64(file.iv),
+        guard let salt = unb64(file.salt), let iv = unb64(file.iv),
               let data = unb64(file.data), data.count >= 16,
               let nonce = try? AES.GCM.Nonce(data: iv)
         else { throw BackupError.notBackup }
-        let key = SymmetricKey(data: pbkdf2(password, salt: salt, rounds: backupRounds))
+        let key: SymmetricKey
+        switch file.talka {
+        case 2:
+            key = SymmetricKey(data: pbkdf2(password, salt: salt, rounds: backupRounds))
+        case 3 where (8...(1 << 21)).contains(file.m) && (1...10).contains(file.t):
+            guard let raw = argon2id(password, salt: salt, m: file.m, t: file.t) else { throw BackupError.notBackup }
+            key = SymmetricKey(data: raw)
+        default:
+            throw BackupError.notBackup
+        }
         guard let box = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: data.dropLast(16), tag: data.suffix(16)),
               let plain = try? AES.GCM.open(box, using: key)
         else { throw BackupError.wrongPassword }
@@ -412,6 +489,34 @@ public enum TalkaCrypto {
 public struct PinHash: Codable, Equatable, Sendable {
     public var salt: String
     public var hash: String
+    /// 2 : Argon2id (`m`, `t`) ; 0 : PBKDF2 (les codes d'avant).
+    public var v: UInt32 = 0
+    public var m: UInt32 = 0
+    public var t: UInt32 = 0
+
+    public init(salt: String, hash: String, v: UInt32 = 0, m: UInt32 = 0, t: UInt32 = 0) {
+        self.salt = salt; self.hash = hash; self.v = v; self.m = m; self.t = t
+    }
+
+    enum CodingKeys: String, CodingKey { case salt, hash, v, m, t }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        salt = try c.decode(String.self, forKey: .salt); hash = try c.decode(String.self, forKey: .hash)
+        v = c.v(.v, 0); m = c.v(.m, 0); t = c.v(.t, 0)
+    }
+
+    /// Comme le navigateur : `v`, `m`, `t` seulement s'il y en a.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(salt, forKey: .salt); try c.encode(hash, forKey: .hash)
+        if v != 0 { try c.encode(v, forKey: .v) }
+        if m != 0 { try c.encode(m, forKey: .m) }
+        if t != 0 { try c.encode(t, forKey: .t) }
+    }
+
+    /// Un code d'avant (PBKDF2), à rehacher.
+    public var isOld: Bool { v < 2 }
 }
 
 /// Une sauvegarde chiffrée : le même fichier que celle du navigateur.
@@ -420,4 +525,28 @@ public struct Backup: Codable, Equatable, Sendable {
     public var salt: String
     public var iv: String
     public var data: String
+    /// Argon2id (`talka` 3) : mémoire (Kio) et passes.
+    public var m: UInt32 = 0
+    public var t: UInt32 = 0
+
+    public init(talka: Int, salt: String, iv: String, data: String, m: UInt32 = 0, t: UInt32 = 0) {
+        self.talka = talka; self.salt = salt; self.iv = iv; self.data = data; self.m = m; self.t = t
+    }
+
+    enum CodingKeys: String, CodingKey { case talka, salt, iv, data, m, t }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        talka = try c.decode(Int.self, forKey: .talka); salt = try c.decode(String.self, forKey: .salt)
+        iv = try c.decode(String.self, forKey: .iv); data = try c.decode(String.self, forKey: .data)
+        m = c.v(.m, 0); t = c.v(.t, 0)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(talka, forKey: .talka); try c.encode(salt, forKey: .salt)
+        try c.encode(iv, forKey: .iv); try c.encode(data, forKey: .data)
+        if m != 0 { try c.encode(m, forKey: .m) }
+        if t != 0 { try c.encode(t, forKey: .t) }
+    }
 }

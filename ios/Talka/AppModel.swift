@@ -18,7 +18,11 @@ final class AppModel {
         let text: String
     }
 
-    let store = Store(directory: Store.defaultDirectory(), key: StoreVault.key())
+    /// La base ; protégée par Face ID, elle ne s'ouvre qu'après
+    /// `unlockVault` (jusque-là, une base en lecture seule, vide).
+    var store: Store
+    /// La base attend Face ID (ou le code de l'iPhone).
+    var vaultLocked = false
     var engine: Engine?
     var tab: Tab = .chats
     /// Les discussions ouvertes (navigation de l'onglet Discussions).
@@ -40,6 +44,14 @@ final class AppModel {
     var loading: String? = "Ouverture de Talka…"
 
     init() {
+        if StoreVault.isProtected {
+            store = Store(directory: Store.defaultDirectory(), key: nil)
+            vaultLocked = true
+            loading = nil
+            WatchBridge.shared.start(self)
+            return
+        }
+        store = Store(directory: Store.defaultDirectory(), key: StoreVault.key())
         locked = store.read("kv", "pin", as: PinHash.self) != nil
         adoptBuiltInServer()
         if Engine.hasAccount(store) { start() }
@@ -103,6 +115,9 @@ final class AppModel {
         }
         e.onCallSignal = { [weak self] from, body, live in self?.callSignal(from, body, live) }
         e.onTooLarge = { [weak self] in self?.show("Message trop lourd : il n'a pas pu partir.") }
+        e.onKeysMismatch = { [weak self] code in
+            self?.show("Attention : les clés de \(TalkaCode.pretty(code)) ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.")
+        }
         engine = e
         e.start()
         Sounds.prepare()
@@ -167,6 +182,42 @@ final class AppModel {
         }
     }
 
+    /// Face ID (ou le code de l'iPhone) ouvre la clé de la base, puis Talka.
+    func unlockVault() async {
+        let ctx = LAContext()
+        ctx.localizedFallbackTitle = "Code de l'iPhone"
+        guard (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Ouvrir vos messages")) == true,
+              let key = StoreVault.key(context: ctx)
+        else { return }
+        store = Store(directory: Store.defaultDirectory(), key: key)
+        // On vient de montrer son visage : pas de code PIN en plus, si Face ID
+        // le remplace déjà.
+        locked = hasPin && !faceID
+        vaultLocked = false
+        adoptBuiltInServer()
+        if Engine.hasAccount(store) { start() }
+        loading = "Ouverture de Talka…"
+        await finishLoading()
+    }
+
+    /// Protéger la base par Face ID (ou retirer cette protection).
+    func protectVault(_ on: Bool) async {
+        guard let key = store.key else { return }
+        if !on {
+            // Retirer la protection demande aussi le visage.
+            let ctx = LAContext()
+            guard (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Retirer la protection")) == true
+            else { return }
+        }
+        if StoreVault.setProtected(on, key: key) {
+            show(on ? "Vos messages ne s'ouvrent qu'avec \(biometryName ?? "Face ID") 🔐" : "Protection retirée")
+        } else {
+            show("Le trousseau de l'iPhone a refusé : réessayez.")
+        }
+    }
+
+    var vaultProtected: Bool { StoreVault.isProtected }
+
     var hasPin: Bool { store.read("kv", "pin", as: PinHash.self) != nil }
 
     func setPin(_ pin: String?) {
@@ -181,7 +232,13 @@ final class AppModel {
 
     func checkPin(_ pin: String) -> Bool {
         guard let stored = store.read("kv", "pin", as: PinHash.self) else { return true }
-        return TalkaCrypto.checkPin(pin, stored)
+        let ok = TalkaCrypto.checkPin(pin, stored)
+        // Un code d'avant (PBKDF2) : rehaché avec Argon2id.
+        if ok, stored.isOld {
+            store.write("kv", "pin", TalkaCrypto.hashPin(pin))
+            store.save()
+        }
+        return ok
     }
 
     var faceID: Bool {
@@ -223,6 +280,7 @@ final class AppModel {
             return
         }
         guard let code = TalkaCode.find(in: url.absoluteString) else { return }
+        if let fp = TalkaCode.fingerprint(in: url.absoluteString) { engine?.expectFingerprint(code, fp) }
         if engine?.contact(code)?.saved == true {
             openChat(code)
         } else {
@@ -237,8 +295,15 @@ final class AppModel {
         path = [id]
     }
 
+    /// `/c/<empreinte>/<code>` : l'empreinte de nos clés, vérifiée par qui
+    /// l'ouvre ; le code reste à la fin pour les versions qui ne la
+    /// connaissent pas.
     func inviteLink(_ code: String) -> URL {
         let server = serverString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if let me = engine?.me, me.code == code {
+            let fp = TalkaCode.fingerprint(sign: me.sign, dh: me.dh)
+            if let url = URL(string: "\(server)/c/\(fp)/\(code)") { return url }
+        }
         return URL(string: "\(server)/c/\(code)") ?? URL(string: "talka://add/\(code)")!
     }
 

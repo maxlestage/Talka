@@ -111,6 +111,7 @@ async fn apply(want: bool) -> Result<(), JsValue> {
     if let Some(nk) = notification_key(&reg).await {
         core::set_nk(nk).await;
     }
+    share_contacts(&reg);
     clear_shown(&reg).await;
     Ok(())
 }
@@ -122,6 +123,50 @@ fn sub_key(sub: &JsValue, name: &str) -> String {
         .filter(|k| !k.is_null() && !k.is_undefined())
         .map(|k| B64URL.encode(Uint8Array::new(&k).to_vec()))
         .unwrap_or_default()
+}
+
+thread_local! {
+    static CARNET_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Le carnet du service worker : vos contacts (code, clé `dh`, le nom que
+/// vous leur avez donné). Il n'affiche l'aperçu que d'un contact du carnet.
+fn share_contacts(reg: &JsValue) {
+    let worker = get(reg, "active");
+    if worker.is_null() || worker.is_undefined() {
+        return;
+    }
+    let list: Vec<serde_json::Value> = core::contacts()
+        .into_iter()
+        .filter(|c| c.saved && !c.blocked && !c.dh.is_empty())
+        .map(|c| serde_json::json!({ "code": c.code, "dh": c.dh, "name": c.name }))
+        .collect();
+    let msg = serde_json::json!({ "t": "carnet", "list": list });
+    if let Ok(v) = js_sys::JSON::parse(&msg.to_string()) {
+        let _ = call(&worker, "postMessage", &[v]);
+    }
+}
+
+/// Le carnet a changé (un contact ajouté, renommé, bloqué…) : le service
+/// worker le reçoit à nouveau, si les notifications sont actives.
+pub async fn contacts_changed() {
+    // Une fois pour une rafale de changements.
+    if CARNET_PENDING.with(|p| p.replace(true)) {
+        return;
+    }
+    crate::dom::sleep(2_000).await;
+    CARNET_PENDING.with(|p| p.set(false));
+    if !available() || !core::settings().notify || !granted() {
+        return;
+    }
+    let sw = get(&get(&window(), "navigator"), "serviceWorker");
+    let scope = format!("{}/talka-push/", meta("talka-base"));
+    if let Ok(reg) = await_promise(call(&sw, "getRegistration", &[scope.into()])).await
+        && !reg.is_undefined()
+        && !reg.is_null()
+    {
+        share_contacts(&reg);
+    }
 }
 
 /// La clé publique de notification, demandée au service worker.

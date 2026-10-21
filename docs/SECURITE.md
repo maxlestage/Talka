@@ -61,19 +61,38 @@ secret dans les journaux ; aucune primitive « maison ».
 | Android (Brocolis) | valeurs chiffrées AES-256-GCM par une clé `AndroidKeyStore` non exportable (StrongBox si présent) | matériel ; préférences exclues des sauvegardes et transferts |
 | Navigateur (Talka) | `brocolis_sealed` : clé tirée du code de verrouillage | code (faible seul) ; à terme passkey (§3.5) |
 | Navigateur (site Brocolis) | valeurs chiffrées par une clé WebCrypto **non extractible** gardée dans IndexedDB | le navigateur ne la donne jamais au code |
-| Navigateur (Talka) — toute la mémoire | chaque valeur d'IndexedDB (messages, contacts, clés…) chiffrée AES-256-GCM, liée à sa clé de ligne ; la clé de l'appareil est elle-même chiffrée par une clé WebCrypto **non extractible** (base `talka-cle`) | le navigateur ne donne jamais la clé d'emballage ; les fichiers d'IndexedDB ne montrent que du chiffré |
-| iPhone (Talka) — toute la mémoire | chaque JSON de la base SQLite chiffré AES-256-GCM (CryptoKit), lié à son magasin et sa clé ; clé de l'appareil dans le trousseau (`AfterFirstUnlock`, groupe de l'application), `secure_delete` | protection de données d'iOS **et** trousseau : une copie du fichier seul ne montre rien |
+| Navigateur (Talka) — toute la mémoire | chaque valeur d'IndexedDB (messages, contacts, clés…) chiffrée AES-256-GCM, liée à sa clé de ligne ; la clé de l'appareil est chiffrée par une clé WebCrypto **non extractible** (base `talka-cle`) et, au choix, **par le code de verrouillage (Argon2id) ou une passkey (WebAuthn PRF)** | sans le code ou la passkey, les fichiers ne s'ouvrent pas, même avec le navigateur |
+| iPhone (Talka) — toute la mémoire | chaque JSON de la base SQLite chiffré AES-256-GCM (CryptoKit), lié à son magasin et sa clé ; clé de l'appareil dans le trousseau (`AfterFirstUnlockThisDeviceOnly`, groupe de l'application) et, au choix, **derrière Face ID** (`userPresence`, Secure Enclave) ; base exclue des sauvegardes, `secure_delete` | protection de données d'iOS **et** trousseau (**et** Face ID) : ni une copie du fichier, ni une sauvegarde, ni l'iPhone déverrouillé sans le visage ne montrent rien |
 
 Talka affiche les messages en clair ; seul le disque est chiffré. Les
 données d'avant sont réécrites chiffrées au premier lancement (sur
-l'iPhone, suivi d'un `VACUUM`). Limites : la clé de l'appareil est ouverte
-sans geste de l'utilisateur (comme l'application elle-même) : qui
-utiliserait le navigateur ou l'iPhone déverrouillé lirait les messages —
-c'est le rôle du code de verrouillage, et à terme d'une passkey (§3.5) qui
-protégerait aussi cette clé. Dans le navigateur, d'anciennes pages
+l'iPhone, suivi d'un `VACUUM`).
+
+**La clé de l'appareil protégée par l'utilisateur.**
+
+- *Code de verrouillage (navigateur)* : 6 à 12 chiffres pour un nouveau
+  code (les codes trop simples sont refusés), haché par **Argon2id**
+  (19 Mio, 2 passes) ; la clé de l'appareil est chiffrée par
+  `Argon2id(code, sel)` (AES-256-GCM, AD `talka-cle`). Talka demande le code
+  **avant** d'ouvrir sa mémoire. Les codes d'avant (PBKDF2) sont rehachés
+  au premier déverrouillage, et la clé de l'appareil est alors protégée.
+  Les essais manqués sont comptés même après un rechargement.
+- *Passkey (navigateur)* : l'extension PRF de WebAuthn rend 32 octets que
+  seul l'authentificateur sait calculer ; `HKDF(prf, "talka-passkey",
+  "talka-cle-v1")` chiffre la clé de l'appareil. Rien de ce secret n'est
+  gardé. La passkey perdue, seule une sauvegarde rend les messages.
+- *Face ID (iPhone)* : la clé est gardée avec un contrôle d'accès
+  `userPresence` (Face ID, Touch ID ou code de l'iPhone), vérifié par la
+  Secure Enclave ; la nouvelle copie est écrite avant que l'ancienne soit
+  effacée.
+
+Limites : un code à 6 chiffres reste devinable hors ligne par qui a copié
+les fichiers (Argon2id le ralentit beaucoup, sans l'empêcher) ; la passkey
+ou Face ID ne le sont pas. Dans le navigateur, d'anciennes pages
 d'IndexedDB peuvent garder du texte d'avant tant que le navigateur ne les
-a pas compactées. La sauvegarde Talka garde son format (chiffrée par son
-mot de passe).
+a pas compactées. La sauvegarde Talka est chiffrée par son mot de passe,
+désormais avec **Argon2id** (46 Mio, 1 passe ; `talka: 3`) ; les
+sauvegardes d'avant (PBKDF2, `talka: 2`) s'ouvrent toujours.
 
 ### 3.2 Clé protégée par une phrase secrète
 
@@ -114,7 +133,7 @@ quels pour rester lisibles par les anciennes versions.
 - Presse-papiers : local à l'appareil (pas de presse-papiers universel),
   expiration après 2 minutes (iOS) ; marqué « sensible » (Android 13+).
 
-### 3.5 Plus tard dans la phase 1 : passkey (WebAuthn PRF)
+### 3.5 Passkey (WebAuthn PRF) — fait, voir §3.1
 
 Dans les navigateurs, la clé qui scelle le coffre pourra venir d'une passkey
 (extension PRF de WebAuthn : un secret stable que seul l'authentificateur
@@ -414,26 +433,30 @@ les versions qui ne la connaissent pas l'ignorent. Une clé qui n'est pas un
 point P-256 valable est refusée.
 
 **L'aperçu.** Pour un vrai message (`wake`) à un contact qui a donné sa clé,
-l'expéditeur compose `{"n": nom choisi[ · groupe], "t": texte, "c":
-discussion}` — le même texte que la liste des discussions : une photo dit
-« 📷 Photo », une capsule temporelle « ⏳ Capsule temporelle » (jamais son
-contenu), un jeton Brocolis reste masqué ; 40 caractères pour les noms,
-120 pour le texte. Il le chiffre :
+l'expéditeur compose `{"n": son nom choisi, "g": le groupe, "t": texte,
+"c": discussion}` — le même texte que la liste des discussions : une photo
+dit « 📷 Photo », une capsule temporelle « ⏳ Capsule temporelle » (jamais
+son contenu), un jeton Brocolis reste masqué ; 40 caractères pour les
+noms, 120 pour le texte. Il le chiffre, **authentifié par sa clé
+d'identité** :
 
 ```
 eph      = P-256 éphémère
-ikm      = ECDH(eph, nk)
-clé      = HKDF-SHA256(ikm, salt = eph_pub (65) ‖ nk (65), info = "talka-apercu-v1", 32)
-apercu   = base64(eph_pub ‖ iv (12) ‖ AES-256-GCM(clé, iv, json, aad = "talka-apercu"))
+ikm      = ECDH(eph, nk) ‖ ECDH(dh de l'expéditeur, nk)
+clé      = HKDF-SHA256(ikm, salt = eph_pub (65) ‖ nk (65), info = "talka-apercu-v2:" ‖ code, 32)
+apercu   = base64(0x02 ‖ code (10) ‖ eph_pub ‖ iv (12) ‖ AES-256-GCM(clé, iv, json, aad = "talka-apercu:" ‖ code))
 ```
 
 et l'ajoute à l'envoi (`"apercu"`, 2 048 octets au plus). Le relais le
 recopie, sans pouvoir l'ouvrir, dans `{"a": apercu}` qu'il chiffre à son
 tour pour l'abonnement du navigateur (RFC 8291, `aes128gcm`, avec les clés
 `p256dh` et `auth` de l'abonnement) : le service de notifications ne voit
-qu'un bloc chiffré. Le service worker l'ouvre avec sa clé privée et
-affiche la notification ; s'il n'y arrive pas (pas de clé, aperçu abîmé,
-contact d'une ancienne version), il affiche « Nouveau message ».
+qu'un bloc chiffré. Le service worker ne l'ouvre que pour un **contact de
+son carnet** (code, `dh` et le nom que vous lui avez donné, transmis par
+Talka et gardés chiffrés par une autre clé non exportable) : un inconnu ou
+quelqu'un qui se ferait passer pour un contact ne fait rien afficher. Il
+montre le nom que vous lui avez donné (sinon `~` et son nom choisi), et
+« Nouveau message » s'il n'y arrive pas.
 
 Limites, assumées :
 
@@ -442,12 +465,6 @@ Limites, assumées :
   WebCrypto, mais un appareil compromis…) pourrait lire les aperçus
   enregistrés plus tôt. Le message lui-même reste protégé par le double
   cliquet (§4.3).
-- L'aperçu n'est pas authentifié par l'expéditeur : quelqu'un qui connaît
-  `nk` et un jeton de remise pourrait faire afficher un faux aperçu. Il ne
-  fait qu'annoncer : ouvert, Talka ne montre que les messages
-  authentifiés.
-- Le nom affiché est celui que l'expéditeur s'est choisi, pas celui que
-  vous lui avez donné.
 
 Le reste ne change pas :
 
@@ -519,3 +536,41 @@ Comparaisons de secrets en temps constant (tags GCM, identifiants dérivés
 d'une clé partagée), secrets effacés (`zeroize`), aucune panique sur une
 entrée hostile, aucune heure ni hasard implicite (passés par l'appelant :
 `wasm32-unknown-unknown` n'a pas d'horloge).
+
+## 8. Revue de sécurité (octobre 2026)
+
+Une revue adversariale du relais, du navigateur et de l'iPhone a relevé
+17 points. Ce qui a été corrigé :
+
+| # | Point | Correction |
+|---|---|---|
+| 1 | Code de 50 bits : d'autres clés au même code | numéro de sécurité sur les clés complètes (`talka-safety-v2`) ; empreinte de 96 bits dans les liens d'invitation (`/c/<empreinte>/<code>`), vérifiée à l'ajout ; le relais ne laisse pas un code déjà lié passer à d'autres clés |
+| 2 | Prise en main d'un groupe | seuls les admins changent un groupe ; un membre peut seulement partir ; version bornée (+1 000) |
+| 3 | Mémoire du relais | files de sortie bornées (connexion coupée si l'appareil ne lit plus), toutes les demandes limitées (60/s), codes suivis plafonnés par connexion, connexions anonymes plafonnées et fermées après 2 min sans envoi, 64 Mio par minute et par connexion |
+| 4 | Boîtes vidées par un tiers | plus d'éviction : une boîte (ou le total) pleine refuse (`full`), l'expéditeur réessaie |
+| 5 | Rejeu de l'ancien format | d'un contact passé en v3, l'ancien format ne change plus d'état (minuterie, modifications, suppressions, groupe, appels) |
+| 6 | Images distantes (pixel espion) | seulement des `data:image/…` ; CSP sans images distantes |
+| 7 | Fichier reçu : adresse distante | seulement `data:`, téléchargé comme octets (`application/octet-stream`), nom nettoyé |
+| 8 | « Vu à » malgré « masquer » | plus d'heure de dernière connexion pour qui se masque |
+| 9 | iPhone : clé et base dans les sauvegardes | `ThisDeviceOnly`, base exclue des sauvegardes |
+| 10 | Faux messages système | `group` hors d'un groupe ignoré ; seulement les annonces de Talka, d'un admin |
+| 11 | Citation falsifiée | la citation vient de notre copie du message cité |
+| 12 | Relais amplificateur de notifications | 50 réveils par seconde au plus, tous codes confondus |
+| 13 | Essais du code remis à zéro | comptés même après un rechargement ; la mémoire chiffrée par le code (§3.1) |
+| 15 | Contacts créés par un inconnu scellé | l'expéditeur scellé n'est enregistré qu'une fois l'enveloppe intérieure ouverte |
+| 16 | Sauvegarde en PBKDF2 | Argon2id |
+| 17 | Jetons Brocolis d'une autre discussion | ouverts seulement par les clés de la discussion (ou liées à aucune) |
+
+Reste à faire, connu :
+
+- **#5 (en partie)** : les pièces jointes de plus de 200 Kio partent encore
+  dans l'ancien format (sans confidentialité persistante) ; il faudrait
+  les chiffrer par une clé aléatoire transmise dans le message v3. Un
+  message supprimé « pour moi » pourrait réapparaître si un relais
+  malveillant rejouait sa vieille enveloppe (pas de pierres tombales).
+- **#14** : le jeton de remise est le même pour tous les contacts et ne se
+  révoque pas ; un jeton par contact, renouvelé au blocage, est prévu.
+- Le nombre de connexions par adresse IP n'est pas limité (le relais ne la
+  voit qu'à travers le proxy d'Heroku).
+- Aucun audit indépendant : cette revue est interne.
+

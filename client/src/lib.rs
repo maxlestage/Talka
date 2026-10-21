@@ -37,6 +37,8 @@ mod media;
 #[cfg(target_arch = "wasm32")]
 mod net;
 #[cfg(target_arch = "wasm32")]
+mod passkey;
+#[cfg(target_arch = "wasm32")]
 mod push;
 #[cfg(target_arch = "wasm32")]
 mod site;
