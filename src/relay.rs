@@ -14,8 +14,8 @@
 //! |---|---|---|
 //! | ← | `{"t":"challenge","nonce"}` | à signer pour se présenter |
 //! | → | `{"t":"hello","sign","dh","sig","hidden"}` | les deux clés publiques et la signature de `talka-auth:<nonce>` |
-//! | ← | `{"t":"ready","code","time","boot"}` | puis chaque message en attente |
-//! | → | `{"t":"send","id","to","body","live"}` | `live` : seulement si le destinataire est en ligne (saisie, appels) |
+//! | ← | `{"t":"ready","code","time","boot","push"}` | puis chaque message en attente ; `push` : la clé VAPID, si le relais envoie des notifications |
+//! | → | `{"t":"send","id","to","body","live","wake"}` | `live` : seulement si le destinataire est en ligne (saisie, appels) ; `wake` : un vrai message, qui réveille un destinataire hors ligne (voir `push`) |
 //! | ← | `{"t":"ack","id","ts","online"}` | le message est arrivé au serveur |
 //! | ← | `{"t":"msg","n","id","from","body","ts"}` | un message reçu |
 //! | → | `{"t":"got","n":[…]}` | rangé : le serveur l'oublie |
@@ -25,6 +25,13 @@
 //! | → | `{"t":"publish-bundle","bundle","sig"}` | le paquet de clés v3 (base64), signé par la clé du code ; il remplace le précédent |
 //! | ← | `{"t":"published","ok"}` | et `"error":"size"` ou `"signature"` s'il est refusé |
 //! | → | `{"t":"fetch-bundle","code"}` | ← `{"t":"bundle","code","sign","dh","bundle","sig"}` (ou `"none":true`) |
+//! | → | `{"t":"push","endpoint","on"}` | l'adresse Web Push de cet appareil (`"on":false` pour l'oublier) ; ← `{"t":"push","ok"}` |
+//!
+//! Les notifications (voir `crate::push`) : quand un message marqué `wake`
+//! arrive pour un code qui n'a aucune connexion ouverte, le relais envoie un
+//! réveil vide à chacune de ses adresses Web Push (au plus une fois toutes
+//! les 20 secondes). Les adresses ne vivent qu'en mémoire, comme le reste ;
+//! un appareil redonne la sienne à chaque connexion.
 //!
 //! Le paquet v3 (voir `talka_web::v3`) : le relais vérifie seulement qu'il est
 //! signé par la clé du code qui le publie (ECDSA P-256 de
@@ -62,6 +69,10 @@ const PING_EVERY: Duration = Duration::from_secs(25);
 const MAX_KEYS: usize = 200_000;
 /// Les codes suivis par une connexion.
 const MAX_WATCH: usize = 2_000;
+/// Les adresses Web Push d'un code (ses navigateurs) : 4 au plus.
+const MAX_PUSH: usize = 4;
+/// Un réveil par code toutes les 20 secondes au plus.
+const WAKE_EVERY: Duration = Duration::from_secs(20);
 /// Un paquet de clés v3 : 1 418 octets avec ML-KEM ; 2 Kio au plus.
 pub const MAX_BUNDLE: usize = 2048;
 
@@ -111,6 +122,10 @@ struct State {
     total_bytes: usize,
     /// code suivi → connexions qui le suivent (code, identifiant de connexion).
     watchers: HashMap<String, HashSet<(String, u64)>>,
+    /// code → ses adresses Web Push, la plus récente en dernier.
+    push: HashMap<String, Vec<String>>,
+    /// code → son dernier réveil.
+    woke: HashMap<String, Instant>,
     next_n: u64,
     next_conn: u64,
 }
@@ -242,6 +257,8 @@ impl Relay {
                 st.keys.remove(&c);
                 st.bundles.remove(&c);
                 st.seen.remove(&c);
+                st.push.remove(&c);
+                st.woke.remove(&c);
             }
         }
         st.keys.insert(code.to_owned(), Keys { sign, dh });
@@ -290,8 +307,43 @@ impl Relay {
     }
 
     /// Dépose un message pour `to` : dans sa boîte, et tout de suite sur ses
-    /// connexions ouvertes. Renvoie (horodatage, destinataire en ligne).
-    fn deliver(&self, from: &str, to: &str, id: &str, body: &str, live: bool) -> (u64, bool) {
+    /// connexions ouvertes ; `wake` : le réveille s'il n'en a aucune. Renvoie
+    /// (horodatage, destinataire en ligne).
+    fn deliver(
+        &self,
+        from: &str,
+        to: &str,
+        id: &str,
+        body: &str,
+        live: bool,
+        wake: bool,
+    ) -> (u64, bool) {
+        let (ts, online, endpoints) = self.store(from, to, id, body, live, wake);
+        if let Some(vapid) = crate::push::vapid() {
+            for endpoint in endpoints {
+                let relay = self.clone();
+                let to = to.to_owned();
+                tokio::spawn(async move {
+                    if crate::push::wake(vapid, endpoint.clone()).await
+                        == crate::push::Outcome::Gone
+                    {
+                        relay.unpush(&to, &endpoint);
+                    }
+                });
+            }
+        }
+        (ts, online)
+    }
+
+    fn store(
+        &self,
+        from: &str,
+        to: &str,
+        id: &str,
+        body: &str,
+        live: bool,
+        wake: bool,
+    ) -> (u64, bool, Vec<String>) {
         let ts = now_ms();
         let mut st = self.lock();
         let online = st.online.contains_key(to);
@@ -303,7 +355,7 @@ impl Relay {
                     let _ = conn.tx.send(json.clone());
                 }
             }
-            return (ts, online);
+            return (ts, online, Vec::new());
         }
         st.next_n += 1;
         let n = st.next_n;
@@ -332,7 +384,41 @@ impl Relay {
         if st.total_bytes > TOTAL_MAX_BYTES {
             st.evict_expired();
         }
-        (ts, online)
+        let mut endpoints = Vec::new();
+        if wake && !online && crate::push::vapid().is_some() && st.push.contains_key(to) {
+            let recent = st.woke.get(to).is_some_and(|at| at.elapsed() < WAKE_EVERY);
+            if !recent {
+                st.woke.insert(to.to_owned(), Instant::now());
+                endpoints = st.push[to].clone();
+            }
+        }
+        (ts, online, endpoints)
+    }
+
+    /// L'adresse Web Push d'un appareil de `code`.
+    fn push(&self, code: &str, endpoint: &str) -> bool {
+        if crate::push::audience(endpoint).is_none() {
+            return false;
+        }
+        let mut st = self.lock();
+        let list = st.push.entry(code.to_owned()).or_default();
+        list.retain(|e| e != endpoint);
+        list.push(endpoint.to_owned());
+        if list.len() > MAX_PUSH {
+            list.remove(0);
+        }
+        true
+    }
+
+    /// Oublie une adresse Web Push (désactivée, ou disparue).
+    fn unpush(&self, code: &str, endpoint: &str) {
+        let mut st = self.lock();
+        if let Some(list) = st.push.get_mut(code) {
+            list.retain(|e| e != endpoint);
+            if list.is_empty() {
+                st.push.remove(code);
+            }
+        }
     }
 
     /// Le destinataire a rangé ces messages : ils quittent sa boîte.
@@ -474,8 +560,11 @@ impl Relay {
         }
         let me = code::derive(&sign, &dh);
         let hidden = hello["hidden"].as_bool().unwrap_or(false);
-        let ready =
-            json!({ "t": "ready", "code": me, "time": now_ms(), "boot": boot_id() }).to_string();
+        let mut ready = json!({ "t": "ready", "code": me, "time": now_ms(), "boot": boot_id() });
+        if let Some(vapid) = crate::push::vapid() {
+            ready["push"] = json!(vapid.public);
+        }
+        let ready = ready.to_string();
         if tx.send(ready).await.is_err() {
             return;
         }
@@ -552,7 +641,8 @@ impl Relay {
                     }
                     let to = to.expect("checked above");
                     let live = msg["live"].as_bool().unwrap_or(false);
-                    let (ts, online) = self.deliver(&me, &to, &id, body, live);
+                    let wake = msg["wake"].as_bool().unwrap_or(false);
+                    let (ts, online) = self.deliver(&me, &to, &id, body, live, wake);
                     reply(json!({ "t": "ack", "id": id, "ts": ts, "online": online }).to_string());
                 }
                 "got" => {
@@ -600,6 +690,16 @@ impl Relay {
                         None => json!({ "t": "bundle", "code": msg["code"], "none": true }),
                     };
                     reply(answer.to_string());
+                }
+                "push" => {
+                    let endpoint = msg["endpoint"].as_str().unwrap_or("");
+                    let ok = if msg["on"].as_bool().unwrap_or(true) {
+                        crate::push::vapid().is_some() && self.push(&me, endpoint)
+                    } else {
+                        self.unpush(&me, endpoint);
+                        true
+                    };
+                    reply(json!({ "t": "push", "ok": ok }).to_string());
                 }
                 "ping" => reply(json!({ "t": "pong", "time": now_ms() }).to_string()),
                 _ => {}

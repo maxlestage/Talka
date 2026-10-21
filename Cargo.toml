@@ -33,6 +33,7 @@ getrandom = "0.2"
 p256 = { version = "0.13", features = ["ecdsa"] }
 # Le QR code de chaque code Talka, en SVG.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [dev-dependencies]
 # Les tests chiffrent exactement comme le navigateur : avec le même code Rust.

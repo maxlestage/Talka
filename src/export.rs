@@ -115,6 +115,7 @@ pub async fn run(dir: &Path, site: &Site) -> std::io::Result<()> {
         write(path, assets::get(path).unwrap_or_default())?;
     }
     write("manifest.webmanifest", manifest(site).to_json().as_bytes())?;
+    write("talka-sw.js", crate::push::SERVICE_WORKER.as_bytes())?;
     // Les fichiers commençant par « _ » ou « . » passent tels quels.
     write(".nojekyll", b"")?;
     println!(

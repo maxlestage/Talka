@@ -15,6 +15,7 @@
 pub mod assets;
 pub mod code;
 pub mod export;
+pub mod push;
 pub mod relay;
 pub mod site;
 
@@ -288,5 +289,11 @@ pub fn pages(app: &mut App, site: &Site) {
 pub fn files(app: &mut App) {
     app.get("/s/*path", assets::serve);
     app.get("/logo.svg", assets::fixed);
+    app.get("/talka-sw.js", |_| async {
+        Response::new()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .send(push::SERVICE_WORKER)
+    });
     app.get("/icons/*path", assets::fixed);
 }

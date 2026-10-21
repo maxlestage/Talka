@@ -633,7 +633,8 @@ public final class Engine {
         // La session a avancé : rien ne part avant qu'elle soit écrite (une clé
         // de message ne doit jamais servir deux fois).
         if sealed.v3 { saveV3() }
-        return await relay.send(id: item.id, to: item.to, body: sealed.body, live: live)
+        return await relay.send(id: item.id, to: item.to, body: sealed.body, live: live,
+                                wake: !live && !item.msgId.isEmpty)
     }
 
     /// Envoie ce qui attend dans la boîte d'envoi.
