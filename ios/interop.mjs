@@ -81,6 +81,20 @@ await page.waitForSelector("text=Dans le groupe");
 await page.fill(".conv textarea", "Réponse dans le groupe");
 await page.click(".send-btn");
 console.log("• groupe créé sur l'iPhone : le navigateur y écrit");
+// Une grosse photo de l'iPhone (pièce jointe chiffrée à part, clé dans le
+// message v3), puis un document de l'ordinateur.
+await page.click('button[aria-label="Retour"]').catch(() => {});
+await page.click(`.chat-item:not(:has-text('iPhone et navigateur'))`);
+await until("photo de l'iPhone", async () =>
+  (await page.evaluate(() => Math.max(0, ...[...document.querySelectorAll(".bubble img")].map((i) => i.src.length)))) > 400000);
+console.log("• grosse photo de l'iPhone reçue (pièce jointe en v3)");
+writeFileSync(join(dir, "interop.bin"), Buffer.alloc(350000, 7));
+const [chooser] = await Promise.all([
+  page.waitForEvent("filechooser"),
+  (async () => { await page.click('button[aria-label="Joindre"]'); await page.click(".ctx-menu >> text=Document"); })(),
+]);
+await chooser.setFiles(join(dir, "interop.bin"));
+console.log("• document envoyé à l'iPhone");
 
 const status = await Promise.race([swiftDone, sleep(120000).then(() => "délai")]);
 await browser.close();
