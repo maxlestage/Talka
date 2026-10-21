@@ -147,8 +147,22 @@ public final class Engine {
     func bump(_ chat: String) { revisions[chat, default: 0] += 1 }
 
     /// Les messages éphémères échus et les statuts de plus de 24 heures.
+    /// Mettre en sourdine pour `seconds` secondes (`nil` : pour toujours), ou
+    /// réactiver le son (`0`), comme dans le navigateur.
+    public func mute(_ chat: String, seconds: Double?) {
+        let on = seconds != 0
+        updateChat(chat) { c in
+            c.muted = on
+            c.muteUntil = on ? seconds.map { nowMs() + $0 * 1000 } : nil
+        }
+    }
+
     public func sweep() {
         let t = nowMs()
+        // Les sourdines pour un temps qui arrivent à leur terme.
+        for chat in chats.values where chat.muted && (chat.muteUntil ?? .infinity) <= t {
+            updateChat(chat.id) { $0.muted = false; $0.muteUntil = nil }
+        }
         for chat in chats.values where chat.timer > 0 || chat.hasExp {
             var changed = false
             for m in store.messagesOf(chat.id) where (m.exp ?? .infinity) < t {

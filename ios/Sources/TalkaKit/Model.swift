@@ -203,9 +203,13 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     /// Les clés Brocolis 🥦 (leurs `id`) qui chiffrent ce qui part dans cette
     /// discussion, en plus de Talka. Vide : désactivé.
     public var brocolis: [String] = []
+    /// Sourdine pour un temps : l'heure (ms) où elle se lève d'elle-même
+    /// (absente : pour toujours, tant que `muted`).
+    public var muteUntil: Double?
 
     enum CodingKeys: String, CodingKey {
         case id, group, name, avatar, members, admins, unread, pinned, archived, muted, timer, draft, wallpaper, left, v, last, brocolis
+        case muteUntil = "mute_until"
         case createdBy = "created_by"
         case createdAt = "created_at"
         case lastAt = "last_at"
@@ -229,6 +233,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
         muted = c.v(.muted, false); timer = c.v(.timer, 0); draft = c.v(.draft, ""); wallpaper = c.v(.wallpaper, "")
         left = c.v(.left, false); v = c.v(.v, 0); last = c.v(.last, nil); hasExp = c.v(.hasExp, false)
         pinMsg = c.v(.pinMsg, ""); brocolis = c.v(.brocolis, [])
+        muteUntil = c.v(.muteUntil, nil)
     }
 }
 

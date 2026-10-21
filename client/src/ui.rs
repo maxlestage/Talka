@@ -939,7 +939,11 @@ fn chat_item(chat: &Chat) -> Element {
                                 .child((chat.timer > 0).then(|| {
                                     h("span").attr("title", "Messages éphémères").text("⏳")
                                 }))
-                                .child(chat.muted.then(|| icon_class("belloff", "small")))
+                                .child(chat.muted.then(|| {
+                                    h("span")
+                                        .attr("title", core::mute_label(chat))
+                                        .child(icon_class("belloff", "small"))
+                                }))
                                 .child(chat.pinned.then(|| icon_class("pin", "small")))
                                 .child(unread.then(|| {
                                     h("span.badge").class_if("muted", chat.muted).text(
@@ -1007,12 +1011,7 @@ fn chat_item(chat: &Chat) -> Element {
                         } else {
                             "Sourdine"
                         },
-                        move || {
-                            let c = c3.clone();
-                            spawn(
-                                async move { core::update_chat(&c.id, |x| x.muted = !c.muted).await },
-                            )
-                        },
+                        move || crate::conv::mute_or_unmute(&c3),
                     ),
                     item(
                         "check",
