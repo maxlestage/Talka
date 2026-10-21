@@ -513,9 +513,35 @@ p {
 }
 
 .phone-icons {
-  font-size: 16px;
-  letter-spacing: 0.3em;
-  white-space: nowrap;
+  display: flex;
+  gap: 14px;
+}
+
+.ico {
+  display: inline-grid;
+  place-items: center;
+}
+
+/* La pastille « en ligne » sur l'avatar. */
+.avatar {
+  position: relative;
+}
+
+.avatar .dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #25d366;
+  box-shadow: 0 0 0 2px var(--green);
+}
+
+@media (prefers-color-scheme: dark) {
+  .avatar .dot {
+    box-shadow: 0 0 0 2px #202c33;
+  }
 }
 
 .phone-chat {
@@ -523,25 +549,34 @@ p {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px 12px 8px;
+  padding: 12px 12px 66px;
+  border-radius: 0 0 36px 36px;
   overflow: hidden;
-  background-color: var(--chat-bg);
-  background-image:
-    radial-gradient(circle at 20% 30%, var(--chat-doodle) 0 3px, transparent 3.5px),
-    radial-gradient(circle at 70% 65%, transparent 0 5px, var(--chat-doodle) 5.5px 7px, transparent 7.5px),
-    linear-gradient(45deg, transparent 46%, var(--chat-doodle-2) 46% 54%, transparent 54%),
-    radial-gradient(circle at 80% 15%, var(--chat-doodle) 0 1.5px, transparent 2px),
-    radial-gradient(circle at 35% 80%, var(--chat-doodle-2) 0 2px, transparent 2.5px),
-    linear-gradient(-30deg, transparent 47%, var(--chat-doodle-2) 47% 53%, transparent 53%);
-  background-size: 64px 64px, 72px 72px, 22px 22px, 40px 40px, 52px 52px, 30px 30px;
-  background-position: 0 0, 18px 26px, 40px 8px, 10px 30px, 26px 4px, 4px 44px;
+  /* Un fond photo (ciel, mer, rochers) : les bulles de verre le laissent voir. */
+  background:
+    radial-gradient(ellipse 70% 30% at 30% 78%, #b88a52 0 60%, transparent 61%),
+    radial-gradient(ellipse 60% 35% at 85% 92%, #9c6f3c 0 55%, transparent 56%),
+    radial-gradient(ellipse 90% 25% at 10% 100%, #c9a06a 0 60%, transparent 61%),
+    linear-gradient(to bottom, #5f9fd8 0%, #8cc0e8 42%, #3d7fb8 50%, #2f6a9e 58%, #c79a5b 70%, #8e6234 100%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .phone-chat {
+    background:
+      radial-gradient(ellipse 70% 30% at 30% 78%, #5e4527 0 60%, transparent 61%),
+      radial-gradient(ellipse 60% 35% at 85% 92%, #4d3720 0 55%, transparent 56%),
+      radial-gradient(ellipse 90% 25% at 10% 100%, #6a5132 0 60%, transparent 61%),
+      linear-gradient(to bottom, #1d3550 0%, #2a4a6b 42%, #173252 50%, #13294a 58%, #5a4426 70%, #3a2a16 100%);
+  }
 }
 
 .phone-chat .day {
   align-self: center;
   padding: 4px 12px;
   border-radius: 8px;
-  background: var(--bubble-in);
+  background: color-mix(in srgb, var(--bubble-in) 55%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   color: var(--text-2);
   font-size: 11.5px;
   text-transform: uppercase;
@@ -555,8 +590,10 @@ p {
   margin-bottom: 4px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: #ffeecd;
-  color: #54656f;
+  background: color-mix(in srgb, #ffeecd 60%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: #3b4a54;
   font-size: 11px;
   text-align: center;
   box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
@@ -564,7 +601,7 @@ p {
 
 @media (prefers-color-scheme: dark) {
   .phone-chat .e2e {
-    background: #182229;
+    background: color-mix(in srgb, #182229 60%, transparent);
     color: #ffd279;
   }
 }
@@ -601,16 +638,41 @@ p {
   clear: both;
 }
 
+.bubble.in,
+.bubble.out {
+  /* Du verre teinté, comme dans l'application. */
+  -webkit-backdrop-filter: blur(8px) saturate(1.6);
+  backdrop-filter: blur(8px) saturate(1.6);
+  border: 0.5px solid rgba(255, 255, 255, 0.35);
+}
+
 .bubble.in {
+  --glass: color-mix(in srgb, var(--bubble-in) 50%, transparent);
   align-self: flex-start;
-  background: var(--bubble-in);
+  background: var(--glass);
   border-top-left-radius: 0;
 }
 
 .bubble.out {
+  --glass: color-mix(in srgb, var(--bubble-out) 50%, transparent);
   align-self: flex-end;
-  background: var(--bubble-out);
+  background: var(--glass);
   border-top-right-radius: 0;
+}
+
+.bubble.reacted {
+  margin-bottom: 10px;
+}
+
+.bubble .reaction {
+  position: absolute;
+  left: 8px;
+  bottom: -12px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--bubble-in);
+  font-size: 11px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 /* Petites queues de bulle */
@@ -625,12 +687,12 @@ p {
 
 .bubble.in::before {
   left: -7px;
-  background: linear-gradient(to bottom left, var(--bubble-in) 50%, transparent 50%);
+  background: linear-gradient(to bottom left, var(--glass) 50%, transparent 50%);
 }
 
 .bubble.out::before {
   right: -7px;
-  background: linear-gradient(to bottom right, var(--bubble-out) 50%, transparent 50%);
+  background: linear-gradient(to bottom right, var(--glass) 50%, transparent 50%);
 }
 
 .bubble.in + .bubble.in,
@@ -655,17 +717,43 @@ p {
 }
 
 .bubble.voice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 70%;
 }
 
-.bubble.voice > span {
+.bubble.voice .play {
   color: var(--green);
-  letter-spacing: 0.02em;
-  font-weight: 600;
+}
+
+.bubble.voice .play svg {
+  width: 18px;
+  height: 18px;
+}
+
+.wave {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  height: 18px;
+}
+
+.wave span {
+  width: 3px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+.bubble.voice small {
+  align-self: flex-end;
+  top: 4px;
 }
 
 @media (prefers-color-scheme: dark) {
-  .bubble.voice > span {
+  .bubble.voice .play {
     color: #e9edef;
   }
 }
@@ -674,9 +762,11 @@ p {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-top: -58px;
   padding: 8px 8px 14px;
   border-radius: 0 0 36px 36px;
-  background: var(--chat-bg);
+  position: relative;
+  z-index: 2;
 }
 
 .phone-input > span:first-child {
@@ -684,7 +774,10 @@ p {
   min-width: 0;
   padding: 10px 14px;
   border-radius: 999px;
-  background: var(--bubble-in);
+  background: color-mix(in srgb, var(--bubble-in) 45%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.6);
+  backdrop-filter: blur(10px) saturate(1.6);
+  border: 0.5px solid rgba(255, 255, 255, 0.35);
   color: var(--text-2);
   box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
   white-space: pre;
@@ -699,7 +792,7 @@ p {
   flex-shrink: 0;
   border-radius: 50%;
   background: var(--green);
-  font-size: 18px;
+  color: #fff;
 }
 
 @media (max-width: 380px) {

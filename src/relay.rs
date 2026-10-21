@@ -15,7 +15,7 @@
 //! | ← | `{"t":"challenge","nonce"}` | à signer pour se présenter |
 //! | → | `{"t":"hello","sign","dh","sig","hidden"}` | les deux clés publiques et la signature de `talka-auth:<nonce>` |
 //! | ← | `{"t":"ready","code","time","boot","push"}` | puis chaque message en attente ; `push` : la clé VAPID, si le relais envoie des notifications |
-//! | → | `{"t":"send","id","to","body","live","wake"}` | `live` : seulement si le destinataire est en ligne (saisie, appels) ; `wake` : un vrai message, qui réveille un destinataire hors ligne (voir `push`) |
+//! | → | `{"t":"send","id","to","body","live","wake","apercu"}` | `live` : seulement si le destinataire est en ligne (saisie, appels) ; `wake` : un vrai message, qui réveille un destinataire hors ligne (voir `push`) ; `apercu` : ce que la notification affiche, chiffré par l'expéditeur pour le destinataire |
 //! | ← | `{"t":"ack","id","ts","online"}` | le message est arrivé au serveur |
 //! | ← | `{"t":"msg","n","id","from","body","ts"}` | un message reçu |
 //! | → | `{"t":"got","n":[…]}` | rangé : le serveur l'oublie |
@@ -26,9 +26,9 @@
 //! | ← | `{"t":"published","ok"}` | et `"error":"size"` ou `"signature"` s'il est refusé |
 //! | → | `{"t":"fetch-bundle","code"}` | ← `{"t":"bundle","code","sign","dh","bundle","sig"}` (ou `"none":true`) |
 //! | → | `{"t":"anon"}` (au lieu de `hello`) | une connexion anonyme, pour l'expéditeur scellé : ← `{"t":"ready","anon":true}` |
-//! | → (anonyme) | `{"t":"send","id","to","sign","dh","jeton","body","live","wake"}` | `body` scellé ; `jeton` : le jeton de remise de `to`, signé par sa clé (`sign`, `dh` : ses clés publiques) ; ← `ack` ou `error` (`"jeton"`) |
+//! | → (anonyme) | `{"t":"send","id","to","sign","dh","jeton","body","live","wake","apercu"}` | `body` scellé ; `jeton` : le jeton de remise de `to`, signé par sa clé (`sign`, `dh` : ses clés publiques) ; ← `ack` ou `error` (`"jeton"`) |
 //! | ← | `{"t":"msg","n","id","sealed":true,"body","ts"}` | un message scellé : l'expéditeur est dans `body`, que seul le destinataire ouvre |
-//! | → | `{"t":"push","endpoint","on"}` | l'adresse Web Push de cet appareil (`"on":false` pour l'oublier) ; ← `{"t":"push","ok"}` |
+//! | → | `{"t":"push","endpoint","p256dh","auth","on"}` | l'abonnement Web Push de cet appareil (`"on":false` pour l'oublier) ; ← `{"t":"push","ok"}` |
 //!
 //! L'expéditeur scellé (voir `docs/SECURITE.md`, §7.10) : sur une connexion
 //! anonyme, le relais ne sait pas qui écrit ; il vérifie seulement que
@@ -55,6 +55,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as URL_B64;
 use paquets::vitesse::ws::{Message, WebSocket};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -82,6 +83,19 @@ const MAX_WATCH: usize = 2_000;
 const MAX_PUSH: usize = 4;
 /// Un réveil par code toutes les 20 secondes au plus.
 const WAKE_EVERY: Duration = Duration::from_secs(20);
+/// Avec un aperçu (chaque message compte) : une seconde.
+const APERCU_EVERY: Duration = Duration::from_secs(1);
+
+/// Ce qu'un envoi demande au relais pour un destinataire hors ligne.
+#[derive(Clone, Debug, PartialEq)]
+enum Wake {
+    /// Rien (un accusé, une réaction, un profil…).
+    No,
+    /// Un réveil vide : « Nouveau message ».
+    Empty,
+    /// Un réveil avec l'aperçu chiffré par l'expéditeur (illisible ici).
+    Apercu(String),
+}
 /// Un paquet de clés v3 : 1 418 octets avec ML-KEM ; 2 Kio au plus.
 pub const MAX_BUNDLE: usize = 2048;
 
@@ -132,7 +146,7 @@ struct State {
     /// code suivi → connexions qui le suivent (code, identifiant de connexion).
     watchers: HashMap<String, HashSet<(String, u64)>>,
     /// code → ses adresses Web Push, la plus récente en dernier.
-    push: HashMap<String, Vec<String>>,
+    push: HashMap<String, Vec<crate::push::Subscription>>,
     /// code → son dernier réveil.
     woke: HashMap<String, Instant>,
     next_n: u64,
@@ -361,19 +375,28 @@ impl Relay {
         id: &str,
         body: &str,
         live: bool,
-        wake: bool,
+        wake: Wake,
     ) -> (u64, bool) {
         // Sans clé VAPID, personne à réveiller.
-        let wake = wake && crate::push::vapid().is_some();
-        let (ts, online, endpoints) = self.store(from, to, id, body, live, wake);
+        let wake = if crate::push::vapid().is_some() {
+            wake
+        } else {
+            Wake::No
+        };
+        let (ts, online, subs) = self.store(from, to, id, body, live, &wake);
         if let Some(vapid) = crate::push::vapid() {
-            for endpoint in endpoints {
+            // L'aperçu chiffré par l'expéditeur, que le navigateur ouvrira.
+            let payload = match &wake {
+                Wake::Apercu(a) => Some(json!({ "a": a }).to_string()),
+                _ => None,
+            };
+            for sub in subs {
                 let relay = self.clone();
                 let to = to.to_owned();
+                let payload = payload.clone();
                 tokio::spawn(async move {
-                    if crate::push::wake(vapid, endpoint.clone()).await
-                        == crate::push::Outcome::Gone
-                    {
+                    let endpoint = sub.endpoint.clone();
+                    if crate::push::wake(vapid, sub, payload).await == crate::push::Outcome::Gone {
                         relay.unpush(&to, &endpoint);
                     }
                 });
@@ -389,8 +412,8 @@ impl Relay {
         id: &str,
         body: &str,
         live: bool,
-        wake: bool,
-    ) -> (u64, bool, Vec<String>) {
+        wake: &Wake,
+    ) -> (u64, bool, Vec<crate::push::Subscription>) {
         let ts = now_ms();
         let mut st = self.lock();
         let online = st.online.contains_key(to);
@@ -436,26 +459,33 @@ impl Relay {
         if st.total_bytes > TOTAL_MAX_BYTES {
             st.evict_expired();
         }
-        let mut endpoints = Vec::new();
-        if wake && !online && st.push.contains_key(to) {
-            let recent = st.woke.get(to).is_some_and(|at| at.elapsed() < WAKE_EVERY);
+        let mut subs = Vec::new();
+        if *wake != Wake::No && !online && st.push.contains_key(to) {
+            // Un réveil vide toutes les 20 s au plus ; avec un aperçu, chaque
+            // message compte (une seconde au moins entre deux).
+            let every = if matches!(wake, Wake::Apercu(_)) {
+                APERCU_EVERY
+            } else {
+                WAKE_EVERY
+            };
+            let recent = st.woke.get(to).is_some_and(|at| at.elapsed() < every);
             if !recent {
                 st.woke.insert(to.to_owned(), Instant::now());
-                endpoints = st.push[to].clone();
+                subs = st.push[to].clone();
             }
         }
-        (ts, online, endpoints)
+        (ts, online, subs)
     }
 
-    /// L'adresse Web Push d'un appareil de `code`.
-    fn push(&self, code: &str, endpoint: &str) -> bool {
-        if crate::push::audience(endpoint).is_none() {
+    /// L'abonnement Web Push d'un appareil de `code`.
+    fn push(&self, code: &str, sub: crate::push::Subscription) -> bool {
+        if crate::push::audience(&sub.endpoint).is_none() {
             return false;
         }
         let mut st = self.lock();
         let list = st.push.entry(code.to_owned()).or_default();
-        list.retain(|e| e != endpoint);
-        list.push(endpoint.to_owned());
+        list.retain(|e| e.endpoint != sub.endpoint);
+        list.push(sub);
         if list.len() > MAX_PUSH {
             list.remove(0);
         }
@@ -466,7 +496,7 @@ impl Relay {
     fn unpush(&self, code: &str, endpoint: &str) {
         let mut st = self.lock();
         if let Some(list) = st.push.get_mut(code) {
-            list.retain(|e| e != endpoint);
+            list.retain(|e| e.endpoint != endpoint);
             if list.is_empty() {
                 st.push.remove(code);
             }
@@ -599,7 +629,15 @@ impl Relay {
         }
         let to = to.expect("checked above");
         let live = msg["live"].as_bool().unwrap_or(false);
-        let wake = msg["wake"].as_bool().unwrap_or(false);
+        // L'aperçu, chiffré par l'expéditeur pour le destinataire (illisible ici).
+        let apercu = msg["apercu"]
+            .as_str()
+            .filter(|a| !a.is_empty() && a.len() <= crate::push::MAX_APERCU);
+        let wake = match (msg["wake"].as_bool().unwrap_or(false), apercu) {
+            (false, _) => Wake::No,
+            (true, None) => Wake::Empty,
+            (true, Some(a)) => Wake::Apercu(a.to_owned()),
+        };
         let (ts, online) = self.deliver(from, &to, &id, body, live, wake);
         json!({ "t": "ack", "id": id, "ts": ts, "online": online })
     }
@@ -803,8 +841,17 @@ impl Relay {
                 }
                 "push" => {
                     let endpoint = msg["endpoint"].as_str().unwrap_or("");
+                    let key = |name: &str| {
+                        let v = msg[name].as_str().unwrap_or("").trim_end_matches('=');
+                        URL_B64.decode(v).unwrap_or_default()
+                    };
+                    let sub = crate::push::Subscription {
+                        endpoint: endpoint.to_owned(),
+                        p256dh: key("p256dh"),
+                        auth: key("auth"),
+                    };
                     let ok = if msg["on"].as_bool().unwrap_or(true) {
-                        crate::push::vapid().is_some() && self.push(&me, endpoint)
+                        crate::push::vapid().is_some() && self.push(&me, sub)
                     } else {
                         self.unpush(&me, endpoint);
                         true
@@ -826,17 +873,28 @@ mod tests {
 
     const FCM: &str = "https://fcm.googleapis.com/fcm/send/";
 
+    fn sub(endpoint: &str) -> crate::push::Subscription {
+        crate::push::Subscription {
+            endpoint: endpoint.to_owned(),
+            p256dh: Vec::new(),
+            auth: Vec::new(),
+        }
+    }
+
     #[test]
     fn push_addresses_are_checked_and_capped() {
         let relay = Relay::default();
-        assert!(!relay.push("AAAAAAAAAA", "https://evil.example/x"));
-        assert!(!relay.push("AAAAAAAAAA", "http://fcm.googleapis.com/fcm/send/x"));
+        assert!(!relay.push("AAAAAAAAAA", sub("https://evil.example/x")));
+        assert!(!relay.push("AAAAAAAAAA", sub("http://fcm.googleapis.com/fcm/send/x")));
         for i in 0..6 {
-            assert!(relay.push("AAAAAAAAAA", &format!("{FCM}{i}")));
+            assert!(relay.push("AAAAAAAAAA", sub(&format!("{FCM}{i}"))));
         }
         // La même adresse redonnée ne compte qu'une fois, et passe en dernier.
-        assert!(relay.push("AAAAAAAAAA", &format!("{FCM}3")));
-        let list = relay.lock().push["AAAAAAAAAA"].clone();
+        assert!(relay.push("AAAAAAAAAA", sub(&format!("{FCM}3"))));
+        let list: Vec<String> = relay.lock().push["AAAAAAAAAA"]
+            .iter()
+            .map(|s| s.endpoint.clone())
+            .collect();
         let tail: Vec<String> = (2..6)
             .filter(|i| *i != 3)
             .map(|i| format!("{FCM}{i}"))
@@ -854,32 +912,51 @@ mod tests {
     fn only_real_messages_wake_an_offline_code_now_and_then() {
         let relay = Relay::default();
         let to = "BBBBBBBBBB";
-        relay.push(to, &format!("{FCM}b"));
+        relay.push(to, sub(&format!("{FCM}b")));
         // Un accusé, une réaction (`wake` absent) : pas de réveil.
         assert!(
             relay
-                .store(Some("AAAAAAAAAA"), to, "r1", "x", false, false)
+                .store(Some("AAAAAAAAAA"), to, "r1", "x", false, &Wake::No)
                 .2
                 .is_empty()
         );
         // « écrit… », un signal d'appel (`live`) : jamais.
         assert!(
             relay
-                .store(Some("AAAAAAAAAA"), to, "l1", "x", true, true)
+                .store(Some("AAAAAAAAAA"), to, "l1", "x", true, &Wake::Empty)
                 .2
                 .is_empty()
         );
         // Un vrai message : un réveil…
         assert_eq!(
             relay
-                .store(Some("AAAAAAAAAA"), to, "m1", "x", false, true)
+                .store(Some("AAAAAAAAAA"), to, "m1", "x", false, &Wake::Empty)
                 .2,
-            vec![format!("{FCM}b")]
+            vec![sub(&format!("{FCM}b"))]
+        );
+        // Avec un aperçu, chaque message compte : une seconde suffit.
+        relay
+            .lock()
+            .woke
+            .insert(to.to_owned(), Instant::now() - APERCU_EVERY);
+        assert_eq!(
+            relay
+                .store(
+                    Some("AAAAAAAAAA"),
+                    to,
+                    "m1b",
+                    "x",
+                    false,
+                    &Wake::Apercu("a".into())
+                )
+                .2
+                .len(),
+            1
         );
         // … puis plus rien pendant 20 secondes.
         assert!(
             relay
-                .store(Some("AAAAAAAAAA"), to, "m2", "x", false, true)
+                .store(Some("AAAAAAAAAA"), to, "m2", "x", false, &Wake::Empty)
                 .2
                 .is_empty()
         );
@@ -889,7 +966,7 @@ mod tests {
             .insert(to.to_owned(), Instant::now() - WAKE_EVERY);
         assert_eq!(
             relay
-                .store(Some("AAAAAAAAAA"), to, "m3", "x", false, true)
+                .store(Some("AAAAAAAAAA"), to, "m3", "x", false, &Wake::Empty)
                 .2
                 .len(),
             1
@@ -897,7 +974,14 @@ mod tests {
         // Un code sans adresse : personne à réveiller.
         assert!(
             relay
-                .store(Some("AAAAAAAAAA"), "CCCCCCCCCC", "m4", "x", false, true)
+                .store(
+                    Some("AAAAAAAAAA"),
+                    "CCCCCCCCCC",
+                    "m4",
+                    "x",
+                    false,
+                    &Wake::Empty
+                )
                 .2
                 .is_empty()
         );
@@ -907,11 +991,11 @@ mod tests {
     fn a_connected_code_is_not_woken() {
         let relay = Relay::default();
         let to = "BBBBBBBBBB";
-        relay.push(to, &format!("{FCM}b"));
+        relay.push(to, sub(&format!("{FCM}b")));
         let (_id, _rx) = relay.register(to, String::new(), String::new(), true);
         assert!(
             relay
-                .store(Some("AAAAAAAAAA"), to, "m1", "x", false, true)
+                .store(Some("AAAAAAAAAA"), to, "m1", "x", false, &Wake::Empty)
                 .2
                 .is_empty()
         );
