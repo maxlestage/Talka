@@ -69,6 +69,13 @@ pub struct Contact {
     pub added_at: f64,
     pub profile_v: u64,
     pub sent_profile_v: u64,
+    /// Son jeton de remise (dans son profil) : pour lui écrire en expéditeur
+    /// scellé, sans que le relais sache qui écrit. Vide : pas encore reçu.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub jeton: String,
+    /// Lui a-t-on donné le nôtre ?
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub jeton_sent: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -347,6 +354,10 @@ pub enum Body {
     Profile {
         #[serde(flatten)]
         profile: Profile,
+        /// Le jeton de remise de l'expéditeur (expéditeur scellé) ; ignoré
+        /// par les versions qui ne le connaissent pas.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        jeton: String,
     },
     Group {
         op: String,
