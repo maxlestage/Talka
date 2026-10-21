@@ -145,20 +145,40 @@ fn bubble(out: bool, text: &str, time: &str) -> Element {
         }))
 }
 
+/// Une icône en trait (comme celles de l'application), en SVG.
+fn icon(path: &str) -> Element {
+    span().class("ico").html(format!(
+        r#"<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{path}</svg>"#
+    ))
+}
+
+const VIDEO: &str =
+    r#"<rect x="2" y="6" width="14" height="12" rx="3"/><path d="m16 10 6-3v10l-6-3"/>"#;
+const CALL: &str = r#"<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>"#;
+const MIC: &str =
+    r#"<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/>"#;
+const PLAY: &str = r#"<path d="M7 4v16l13-8z" fill="currentColor"/>"#;
+
 fn phone() -> Element {
+    // L'application d'aujourd'hui : des bulles de verre sur une photo.
+    let bars = [3, 5, 8, 11, 7, 4, 6, 10, 12, 8, 5, 3, 6, 9, 5, 3];
+    let mut wave = div().class("wave");
+    for h in bars {
+        wave = wave.child(span().attr("style", format!("height:{}px", h + 3)));
+    }
     div()
         .class("phone")
         .attr("aria-hidden", "true")
         .child(
             div()
                 .class("phone-top")
-                .child(div().class("avatar").text("🦊"))
+                .child(div().class("avatar").text("🦊").child(span().class("dot")))
                 .child(
                     div()
                         .child(strong().text("Léa"))
                         .child(small().text("en ligne")),
                 )
-                .child(div().class("phone-icons").text("📹 📞")),
+                .child(div().class("phone-icons").child(icon(VIDEO)).child(icon(CALL))),
         )
         .child(
             div()
@@ -167,25 +187,27 @@ fn phone() -> Element {
                 .child(div().class("e2e").text("🔒 Chiffré de bout en bout. Personne d'autre, pas même Talka, ne peut lire ces messages."))
                 .child(bubble(false, "Salut ! C'est quoi ton code Talka ? 😊", "09:41"))
                 .child(bubble(true, "K7Q2M-X9PRT, pas besoin de mon numéro 😉", "09:42"))
-                .child(bubble(false, "Ajouté ! On s'appelle ce soir ?", "09:42"))
                 .child(
                     div()
-                        .class("bubble out voice")
-                        .child(span().text("▶ ▂▃▅▇▅▃▂▃▅▆▃▂ 0:07"))
-                        .child(small().text("09:43").child(span().class("ticks").text(" ✓✓"))),
+                        .class("bubble in reacted")
+                        .child(span().text("Ajouté ! On s'appelle ce soir ?"))
+                        .child(small().text("09:42"))
+                        .child(span().class("reaction").text("❤️")),
                 )
                 .child(
                     div()
-                        .class("bubble in")
-                        .child(span().text("❤️ Parfait, à ce soir !"))
-                        .child(small().text("09:44")),
-                ),
+                        .class("bubble out voice")
+                        .child(span().class("play").child(icon(PLAY)))
+                        .child(wave)
+                        .child(small().text("0:07 · 09:43").child(span().class("ticks").text(" ✓✓"))),
+                )
+                .child(bubble(false, "Parfait, à ce soir !", "09:44")),
         )
         .child(
             div()
                 .class("phone-input")
                 .child(span().text("😊  Message"))
-                .child(span().class("mic").text("🎙")),
+                .child(span().class("mic").child(icon(MIC))),
         )
 }
 
