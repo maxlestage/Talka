@@ -1334,7 +1334,7 @@ async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
         .then(|| serde_json::from_str::<Wire>(&item.payload).ok())
         .flatten()
         .and_then(|w| apercu_of(&my_code(), &profile().name, &w))
-        .and_then(|a| crypto::seal_apercu(&peer.nk, &a));
+        .and_then(|a| crypto::seal_apercu(&me(), &peer.nk, &a));
     // L'expéditeur scellé : le relais ne sait pas qui écrit (une connexion
     // anonyme, et le jeton de remise du destinataire).
     if !peer.jeton.is_empty() && net::sealed_supported() {

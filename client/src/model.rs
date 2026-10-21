@@ -483,9 +483,10 @@ impl Wire {
     }
 
     /// L'aperçu de sa notification chez le destinataire, en JSON : qui écrit
-    /// (`n`, son nom choisi, et le groupe), quoi (`t`, `preview` du message,
-    /// comme la liste des discussions) et la discussion vue de chez lui
-    /// (`c`). Seulement pour un message écrit ; il partira chiffré pour la
+    /// (`n`, son nom choisi ; le service worker lui préfère le nom que le
+    /// destinataire lui a donné), le groupe (`g`), quoi (`t`, `preview` du
+    /// message, comme la liste des discussions) et la discussion vue de chez
+    /// lui (`c`). Seulement pour un message écrit ; il partira chiffré pour la
     /// clé de notification du destinataire.
     pub fn apercu(
         &self,
@@ -509,16 +510,21 @@ impl Wire {
         } else {
             name.trim().chars().take(40).collect()
         };
-        let (n, c) = match (&self.grp, self.group_id()) {
-            (Some(g), Some(id)) if !g.name.is_empty() => (
-                format!("{name} · {}", g.name.chars().take(40).collect::<String>()),
-                format!("g:{id}"),
-            ),
-            (_, Some(id)) => (name, format!("g:{id}")),
-            _ => (name, me.to_owned()),
+        let c = match self.group_id() {
+            Some(id) => format!("g:{id}"),
+            None => me.to_owned(),
         };
+        let g: String = self
+            .grp
+            .as_ref()
+            .map(|g| g.name.chars().take(40).collect())
+            .unwrap_or_default();
         let t: String = preview(&m).chars().take(120).collect();
-        Some(serde_json::json!({ "n": n, "t": t, "c": c }).to_string())
+        let mut out = serde_json::json!({ "n": name, "t": t, "c": c });
+        if !g.is_empty() {
+            out["g"] = g.into();
+        }
+        Some(out.to_string())
     }
 }
 
@@ -745,12 +751,13 @@ mod tests {
         });
         let g = apercu("X", "Léa", &group);
         assert_eq!(
-            (g["n"].as_str(), g["c"].as_str()),
-            (Some("Léa · Les amis"), Some("g:g1"))
+            (g["n"].as_str(), g["g"].as_str(), g["c"].as_str()),
+            (Some("Léa"), Some("Les amis"), Some("g:g1"))
         );
         group.grp = None;
         group.g = Some("g1".into());
-        assert_eq!(apercu("X", "Léa", &group)["n"], "Léa");
+        let g = apercu("X", "Léa", &group);
+        assert_eq!((g["c"].as_str(), g.get("g")), (Some("g:g1"), None));
 
         let long = apercu("X", "Léa", &msg("text", &"a".repeat(500)));
         assert_eq!(long["t"].as_str().unwrap().chars().count(), 120);
