@@ -93,6 +93,23 @@ final class WatchTests: XCTestCase {
         XCTAssertEqual(e.markAllRead(), 0)
     }
 
+    /// Épingle, favoris, réponse : jamais le texte d'une capsule scellée,
+    /// mais celui d'une capsule ouverte, ou écrite par soi.
+    func testReadableHidesOnlySealedCapsules() async throws {
+        let e = phone()
+        let c = e.ensureDirectChat("WGSEAJNSZJ")
+        let mine = try XCTUnwrap(e.send(c.id, Content(text: "Plus tard", openAt: nowMs() + 3_600_000)))
+        XCTAssertEqual(e.readable(mine), "Plus tard")
+        var theirs = mine
+        theirs.from = "WGSEAJNSZJ"
+        XCTAssertEqual(e.readable(theirs), "⏳ Capsule temporelle")
+        XCTAssertEqual(e.readable(theirs, now: mine.openAt! + 1), "Plus tard")
+        theirs.deleted = true
+        XCTAssertEqual(e.readable(theirs, now: mine.openAt! + 1), "🚫 Message supprimé")
+        let photo = Message(chat: c.id, id: "p", from: "WGSEAJNSZJ", at: 1, content: Content(kind: "image", text: "Vue"))
+        XCTAssertEqual(e.readable(photo), "📷 Vue")
+    }
+
     func testInitialsAndColors() async {
         XCTAssertEqual(watchInitials("Léa Martin"), "LM")
         XCTAssertEqual(watchInitials("~Léa"), "L")

@@ -2277,7 +2277,7 @@ async fn open_starred() {
                                     core::display_name(&m.from),
                                     list_time(m.at)
                                 )))
-                                .child(h("div.ellipsis").text(core::preview(m))),
+                                .child(h("div.ellipsis").text(core::readable(m))),
                         )
                         .click(move || {
                             let c = chat.clone();
