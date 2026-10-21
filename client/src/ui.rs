@@ -1344,26 +1344,26 @@ fn open_devices() {
                     .child(
                         h("div.grow")
                             .child(h("div.strong").text(&name))
-                            .child(this.then(|| {
-                                h("button.link.small")
-                                    .attr("type", "button")
-                                    .text("Renommer")
-                                    .click(move || {
-                                        let (n2, md4) = (n2.clone(), md4.clone());
-                                        spawn(async move {
-                                            if let Some(name) = prompt_box("Nom de cet appareil", "Il s'affiche dans la liste de vos appareils.", &n2, "text", "Enregistrer", 40).await {
-                                                core::rename_device(&core::my_dev(), &name).await;
-                                                md4.close();
-                                            }
-                                        })
-                                    })
-                            }))
                             .child(h("small.muted").text(if this {
                                 "Cet appareil".to_owned()
                             } else {
                                 format!("Lié le {since}")
                             })),
                     )
+                    .child(this.then(|| {
+                        h("button.btn.ghost")
+                            .attr("type", "button")
+                            .text("Renommer")
+                            .click(move || {
+                                let (n2, md4) = (n2.clone(), md4.clone());
+                                spawn(async move {
+                                    if let Some(name) = prompt_box("Nom de cet appareil", "Il s'affiche dans la liste de vos appareils.", &n2, "text", "Enregistrer", 40).await {
+                                        core::rename_device(&core::my_dev(), &name).await;
+                                        md4.close();
+                                    }
+                                })
+                            })
+                    }))
                     .child((!this).then(|| {
                         h("button.btn.ghost.danger")
                             .attr("type", "button")
@@ -1389,7 +1389,8 @@ fn open_devices() {
                     }))
             });
             let (md3, md5) = (md.clone(), md.clone());
-            let can_scan = !get(&window(), "BarcodeDetector").is_undefined();
+            // La caméra et le décodeur de Talka : partout où il y a une caméra.
+            let can_scan = window().navigator().media_devices().is_ok();
             h("div.stack")
                 .child(h("p.muted.small").text("Votre compte sur plusieurs appareils à la fois (iPhone, iPad, navigateur) : chacun a ses propres clés, et chaque message part chiffré pour chacun. Six appareils au plus."))
                 .child(h("div.list").children(rows))
@@ -1470,7 +1471,7 @@ async fn link_this_device() -> bool {
             let t3 = t2.clone();
             h("div.my-code")
                 .child(h("img.qr").attr("src", qr_data_url(&t2)).attr("alt", "QR code de liaison").attr("width", "240").attr("height", "240"))
-                .child(h("p.muted.small").text("Sur l'appareil où Talka est déjà ouvert (iPhone, iPad, navigateur) : Réglages → Appareils liés → Lier un appareil, puis visez ce QR code."))
+                .child(h("p.muted.small").text("Sur l'appareil où Talka est déjà ouvert (iPhone, iPad, navigateur) : Réglages → Appareils liés → Scanner son QR code, puis visez celui-ci."))
                 .child(
                     h("button.btn.ghost")
                         .attr("type", "button")
@@ -1753,29 +1754,78 @@ async fn scan(hint: &'static str, pick: Pick) -> Option<String> {
             ..Default::default()
         },
     );
-    let ctor: js_sys::Function = get(&window(), "BarcodeDetector").dyn_into().ok()?;
-    let opts = js_sys::Object::new();
-    set(&opts, "formats", js_sys::Array::of1(&"qr_code".into()));
-    let detector = js_sys::Reflect::construct(&ctor, &js_sys::Array::of1(&opts)).ok()?;
+    // `BarcodeDetector` quand le navigateur l'a ; sinon (Safari, Firefox),
+    // le décodeur de Talka, image par image.
+    let detector = get(&window(), "BarcodeDetector")
+        .dyn_into::<js_sys::Function>()
+        .ok()
+        .and_then(|ctor| {
+            let opts = js_sys::Object::new();
+            set(&opts, "formats", js_sys::Array::of1(&"qr_code".into()));
+            js_sys::Reflect::construct(&ctor, &js_sys::Array::of1(&opts)).ok()
+        });
+    let canvas: web_sys::HtmlCanvasElement =
+        document().create_element("canvas").ok()?.dyn_into().ok()?;
     let found = loop {
         if done.get() {
             break None;
         }
         sleep(300).await;
-        let Ok(codes) = await_promise(call(&detector, "detect", &[video.clone().into()])).await
-        else {
-            continue;
+        let texts: Vec<String> = match &detector {
+            Some(detector) => {
+                let Ok(codes) =
+                    await_promise(call(detector, "detect", &[video.clone().into()])).await
+                else {
+                    continue;
+                };
+                js_sys::Array::from(&codes)
+                    .iter()
+                    .filter_map(|c| get(&c, "rawValue").as_string())
+                    .collect()
+            }
+            None => frame_codes(&video, &canvas),
         };
-        let hit = js_sys::Array::from(&codes).iter().find_map(|c| {
-            let raw = get(&c, "rawValue").as_string()?;
-            pick(&raw)
-        });
+        let hit = texts.iter().find_map(|raw| pick(raw));
         if hit.is_some() {
             break hit;
         }
     };
     m.close();
     found
+}
+
+/// Les QR codes d'une image de la caméra, lus par Talka (`crate::qr`).
+fn frame_codes(video: &Element, canvas: &web_sys::HtmlCanvasElement) -> Vec<String> {
+    let Some(v) = video.dyn_ref::<web_sys::HtmlVideoElement>() else {
+        return Vec::new();
+    };
+    let (vw, vh) = (v.video_width(), v.video_height());
+    if vw == 0 || vh == 0 {
+        return Vec::new();
+    }
+    // 640 pixels de large au plus : assez pour un QR code, vite lu.
+    let scale = (640.0 / vw as f64).min(1.0);
+    let (w, h) = ((vw as f64 * scale) as u32, (vh as f64 * scale) as u32);
+    canvas.set_width(w);
+    canvas.set_height(h);
+    let Some(ctx) = canvas
+        .get_context("2d")
+        .ok()
+        .flatten()
+        .and_then(|c| c.dyn_into::<web_sys::CanvasRenderingContext2d>().ok())
+    else {
+        return Vec::new();
+    };
+    if ctx
+        .draw_image_with_html_video_element_and_dw_and_dh(v, 0.0, 0.0, w as f64, h as f64)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let Ok(data) = ctx.get_image_data(0.0, 0.0, w as f64, h as f64) else {
+        return Vec::new();
+    };
+    crate::qr::decode_rgba(w as usize, h as usize, &data.data())
 }
 
 fn open_new_chat() {
