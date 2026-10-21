@@ -173,6 +173,19 @@ pub fn display_name(code: &str) -> String {
     }
 }
 
+/// Le libellé d'une mention (« @Léa ») : le nom que chacun s'est choisi, le
+/// même sur tous les appareils (à défaut, celui qu'on lui a donné).
+pub fn mention_label(code: &str) -> String {
+    if code == my_code() {
+        return profile().name;
+    }
+    match contact(code) {
+        Some(c) if !c.profile_name.is_empty() => c.profile_name,
+        Some(c) if !c.name.is_empty() => c.name,
+        _ => crypto::pretty(code),
+    }
+}
+
 pub fn avatar_of(code: &str) -> String {
     if code == my_code() {
         return profile().avatar;
@@ -552,12 +565,12 @@ pub async fn save_profile(f: impl FnOnce(&mut Profile)) {
     spawn(flush());
 }
 
-/// Notre profil pour `code`, avec son jeton de remise personnel : seulement
-/// pour un contact enregistré et pas bloqué (un inconnu qui nous écrit n'en
-/// reçoit pas).
+/// Notre profil pour `code`, avec son jeton de remise personnel : pour un
+/// contact, ou quelqu'un qui nous écrit (un membre d'un de nos groupes), tant
+/// qu'il n'est pas bloqué (le bloquer le révoque).
 fn profile_body(code: &str) -> Body {
     let jeton = match contact(code) {
-        Some(c) if c.saved && !c.blocked => me().jeton_for(code, c.jeton_epoch),
+        Some(c) if !c.blocked => me().jeton_for(code, c.jeton_epoch),
         _ => String::new(),
     };
     Body::Profile {
@@ -680,10 +693,13 @@ async fn fetch_keys(code: &str) -> Option<Contact> {
     // Le lien d'invitation donnait l'empreinte de ses clés : ce ne sont pas
     // elles. Quelqu'un d'autre se présente sous ce code ; on n'en veut pas.
     if !c.fp.is_empty() && crypto::fingerprint(&sign, &dh) != c.fp {
-        dom::toast(format!(
-            "Attention : les clés de {} ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.",
-            crypto::pretty(code)
-        ));
+        // Une fois par session (pas à chaque reconnexion).
+        if MISMATCH.with(|m| m.borrow_mut().insert(code.to_owned())) {
+            dom::toast(format!(
+                "Attention : les clés de {} ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.",
+                crypto::pretty(code)
+            ));
+        }
         return None;
     }
     c.sign = sign;
@@ -700,6 +716,8 @@ async fn refresh_missing_keys() {
 }
 
 thread_local! {
+    /// Les codes dont les clés trouvées ne sont pas celles du lien.
+    static MISMATCH: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Les empreintes des liens d'invitation ouverts, par code.
     static FINGERPRINTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
@@ -739,6 +757,15 @@ pub async fn add_contact(code: &str, name: &str) -> Result<bool, String> {
     save_contact(c).await;
     net::watch(&[code.to_owned()]);
     let reachable = keys_for(code).await.is_some();
+    // Les clés trouvées ne sont pas celles du lien : on ne l'ajoute pas (et
+    // on ne lui envoie rien).
+    if !reachable && MISMATCH.with(|m| m.borrow().contains(code)) {
+        update_contact(code, |c| c.saved = false).await;
+        return Err(format!(
+            "Les clés de {} ne correspondent pas à son lien d'invitation : quelqu'un se fait peut-être passer pour lui. Contact non ajouté.",
+            crypto::pretty(code)
+        ));
+    }
     enqueue(code, Wire::new(profile_body(code)), None, None, false).await;
     spawn(flush());
     Ok(reachable)
@@ -1308,6 +1335,7 @@ pub async fn clear_chat(id: &str) {
     update_chat(id, |c| {
         c.last = None;
         c.unread = 0;
+        c.mentioned = false;
     })
     .await;
     emit(Ev::Messages(id.to_owned()));
@@ -1739,6 +1767,7 @@ pub async fn send_message(chat_id: &str, mut content: Content) -> Option<Message
         reply: plain.reply,
         fwd: plain.fwd,
         open_at: plain.open_at,
+        mentions: plain.mentions,
         bro,
         ..Default::default()
     };
@@ -1909,6 +1938,8 @@ pub async fn forward(m: &Message, chat_ids: &[String]) {
         reply: None,
         fwd: true,
         open_at: 0.0,
+        // Une mention ne suit pas un message transféré.
+        mentions: Vec::new(),
     };
     for id in chat_ids {
         send_message(id, content.clone()).await;
@@ -2127,10 +2158,11 @@ pub async fn mark_read(chat_id: &str) {
             queue_receipt(&code, chat_id, &ids, "read");
         }
     }
-    if c.unread > 0 || c.marked_unread {
+    if c.unread > 0 || c.marked_unread || c.mentioned {
         update_chat(chat_id, |c| {
             c.unread = 0;
             c.marked_unread = false;
+            c.mentioned = false;
         })
         .await;
     }
@@ -2515,6 +2547,18 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 code: content.code,
                 reply: content.reply,
                 fwd: content.fwd,
+                // Seulement des membres du groupe (50 au plus).
+                mentions: if c.group {
+                    content
+                        .mentions
+                        .iter()
+                        .filter(|m| c.members.contains(m))
+                        .take(50)
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                },
                 // Une capsule s'ouvre au plus tard dans dix ans.
                 open_at: if content.open_at > at {
                     content.open_at.min(at + CAPSULE_MAX_MS)
@@ -2553,6 +2597,10 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 m.read_by_me = true;
             } else {
                 c.unread += 1;
+                // Mentionné : « @ » dans la liste, jusqu'à la lecture.
+                if m.mentions.contains(&me) {
+                    c.mentioned = true;
+                }
                 save_chat(c.clone()).await;
             }
             store_message(&m, true).await;
@@ -2564,10 +2612,10 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             if let Some(mut sender) = contact(from)
                 && !sender.blocked
                 && (sender.sent_profile_v < profile().v
-                    || (!sender.jeton_perso && sender.saved && net::sealed_supported()))
+                    || (!sender.jeton_perso && net::sealed_supported()))
             {
                 sender.sent_profile_v = profile().v;
-                if sender.saved && net::sealed_supported() {
+                if net::sealed_supported() {
                     sender.jeton_sent = true;
                     sender.jeton_perso = true;
                 }
