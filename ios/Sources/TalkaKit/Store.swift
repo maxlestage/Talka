@@ -12,8 +12,21 @@
 // discussion) ; chaque écriture part aussitôt dans SQLite. Un lot
 // (`transaction`) rend plusieurs écritures atomiques : un message reçu et
 // l'état de session v3 qui l'a ouvert.
+//
+// Chiffrée au repos, en plus de la protection d'iOS : chaque JSON est gardé
+// chiffré (AES-256-GCM, lié à son magasin et à sa clé) avec la clé de
+// l'appareil, tenue dans le trousseau (`StoreVault`), jamais dans la base.
+// Talka le déchiffre en mémoire pour l'afficher ; une copie du fichier
+// (sauvegarde non chiffrée de l'iPhone, extraction du disque) n'en montre
+// rien. Les lignes d'avant (du texte en clair) sont réécrites chiffrées une
+// fois. La sauvegarde Talka (`dump`) garde son format.
 
 import Foundation
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 #if canImport(SQLite3)
 import SQLite3
 #else
@@ -32,13 +45,71 @@ public final class Store: @unchecked Sendable {
     var messages: [String: [String: Message]] = [:]
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
+    /// La clé de l'appareil (nil : rien n'est chiffré).
+    let key: SymmetricKey?
+    /// Des lignes chiffrées, mais pas de clé pour les lire : on n'écrit plus
+    /// rien (surtout pas une nouvelle identité par-dessus l'ancienne).
+    var readOnly = false
 
-    public init(directory: URL) {
+    /// `key` : la clé de l'appareil (`StoreVault.key()` dans l'application).
+    public init(directory: URL, key: SymmetricKey? = nil) {
         dir = directory
+        self.key = key
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         openDatabase()
         migrateJSONFiles()
+        sealPlainRows()
         loadRows()
+    }
+
+    // ----- Le chiffrement au repos -----
+
+    /// Le début d'une valeur chiffrée : `t1` puis nonce (12) ‖ chiffré ‖ tag.
+    static let magic = Data("t1".utf8)
+
+    func aad(_ store: String, _ key: String) -> Data { Data("talka-repos:\(store)/\(key)".utf8) }
+
+    func seal(_ store: String, _ k: String, _ json: String) -> Data? {
+        guard let key, let box = try? AES.GCM.seal(Data(json.utf8), using: key, authenticating: aad(store, k)),
+              let combined = box.combined else { return nil }
+        return Self.magic + combined
+    }
+
+    /// Le JSON d'une ligne lue : en clair (d'avant), ou déchiffré ; nil si
+    /// illisible (abîmé, ou pas la clé).
+    func value(_ stmt: OpaquePointer, _ index: Int32, store: String, key k: String) -> String? {
+        guard sqlite3_column_type(stmt, index) == SQLITE_BLOB else { return column(stmt, index) }
+        let n = Int(sqlite3_column_bytes(stmt, index))
+        guard let key, let p = sqlite3_column_blob(stmt, index), n > Self.magic.count + 28 else { return nil }
+        let data = Data(bytes: p, count: n)
+        guard data.prefix(2) == Self.magic,
+              let box = try? AES.GCM.SealedBox(combined: data.dropFirst(2)),
+              let plain = try? AES.GCM.open(box, using: key, authenticating: aad(store, k))
+        else { return nil }
+        return String(data: plain, encoding: .utf8)
+    }
+
+    /// Les lignes en clair (d'avant le chiffrement), réécrites chiffrées ;
+    /// sans clé, des lignes chiffrées rendent la base en lecture seule.
+    func sealPlainRows() {
+        guard key != nil else {
+            var sealed = false
+            run("SELECT 1 FROM rows WHERE typeof(json) = 'blob' LIMIT 1") { _ in sealed = true }
+            readOnly = sealed
+            return
+        }
+        var plain: [(String, String, String, Double, String)] = []
+        run("SELECT store, key, chat, at, json FROM rows WHERE typeof(json) = 'text'") { stmt in
+            plain.append((column(stmt, 0), column(stmt, 1), column(stmt, 2), sqlite3_column_double(stmt, 3), column(stmt, 4)))
+        }
+        guard !plain.isEmpty else { return }
+        exec("BEGIN")
+        for (store, k, chat, at, json) in plain { put(store, k, json, chat: chat, at: at) }
+        guard exec("COMMIT") else { exec("ROLLBACK"); return }
+        // Plus rien du texte d'avant, ni dans le journal ni dans les pages
+        // libérées.
+        exec("PRAGMA wal_checkpoint(TRUNCATE)")
+        exec("VACUUM")
     }
 
     deinit {
@@ -61,6 +132,8 @@ public final class Store: @unchecked Sendable {
         guard sqlite3_open_v2(databaseURL.path, &db, flags, nil) == SQLITE_OK else { return }
         exec("PRAGMA journal_mode = WAL")
         exec("PRAGMA synchronous = NORMAL")
+        // Ce qui est effacé ou remplacé est écrasé sur le disque.
+        exec("PRAGMA secure_delete = ON")
         exec("""
             CREATE TABLE IF NOT EXISTS rows (
                 store TEXT NOT NULL,
@@ -96,6 +169,8 @@ public final class Store: @unchecked Sendable {
             let index = Int32(i + 1)
             switch p {
             case let s as String: sqlite3_bind_text(stmt, index, s, -1, transient)
+            case let d as Data:
+                _ = d.withUnsafeBytes { sqlite3_bind_blob(stmt, index, $0.baseAddress, Int32(d.count), transient) }
             case let d as Double: sqlite3_bind_double(stmt, index, d)
             default: sqlite3_bind_null(stmt, index)
             }
@@ -104,11 +179,15 @@ public final class Store: @unchecked Sendable {
     }
 
 
+    /// Écrit une ligne, son JSON chiffré (en clair seulement sans clé).
     func put(_ store: String, _ key: String, _ json: String, chat: String = "", at: Double = 0) {
-        run("INSERT OR REPLACE INTO rows (store, key, chat, at, json) VALUES (?, ?, ?, ?, ?)", [store, key, chat, at, json])
+        guard !readOnly else { return }
+        let value: Any = seal(store, key, json) ?? json
+        run("INSERT OR REPLACE INTO rows (store, key, chat, at, json) VALUES (?, ?, ?, ?, ?)", [store, key, chat, at, value])
     }
 
     func delete(_ store: String, _ key: String) {
+        guard !readOnly else { return }
         run("DELETE FROM rows WHERE store = ? AND key = ?", [store, key])
     }
 
@@ -116,7 +195,8 @@ public final class Store: @unchecked Sendable {
     func loadRows() {
         lock.lock(); defer { lock.unlock() }
         run("SELECT store, key, json FROM rows WHERE store != 'messages'") { stmt in
-            self.rows[column(stmt, 0), default: [:]][column(stmt, 1)] = column(stmt, 2)
+            let (store, k) = (column(stmt, 0), column(stmt, 1))
+            if let json = self.value(stmt, 2, store: store, key: k) { self.rows[store, default: [:]][k] = json }
         }
     }
 
@@ -182,8 +262,9 @@ public final class Store: @unchecked Sendable {
     func loadChat(_ chat: String) -> [String: Message] {
         if let m = messages[chat] { return m }
         var out: [String: Message] = [:]
-        run("SELECT json FROM rows WHERE store = 'messages' AND chat = ?", [chat]) { stmt in
-            if let m = JSON.decode(Message.self, column(stmt, 0)) { out[m.id] = m }
+        run("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ?", [chat]) { stmt in
+            if let json = self.value(stmt, 1, store: "messages", key: column(stmt, 0)),
+               let m = JSON.decode(Message.self, json) { out[m.id] = m }
         }
         messages[chat] = out
         return out
@@ -226,8 +307,9 @@ public final class Store: @unchecked Sendable {
     public func allMessages() -> [Message] {
         lock.lock(); defer { lock.unlock() }
         var out: [Message] = []
-        run("SELECT json FROM rows WHERE store = 'messages' ORDER BY chat, at") { stmt in
-            if let m = JSON.decode(Message.self, column(stmt, 0)) { out.append(m) }
+        run("SELECT key, json FROM rows WHERE store = 'messages' ORDER BY chat, at") { stmt in
+            if let json = self.value(stmt, 1, store: "messages", key: column(stmt, 0)),
+               let m = JSON.decode(Message.self, json) { out.append(m) }
         }
         return out
     }
@@ -247,8 +329,9 @@ public final class Store: @unchecked Sendable {
         var out: [String: Any] = [:]
         for name in Self.stores { out[name] = [[Any]]() }
         run("SELECT store, key, json, chat, at FROM rows ORDER BY store, key") { stmt in
-            let store = column(stmt, 0)
-            var row: [Any] = [column(stmt, 1), column(stmt, 2)]
+            let store = column(stmt, 0), k = column(stmt, 1)
+            guard let json = self.value(stmt, 2, store: store, key: k) else { return }
+            var row: [Any] = [k, json]
             if store == "messages" { row += [column(stmt, 3), sqlite3_column_double(stmt, 4)] }
             out[store] = ((out[store] as? [[Any]]) ?? []) + [row]
         }
@@ -282,6 +365,8 @@ public final class Store: @unchecked Sendable {
         messages = [:]
         exec("DELETE FROM rows")
         exec("VACUUM")
+        // Tout est effacé : on peut écrire à nouveau (avec la clé, s'il y en a une).
+        readOnly = false
     }
 
     /// L'espace occupé, en octets.
