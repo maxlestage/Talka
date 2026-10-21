@@ -318,6 +318,8 @@ impl Relay {
         live: bool,
         wake: bool,
     ) -> (u64, bool) {
+        // Sans clé VAPID, personne à réveiller.
+        let wake = wake && crate::push::vapid().is_some();
         let (ts, online, endpoints) = self.store(from, to, id, body, live, wake);
         if let Some(vapid) = crate::push::vapid() {
             for endpoint in endpoints {
@@ -385,7 +387,7 @@ impl Relay {
             st.evict_expired();
         }
         let mut endpoints = Vec::new();
-        if wake && !online && crate::push::vapid().is_some() && st.push.contains_key(to) {
+        if wake && !online && st.push.contains_key(to) {
             let recent = st.woke.get(to).is_some_and(|at| at.elapsed() < WAKE_EVERY);
             if !recent {
                 st.woke.insert(to.to_owned(), Instant::now());
@@ -707,5 +709,101 @@ impl Relay {
         }
         self.unregister(&me, conn_id);
         writer.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FCM: &str = "https://fcm.googleapis.com/fcm/send/";
+
+    #[test]
+    fn push_addresses_are_checked_and_capped() {
+        let relay = Relay::default();
+        assert!(!relay.push("AAAAAAAAAA", "https://evil.example/x"));
+        assert!(!relay.push("AAAAAAAAAA", "http://fcm.googleapis.com/fcm/send/x"));
+        for i in 0..6 {
+            assert!(relay.push("AAAAAAAAAA", &format!("{FCM}{i}")));
+        }
+        // La même adresse redonnée ne compte qu'une fois, et passe en dernier.
+        assert!(relay.push("AAAAAAAAAA", &format!("{FCM}3")));
+        let list = relay.lock().push["AAAAAAAAAA"].clone();
+        let tail: Vec<String> = (2..6)
+            .filter(|i| *i != 3)
+            .map(|i| format!("{FCM}{i}"))
+            .collect();
+        assert_eq!(list.len(), MAX_PUSH);
+        assert_eq!(list[..3], tail[..]);
+        assert_eq!(list[3], format!("{FCM}3"));
+        for e in list {
+            relay.unpush("AAAAAAAAAA", &e);
+        }
+        assert!(!relay.lock().push.contains_key("AAAAAAAAAA"));
+    }
+
+    #[test]
+    fn only_real_messages_wake_an_offline_code_now_and_then() {
+        let relay = Relay::default();
+        let to = "BBBBBBBBBB";
+        relay.push(to, &format!("{FCM}b"));
+        // Un accusé, une réaction (`wake` absent) : pas de réveil.
+        assert!(
+            relay
+                .store("AAAAAAAAAA", to, "r1", "x", false, false)
+                .2
+                .is_empty()
+        );
+        // « écrit… », un signal d'appel (`live`) : jamais.
+        assert!(
+            relay
+                .store("AAAAAAAAAA", to, "l1", "x", true, true)
+                .2
+                .is_empty()
+        );
+        // Un vrai message : un réveil…
+        assert_eq!(
+            relay.store("AAAAAAAAAA", to, "m1", "x", false, true).2,
+            vec![format!("{FCM}b")]
+        );
+        // … puis plus rien pendant 20 secondes.
+        assert!(
+            relay
+                .store("AAAAAAAAAA", to, "m2", "x", false, true)
+                .2
+                .is_empty()
+        );
+        relay
+            .lock()
+            .woke
+            .insert(to.to_owned(), Instant::now() - WAKE_EVERY);
+        assert_eq!(
+            relay
+                .store("AAAAAAAAAA", to, "m3", "x", false, true)
+                .2
+                .len(),
+            1
+        );
+        // Un code sans adresse : personne à réveiller.
+        assert!(
+            relay
+                .store("AAAAAAAAAA", "CCCCCCCCCC", "m4", "x", false, true)
+                .2
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_connected_code_is_not_woken() {
+        let relay = Relay::default();
+        let to = "BBBBBBBBBB";
+        relay.push(to, &format!("{FCM}b"));
+        let (_id, _rx) = relay.register(to, String::new(), String::new(), true);
+        assert!(
+            relay
+                .store("AAAAAAAAAA", to, "m1", "x", false, true)
+                .2
+                .is_empty()
+        );
     }
 }
