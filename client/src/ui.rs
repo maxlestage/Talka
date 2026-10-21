@@ -372,6 +372,9 @@ pub fn event(e: Ev) {
             if conv::current().as_deref() == Some(id.as_str()) {
                 conv::queue_render();
             }
+            // Une recherche affichée retrouve aussi ce qui vient d'arriver
+            // (ou ne montre plus ce qui vient d'être supprimé).
+            with(|u| u.found = None);
             queue_side();
         }
         Ev::Presence(code) => {
