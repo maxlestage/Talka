@@ -712,3 +712,20 @@ public enum JSON {
         try? JSONDecoder().decode(type, from: Data(text.utf8))
     }
 }
+
+/// Un groupe ne change que par ses admins ; un membre peut seulement le
+/// quitter (et, s'il était le dernier admin, le premier membre restant le
+/// devient). Une version ne saute pas de plus de 1 000. Comme
+/// `Chat::accepts` du navigateur.
+extension Chat {
+    public static let groupVersionStep = 1_000
+
+    public func accepts(_ from: String, _ grp: GroupInfo) -> Bool {
+        guard group, grp.v > v, grp.v - v <= Self.groupVersionStep, members.contains(from) else { return false }
+        if admins.contains(from) { return true }
+        let rest = members.filter { $0 != from }
+        var newAdmins = admins.filter { $0 != from }
+        if newAdmins.isEmpty, let first = rest.first { newAdmins = [first] }
+        return grp.members == rest && grp.admins == newAdmins && grp.name == name && grp.avatar == avatar
+    }
+}

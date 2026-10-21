@@ -137,3 +137,38 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(Store(directory: dir).allMessages().count, 1)
     }
 }
+
+/// Un membre (ou un ancien membre) ne prend pas un groupe en main ; comme
+/// `only_admins_change_a_group` du navigateur.
+final class GroupRulesTests: XCTestCase {
+    func group(_ members: [String], _ admins: [String]) -> Chat {
+        var c = Chat(id: "g:g1")
+        c.group = true; c.name = "Les amis"; c.members = members; c.admins = admins; c.v = 5
+        return c
+    }
+
+    func info(_ c: Chat, _ v: Int) -> GroupInfo {
+        GroupInfo(id: "g1", name: c.name, members: c.members, admins: c.admins, avatar: c.avatar, v: v)
+    }
+
+    func testOnlyAdminsChangeAGroup() {
+        let c = group(["A", "B", "C"], ["A"])
+        var byAdmin = info(c, 6)
+        byAdmin.members.append("D")
+        XCTAssertTrue(c.accepts("A", byAdmin))
+        var coup = info(c, 6)
+        coup.admins = ["B"]
+        XCTAssertFalse(c.accepts("B", coup))
+        XCTAssertFalse(c.accepts("Z", byAdmin))
+        XCTAssertFalse(c.accepts("A", info(c, .max)))
+        XCTAssertFalse(c.accepts("A", info(c, 5)))
+        var leave = info(c, 6)
+        leave.members = ["A", "C"]
+        XCTAssertTrue(c.accepts("B", leave))
+        leave.name = "À moi"
+        XCTAssertFalse(c.accepts("B", leave))
+        var last = info(c, 6)
+        last.members = ["B", "C"]; last.admins = ["B"]
+        XCTAssertTrue(c.accepts("A", last))
+    }
+}
