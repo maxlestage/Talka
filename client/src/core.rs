@@ -80,6 +80,8 @@ thread_local! {
     static FLUSHING: Cell<bool> = const { Cell::new(false) };
     static FLUSH_AGAIN: Cell<bool> = const { Cell::new(false) };
     static SEQ: Cell<u32> = const { Cell::new(0) };
+    /// Le dernier effacement des messages trop vieux (0 : au prochain passage).
+    static LAST_PRUNE: Cell<f64> = const { Cell::new(0.0) };
     static TYPING_SENT: Cell<f64> = const { Cell::new(0.0) };
     static RECEIPTS: RefCell<HashMap<(String, String, String), HashSet<String>>> = RefCell::new(HashMap::new());
     static RECEIPT_TIMER: Cell<i32> = const { Cell::new(0) };
@@ -334,6 +336,25 @@ async fn sweep() {
             emit(Ev::Messages(chat.id.clone()));
         }
     }
+    // Les messages trop vieux (3 mois par défaut), une fois par heure.
+    let keep = settings().keep_days;
+    let due = LAST_PRUNE.with(|l| t - l.get() >= 3_600_000.0);
+    if keep > 0 && due {
+        LAST_PRUNE.with(|l| l.set(t));
+        for chat in chats() {
+            let mut changed = false;
+            for m in store::messages_of(&chat.id, usize::MAX).await {
+                if m.too_old(keep, t) {
+                    store::remove("messages", &m.key()).await;
+                    changed = true;
+                }
+            }
+            if changed {
+                refresh_last(&chat.id).await;
+                emit(Ev::Messages(chat.id.clone()));
+            }
+        }
+    }
     for s in store::all::<StatusItem>("statuses").await {
         if s.at + DAY < t {
             store::remove("statuses", &s.key()).await;
@@ -484,6 +505,10 @@ pub async fn save_settings(f: impl FnOnce(&mut Settings)) {
     store::write("kv", "settings", &next).await;
     if before.hide_online != next.hide_online {
         net::set_hidden(next.hide_online);
+    }
+    if before.keep_days != next.keep_days {
+        LAST_PRUNE.with(|l| l.set(0.0));
+        spawn(sweep());
     }
     emit(Ev::Settings);
 }
