@@ -699,6 +699,19 @@ pub fn day_label(ts: f64) -> String {
     }
 }
 
+/// « 21/10/2026 23:21 », à l'heure de l'appareil (discussion exportée).
+pub fn stamp(ts: f64) -> String {
+    let d = date(ts);
+    format!(
+        "{:02}/{:02}/{} {:02}:{:02}",
+        d.get_date(),
+        d.get_month() + 1,
+        d.get_full_year(),
+        d.get_hours(),
+        d.get_minutes()
+    )
+}
+
 /// Un jour, passé ou à venir : « aujourd'hui », « demain », « hier »,
 /// « lundi » (dans la semaine), « le 3 mars 2026 ».
 pub fn when_day(ts: f64) -> String {

@@ -128,8 +128,10 @@ public let keepDaysDefault = 90
 extension Message {
     /// Trop vieux pour être gardé (`keepDays` jours, 0 : jamais) ? Les
     /// messages importants (⭐) restent.
+    /// Une capsule temporelle compte à partir de son ouverture (sinon elle
+    /// partirait avant de s'ouvrir).
     public func tooOld(keepDays: Int, now: Double) -> Bool {
-        keepDays > 0 && !starred && at < now - Double(keepDays) * 86_400_000
+        keepDays > 0 && !starred && max(at, openAt ?? 0) < now - Double(keepDays) * 86_400_000
     }
 }
 

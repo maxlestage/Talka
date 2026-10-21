@@ -204,15 +204,43 @@ pub(crate) fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
 
+/// Une ligne d'une discussion exportée en texte, comme TalkaKit
+/// (`exportLine`) : « 21/10/2026 23:21 - Léa : Bonjour » ; sans auteur pour
+/// un message du système. Les retours à la ligne du message sont gardés.
+pub fn export_line(stamp: &str, author: Option<&str>, text: &str) -> String {
+    match author {
+        Some(a) => format!("{stamp} - {a} : {text}"),
+        None => format!("{stamp} - {text}"),
+    }
+}
+
+/// Le nom du fichier d'une discussion exportée : « Talka - Léa.txt », sans
+/// les caractères interdits dans un nom de fichier.
+pub fn export_filename(title: &str) -> String {
+    let clean: String = title
+        .chars()
+        .map(|c| {
+            if "/\\:*?\"<>|".contains(c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    format!("Talka - {}.txt", clean.trim())
+}
+
 /// Par défaut, les messages s'effacent au bout de 3 mois.
 pub const KEEP_DAYS: u32 = 90;
 const DAY_MS: f64 = 86_400_000.0;
 
 impl Message {
     /// Trop vieux pour être gardé (`keep_days` jours, 0 : jamais) ? Les
-    /// messages importants (⭐) restent.
+    /// messages importants (⭐) restent ; une capsule temporelle compte à
+    /// partir de son ouverture (sinon elle partirait avant de s'ouvrir).
     pub fn too_old(&self, keep_days: u32, now: f64) -> bool {
-        keep_days > 0 && !self.starred && self.at < now - f64::from(keep_days) * DAY_MS
+        let since = self.at.max(self.open_at);
+        keep_days > 0 && !self.starred && since < now - f64::from(keep_days) * DAY_MS
     }
 
     /// Une capsule temporelle (scellée ou déjà ouverte).
@@ -547,9 +575,34 @@ mod tests {
         );
         assert!(!m(4000.0, false).too_old(0, now), "0 : pour toujours");
         assert!(m(31.0, false).too_old(30, now));
+        // Une capsule écrite il y a 4 mois, qui s'ouvre dans un mois : gardée,
+        // puis comptée à partir de son ouverture.
+        let capsule = |opens_in_days: f64| Message {
+            open_at: now + opens_in_days * DAY_MS,
+            ..m(120.0, false)
+        };
+        assert!(!capsule(30.0).too_old(KEEP_DAYS, now));
+        assert!(!capsule(-10.0).too_old(KEEP_DAYS, now));
+        assert!(capsule(-100.0).too_old(KEEP_DAYS, now));
         // Un réglage d'avant cette version : 3 mois.
         let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
         assert_eq!(old.keep_days, KEEP_DAYS);
+    }
+
+    #[test]
+    fn exported_chat_lines() {
+        assert_eq!(
+            export_line("21/10/2026 23:21", Some("Léa"), "Bonjour"),
+            "21/10/2026 23:21 - Léa : Bonjour"
+        );
+        assert_eq!(
+            export_line("21/10/2026 23:22", None, "Léa a rejoint le groupe."),
+            "21/10/2026 23:22 - Léa a rejoint le groupe."
+        );
+        assert_eq!(
+            export_filename("Les amis / 2026 : été?"),
+            "Talka - Les amis _ 2026 _ été_.txt"
+        );
     }
 
     #[test]
