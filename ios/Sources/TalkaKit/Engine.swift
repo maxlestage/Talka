@@ -132,6 +132,20 @@ public final class Engine {
             publishV3()
             Task { await flush() }
             Task { await refreshMissingKeys() }
+            if relay.sealed { shareJeton() }
+        }
+    }
+
+    /// Notre profil, avec notre jeton de remise.
+    var profileBody: Body { .profile(profile, jeton: me.jeton) }
+
+    /// Notre jeton de remise, pour les contacts qui ne l'ont pas encore (une
+    /// fois) : ils pourront nous écrire sans que le relais sache qui écrit.
+    func shareJeton() {
+        for var c in contacts.values where c.saved && !c.blocked && !c.jetonSent {
+            c.jetonSent = true
+            saveContact(c)
+            enqueue(c.code, Wire(profileBody))
         }
     }
 
@@ -193,7 +207,7 @@ public final class Engine {
         profile.v += 1
         store.write("kv", "profile", profile)
         for c in contacts.values where c.saved && !c.blocked {
-            enqueue(c.code, Wire(.profile(profile)))
+            enqueue(c.code, Wire(profileBody))
         }
         Task { await flush() }
     }
@@ -274,7 +288,7 @@ public final class Engine {
         saveContact(c)
         relay.watch([code])
         let reachable = await keys(for: code) != nil
-        enqueue(code, Wire(.profile(profile)))
+        enqueue(code, Wire(profileBody))
         Task { await flush() }
         return reachable
     }
@@ -633,8 +647,19 @@ public final class Engine {
         // La session a avancé : rien ne part avant qu'elle soit écrite (une clé
         // de message ne doit jamais servir deux fois).
         if sealed.v3 { saveV3() }
-        return await relay.send(id: item.id, to: item.to, body: sealed.body, live: live,
-                                wake: !live && !item.msgId.isEmpty)
+        let wake = !live && !item.msgId.isEmpty
+        // L'expéditeur scellé : le relais ne sait pas qui écrit (une connexion
+        // anonyme, et le jeton de remise du destinataire).
+        if !peer.jeton.isEmpty, relay.sealed {
+            guard let outer = TalkaCrypto.sealSender(from: me.code, to: peer.code, toDh: peer.dh, body: sealed.body)
+            else { return .failed("crypto") }
+            let ack = await relay.sendSealed(id: item.id, peer: peer, body: outer, live: live, wake: wake)
+            // Son jeton ne vaut plus : on l'oublie, et cet envoi part comme
+            // avant. Sinon pas de repli : l'envoi réessaiera, toujours scellé.
+            guard ack == .failed("jeton") else { return ack }
+            updateContact(peer.code) { $0.jeton = "" }
+        }
+        return await relay.send(id: item.id, to: item.to, body: sealed.body, live: live, wake: wake)
     }
 
     /// Envoie ce qui attend dans la boîte d'envoi.
@@ -938,10 +963,16 @@ public final class Engine {
     }
 
     func receive(_ env: [String: Any]) async {
-        let from = env["from"] as? String ?? ""
+        // Scellé : l'expéditeur est dans l'enveloppe, que nous seuls ouvrons ;
+        // l'enveloppe intérieure le prouve ensuite (sa clé de paire).
+        var from = env["from"] as? String ?? ""
+        var body = env["body"] as? String ?? ""
+        if env["sealed"] as? Bool == true {
+            guard let opened = TalkaCrypto.openSealed(me, body) else { return }
+            (from, body) = (opened.from, opened.body)
+        }
         guard !from.isEmpty, !blocked(from), let peer = await keys(for: from) else { return }
         loadV3(from)
-        let body = env["body"] as? String ?? ""
         var repair = false
         // Le message, et l'état de session qui l'a ouvert : une seule
         // transaction SQLite (le relais ne l'oublie qu'après, par `got`).
@@ -996,8 +1027,14 @@ public final class Engine {
 
     func handle(_ from: String, _ wire: Wire, ts: Double, live: Bool) {
         switch wire.body {
-        case .profile(let p):
+        case let .profile(p, jeton):
             var c = contacts[from] ?? Contact(code: from)
+            // Son jeton de remise, s'il est bien signé par sa clé.
+            if jeton != c.jeton, !jeton.isEmpty,
+               TalkaCrypto.verifyJeton(to: from, sign: c.sign, dh: c.dh, jeton: jeton) {
+                c.jeton = jeton
+                saveContact(c)
+            }
             if p.v >= c.profileV {
                 c.profileName = String(p.name.prefix(40))
                 c.about = String(p.about.prefix(140))
@@ -1090,10 +1127,11 @@ public final class Engine {
             queueReceipt(from, c.id, [id], "delivered")
             if active, settings.readReceipts { queueReceipt(from, c.id, [id], "read") }
             // Votre profil, pour qui ne l'a pas encore.
-            if var sender = contacts[from], sender.sentProfileV < profile.v {
+            if var sender = contacts[from], sender.sentProfileV < profile.v || (!sender.jetonSent && relay.sealed) {
                 sender.sentProfileV = profile.v
+                sender.jetonSent = relay.sealed
                 saveContact(sender)
-                enqueue(from, Wire(.profile(profile)))
+                enqueue(from, Wire(profileBody))
             }
             typing[c.id]?.remove(from)
             onIncoming?(chats[c.id] ?? c, m, active)

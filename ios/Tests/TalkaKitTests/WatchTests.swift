@@ -306,3 +306,61 @@ final class VoiceChainTests: XCTestCase {
         XCTAssertNil(nextVoice(after: "inconnu", in: list, now: 100))
     }
 }
+
+/// L'expéditeur scellé, dans le moteur : une enveloppe scellée arrive sans
+/// expéditeur, et en ressort attribuée ; le jeton d'un profil est gardé s'il
+/// est bien signé.
+@MainActor
+final class SealedSenderTests: XCTestCase {
+    func testSealedEnvelopeAndJeton() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-scelle-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Léa", avatar: "")
+        let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
+        let x = Identity.create()
+        var c = Contact(code: x.code)
+        c.sign = x.sign
+        c.dh = x.dh
+        c.saved = true
+        e.saveContact(c)
+
+        // Son profil, avec un jeton bien signé : gardé. (Sur l'iPhone, la
+        // signature change à chaque calcul : on garde celui-ci.)
+        let jeton = x.jeton
+        let profile = Wire(.profile(Profile(name: "Xavier", v: 1), jeton: jeton)).json()
+        XCTAssertTrue(profile.contains("\"jeton\""))
+        let seal = { (plain: String) in
+            TalkaCrypto.sealSender(from: x.code, to: e.me.code, toDh: e.me.dh,
+                                   body: TalkaCrypto.seal(x, peerCode: e.me.code, peerDh: e.me.dh, plain: plain)!)!
+        }
+        await e.receive(["sealed": true, "body": seal(profile), "ts": nowMs()])
+        XCTAssertEqual(e.contact(x.code)?.jeton, jeton)
+        XCTAssertEqual(e.contact(x.code)?.profileName, "Xavier")
+        // Le jeton d'un autre : refusé.
+        let other = Identity.create()
+        let bad = Wire(.profile(Profile(name: "Xavier", v: 2), jeton: other.jeton)).json()
+        await e.receive(["sealed": true, "body": seal(bad), "ts": nowMs()])
+        XCTAssertEqual(e.contact(x.code)?.jeton, jeton)
+
+        // Un message scellé : attribué à son auteur.
+        let msg = Wire(.msg(id: "s1", at: nowMs(), pn: "Xavier", content: Content(text: "En secret"))).json()
+        await e.receive(["sealed": true, "body": seal(msg), "ts": nowMs()])
+        XCTAssertEqual(e.messages(x.code).last?.text, "En secret")
+        XCTAssertEqual(e.messages(x.code).last?.from, x.code)
+
+        // Quelqu'un qui se fait passer pour lui : rien.
+        let forged = TalkaCrypto.sealSender(
+            from: x.code, to: e.me.code, toDh: e.me.dh,
+            body: TalkaCrypto.seal(other, peerCode: e.me.code, peerDh: e.me.dh,
+                                   plain: Wire(.msg(id: "s2", at: nowMs(), pn: "", content: Content(text: "Faux"))).json())!)!
+        await e.receive(["sealed": true, "body": forged, "ts": nowMs()])
+        XCTAssertNil(e.messages(x.code).first { $0.id == "s2" })
+
+        // Le contact garde son jeton dans le stockage ; l'ancien format se relit.
+        let stored = try XCTUnwrap(String(data: JSONEncoder().encode(e.contact(x.code)), encoding: .utf8))
+        XCTAssertTrue(stored.contains("\"jeton\""))
+        let old = try JSONDecoder().decode(Contact.self, from: Data(#"{"code":"WGSEAJNSZJ"}"#.utf8))
+        XCTAssertEqual(old.jeton, "")
+        XCTAssertFalse(String(data: try JSONEncoder().encode(old), encoding: .utf8)!.contains("jeton"))
+    }
+}
