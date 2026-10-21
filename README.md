@@ -206,8 +206,10 @@ codes, et discutez.
   `TALKA_ALLOWED_ORIGINS` (par défaut `https://maxlestage.github.io`) autorise
   la page à l'utiliser. À faire une fois : *Settings → Pages → Source :
   GitHub Actions*.
-- **Notifications quand Talka est fermé** (Web Push) : le relais n'envoie
-  qu'un réveil vide, sans expéditeur ni texte (voir [`src/push.rs`](src/push.rs)).
+- **Notifications quand Talka est fermé** (Web Push) : la notification
+  montre qui écrit et quoi, mais cet aperçu est chiffré par l'expéditeur pour
+  la clé de notification du destinataire ; le relais le transmet sans le lire
+  (voir [`src/push.rs`](src/push.rs) et `docs/SECURITE.md` §7.8).
   Il lui faut une clé, à fabriquer une fois et à ne plus changer :
 
   ```sh
