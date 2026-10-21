@@ -31,6 +31,8 @@
 	<!-- Le groupe de trousseau partagé avec les widgets (Shared.entitlements). -->
 	<key>TalkaKeychainGroup</key>
 	<string>$(AppIdentifierPrefix)com.maxlestage.talka.shared</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Talka utilise le micro pour enregistrer vos messages vocaux.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 </dict>
