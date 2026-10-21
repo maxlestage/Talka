@@ -404,7 +404,56 @@ quand ; rien d'autre.
 - Les adresses ne vivent qu'en mémoire (4 par code), redonnées à chaque
   connexion ; une adresse disparue (404, 410) est oubliée.
 
-### 7.9 Hygiène
+### 7.9 Expéditeur scellé (v4)
+
+But : le relais ne sait plus **qui écrit**. Il sait toujours à quel code
+il livre (§4 de la feuille de route v4 : les boîtes aux lettres
+tournantes), qui est connecté, et l'adresse IP des connexions.
+
+**Jeton de remise.** Chaque code a un jeton `nonce.signature` (base64) :
+`nonce` = 16 premiers octets de `SHA-256("talka-jeton-nonce:" ‖ clé privée
+ECDH)` (toujours le même, rien à garder) ; `signature` = ECDSA P-256 (`r ‖ s`)
+de `talka-jeton:<code>:<nonce>` par la clé de signature du code. Il voyage
+dans le profil chiffré (`{"k":"profile",…,"jeton"}`), donné une fois à
+chaque contact enregistré et à qui nous écrit ; il est vérifié avant d'être
+gardé (`Contact.jeton`). Le relais le vérifie à chaque envoi anonyme, avec
+les deux clés publiques du destinataire (dont l'empreinte doit être son
+code) : rien n'est gardé, le jeton survit aux redémarrages. Sans jeton, pas
+d'envoi anonyme vers ce code : un inconnu ne peut pas inonder une boîte sans
+se présenter.
+
+**Enveloppe scellée.** Autour de l'enveloppe ordinaire `E` (§7.2–7.6, la
+clé de paire et ses données associées `expéditeur>destinataire`, v3 compris)
+:
+
+- `eph` : une clé P-256 éphémère ; `Z = ECDH(eph, dh_destinataire)` ;
+- `k = HKDF-SHA256(sel = eph_pub ‖ dh_destinataire_pub, ikm = Z,
+  info = "talka-scelle-v1:<code destinataire>")`, 32 octets ;
+- `scellé = base64(eph_pub (65) ‖ iv (12) ‖ AES-256-GCM(k, iv,
+  {"from":<code>,"body":E}, ad = "talka-scelle:<code destinataire>"))`.
+
+Le destinataire l'ouvre, lit `from`, puis ouvre `E` avec la clé de paire de
+`from` : **c'est `E` qui prouve l'auteur**. Annoncer un autre `from` donne
+une enveloppe intérieure qui ne s'ouvre pas (testé des deux côtés).
+
+**Transport.** Une seconde WebSocket qui répond `{"t":"anon"}` au défi au
+lieu de se présenter : elle ne peut que déposer
+(`{"t":"send","id","to","sign","dh","jeton","body","live","wake"}`). Le
+relais livre `{"t":"msg",…,"sealed":true}`, sans `from`. Un relais qui ne
+l'annonce pas (`ready.sealed`) ne reçoit que des envois présentés.
+
+**Ce qui passe encore en clair pour le relais.** Le premier message à un
+inconnu (on n'a pas encore son jeton) ; la présence et les codes suivis
+(`watch`), les demandes de clés (`lookup`, `fetch-bundle`) ; l'adresse IP
+(la connexion anonyme vient de la même que la connexion présentée : un
+relais malveillant peut les rapprocher, comme pour Signal). Un jeton refusé
+est oublié et l'envoi repasse par la connexion présentée ; une connexion
+anonyme indisponible fait réessayer plus tard, jamais repasser en clair.
+
+**Compatibilité.** Les anciennes versions ignorent le champ `jeton` du
+profil : on ne leur écrit jamais scellé, et elles n'en reçoivent jamais.
+
+### 7.10 Hygiène
 
 Comparaisons de secrets en temps constant (tags GCM, identifiants dérivés
 d'une clé partagée), secrets effacés (`zeroize`), aucune panique sur une
