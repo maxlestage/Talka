@@ -25,7 +25,16 @@
 //! | → | `{"t":"publish-bundle","bundle","sig"}` | le paquet de clés v3 (base64), signé par la clé du code ; il remplace le précédent |
 //! | ← | `{"t":"published","ok"}` | et `"error":"size"` ou `"signature"` s'il est refusé |
 //! | → | `{"t":"fetch-bundle","code"}` | ← `{"t":"bundle","code","sign","dh","bundle","sig"}` (ou `"none":true`) |
+//! | → | `{"t":"anon"}` (au lieu de `hello`) | une connexion anonyme, pour l'expéditeur scellé : ← `{"t":"ready","anon":true}` |
+//! | → (anonyme) | `{"t":"send","id","to","sign","dh","jeton","body","live","wake"}` | `body` scellé ; `jeton` : le jeton de remise de `to`, signé par sa clé (`sign`, `dh` : ses clés publiques) ; ← `ack` ou `error` (`"jeton"`) |
+//! | ← | `{"t":"msg","n","id","sealed":true,"body","ts"}` | un message scellé : l'expéditeur est dans `body`, que seul le destinataire ouvre |
 //! | → | `{"t":"push","endpoint","on"}` | l'adresse Web Push de cet appareil (`"on":false` pour l'oublier) ; ← `{"t":"push","ok"}` |
+//!
+//! L'expéditeur scellé (voir `docs/SECURITE.md`, §7.10) : sur une connexion
+//! anonyme, le relais ne sait pas qui écrit ; il vérifie seulement que
+//! l'expéditeur détient le jeton de remise du destinataire (que celui-ci ne
+//! donne qu'à ses contacts), et livre sans `from`. `ready.sealed` annonce
+//! qu'il sait le faire.
 //!
 //! Les notifications (voir `crate::push`) : quand un message marqué `wake`
 //! arrive pour un code qui n'a aucune connexion ouverte, le relais envoie un
@@ -128,6 +137,42 @@ struct State {
     woke: HashMap<String, Instant>,
     next_n: u64,
     next_conn: u64,
+}
+
+/// Au plus `SENDS_PER_SECOND` envois par seconde et par connexion.
+struct Limit {
+    window: Instant,
+    sends: u32,
+}
+
+impl Default for Limit {
+    fn default() -> Self {
+        Limit {
+            window: Instant::now(),
+            sends: 0,
+        }
+    }
+}
+
+impl Limit {
+    fn allow(&mut self) -> bool {
+        if self.window.elapsed() >= Duration::from_secs(1) {
+            self.window = Instant::now();
+            self.sends = 0;
+        }
+        self.sends += 1;
+        self.sends <= SENDS_PER_SECOND
+    }
+}
+
+/// Un message livré : avec son expéditeur, ou scellé (`"sealed":true`,
+/// l'expéditeur est dans le corps, que seul le destinataire ouvre).
+fn envelope(from: Option<&str>, mut msg: Value) -> String {
+    match from {
+        Some(from) => msg["from"] = json!(from),
+        None => msg["sealed"] = json!(true),
+    }
+    msg.to_string()
 }
 
 /// L'identifiant de ce démarrage du relais. Les boîtes aux lettres ne vivent
@@ -311,7 +356,7 @@ impl Relay {
     /// (horodatage, destinataire en ligne).
     fn deliver(
         &self,
-        from: &str,
+        from: Option<&str>,
         to: &str,
         id: &str,
         body: &str,
@@ -339,7 +384,7 @@ impl Relay {
 
     fn store(
         &self,
-        from: &str,
+        from: Option<&str>,
         to: &str,
         id: &str,
         body: &str,
@@ -352,7 +397,10 @@ impl Relay {
         if live {
             // Pas de boîte : seulement les connexions ouvertes.
             if let Some(conns) = st.online.get(to) {
-                let json = json!({ "t": "msg", "id": id, "from": from, "body": body, "ts": ts, "live": true }).to_string();
+                let json = envelope(
+                    from,
+                    json!({ "t": "msg", "id": id, "body": body, "ts": ts, "live": true }),
+                );
                 for conn in conns {
                     let _ = conn.tx.send(json.clone());
                 }
@@ -361,8 +409,10 @@ impl Relay {
         }
         st.next_n += 1;
         let n = st.next_n;
-        let json = json!({ "t": "msg", "n": n, "id": id, "from": from, "body": body, "ts": ts })
-            .to_string();
+        let json = envelope(
+            from,
+            json!({ "t": "msg", "n": n, "id": id, "body": body, "ts": ts }),
+        );
         if let Some(conns) = st.online.get(to) {
             for conn in conns {
                 let _ = conn.tx.send(json.clone());
@@ -516,6 +566,88 @@ impl Relay {
             .collect()
     }
 
+    /// Un envoi : vérifié, puis déposé. `from` : l'expéditeur d'une connexion
+    /// présentée ; `None` : une connexion anonyme (expéditeur scellé), qui
+    /// doit montrer le jeton de remise du destinataire. Renvoie `ack` ou `error`.
+    fn send(&self, from: Option<&str>, msg: &Value, limit: &mut Limit) -> Value {
+        let id = msg["id"].as_str().unwrap_or("").to_owned();
+        let body = msg["body"].as_str().unwrap_or("");
+        let to = msg["to"].as_str().and_then(code::normalize);
+        let field = |name: &str| msg[name].as_str().unwrap_or("");
+        let error = if !limit.allow() {
+            Some("rate")
+        } else if id.is_empty() || id.len() > 64 {
+            Some("id")
+        } else if body.is_empty() || body.len() > MAX_BODY {
+            Some("size")
+        } else if to.is_none() {
+            Some("code")
+        } else if from.is_none()
+            && !code::verify_jeton(
+                to.as_deref().unwrap_or(""),
+                field("sign"),
+                field("dh"),
+                field("jeton"),
+            )
+        {
+            Some("jeton")
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            return json!({ "t": "error", "id": id, "error": error });
+        }
+        let to = to.expect("checked above");
+        let live = msg["live"].as_bool().unwrap_or(false);
+        let wake = msg["wake"].as_bool().unwrap_or(false);
+        let (ts, online) = self.deliver(from, &to, &id, body, live, wake);
+        json!({ "t": "ack", "id": id, "ts": ts, "online": online })
+    }
+
+    /// Une connexion anonyme : seulement des envois scellés (et `ping`).
+    /// Le relais ne sait pas qui est derrière ; il ne la compte pas comme
+    /// une présence.
+    async fn serve_anon(
+        self,
+        mut tx: paquets::vitesse::ws::WebSocketSender,
+        mut rx: paquets::vitesse::ws::WebSocketReceiver,
+    ) {
+        let ready = json!({ "t": "ready", "anon": true, "time": now_ms(), "boot": boot_id() });
+        if tx.send(ready.to_string()).await.is_err() {
+            return;
+        }
+        let mut limit = Limit::default();
+        let mut ping = tokio::time::interval(PING_EVERY);
+        ping.tick().await;
+        loop {
+            tokio::select! {
+                next = rx.recv() => {
+                    let text = match next {
+                        Some(Ok(Message::Text(text))) => text,
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                        Some(Ok(_)) => continue,
+                    };
+                    let Ok(msg) = serde_json::from_str::<Value>(&text) else {
+                        continue;
+                    };
+                    let answer = match msg["t"].as_str().unwrap_or("") {
+                        "send" => self.send(None, &msg, &mut limit),
+                        "ping" => json!({ "t": "pong", "time": now_ms() }),
+                        _ => continue,
+                    };
+                    if tx.send(answer.to_string()).await.is_err() {
+                        break;
+                    }
+                }
+                _ = ping.tick() => {
+                    if tx.send(Message::Ping(Default::default())).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     /// Une connexion : la présentation, puis la boucle des messages.
     pub async fn serve(self, socket: WebSocket) {
         let (mut tx, mut rx) = socket.split();
@@ -545,6 +677,9 @@ impl Relay {
         .await
         .ok()
         .flatten();
+        if hello.as_ref().is_some_and(|h| h["t"] == "anon") {
+            return self.serve_anon(tx, rx).await;
+        }
         let Some(hello) = hello.filter(|h| h["t"] == "hello") else {
             let _ = tx.close(4000, "hello").await;
             return;
@@ -562,7 +697,7 @@ impl Relay {
         }
         let me = code::derive(&sign, &dh);
         let hidden = hello["hidden"].as_bool().unwrap_or(false);
-        let mut ready = json!({ "t": "ready", "code": me, "time": now_ms(), "boot": boot_id() });
+        let mut ready = json!({ "t": "ready", "code": me, "time": now_ms(), "boot": boot_id(), "sealed": true });
         if let Some(vapid) = crate::push::vapid() {
             ready["push"] = json!(vapid.public);
         }
@@ -605,8 +740,7 @@ impl Relay {
             }
         };
 
-        let mut window = Instant::now();
-        let mut sends = 0u32;
+        let mut limit = Limit::default();
         while let Some(Ok(message)) = rx.recv().await {
             let text = match message {
                 Message::Text(text) => text,
@@ -618,34 +752,8 @@ impl Relay {
             };
             match msg["t"].as_str().unwrap_or("") {
                 "send" => {
-                    if window.elapsed() >= Duration::from_secs(1) {
-                        window = Instant::now();
-                        sends = 0;
-                    }
-                    sends += 1;
-                    let id = msg["id"].as_str().unwrap_or("").to_owned();
-                    let body = msg["body"].as_str().unwrap_or("");
-                    let to = msg["to"].as_str().and_then(code::normalize);
-                    let error = if sends > SENDS_PER_SECOND {
-                        Some("rate")
-                    } else if id.is_empty() || id.len() > 64 {
-                        Some("id")
-                    } else if body.is_empty() || body.len() > MAX_BODY {
-                        Some("size")
-                    } else if to.is_none() {
-                        Some("code")
-                    } else {
-                        None
-                    };
-                    if let Some(error) = error {
-                        reply(json!({ "t": "error", "id": id, "error": error }).to_string());
-                        continue;
-                    }
-                    let to = to.expect("checked above");
-                    let live = msg["live"].as_bool().unwrap_or(false);
-                    let wake = msg["wake"].as_bool().unwrap_or(false);
-                    let (ts, online) = self.deliver(&me, &to, &id, body, live, wake);
-                    reply(json!({ "t": "ack", "id": id, "ts": ts, "online": online }).to_string());
+                    let answer = self.send(Some(&me), &msg, &mut limit);
+                    reply(answer.to_string());
                 }
                 "got" => {
                     let numbers: Vec<u64> = msg["n"]
@@ -750,26 +858,28 @@ mod tests {
         // Un accusé, une réaction (`wake` absent) : pas de réveil.
         assert!(
             relay
-                .store("AAAAAAAAAA", to, "r1", "x", false, false)
+                .store(Some("AAAAAAAAAA"), to, "r1", "x", false, false)
                 .2
                 .is_empty()
         );
         // « écrit… », un signal d'appel (`live`) : jamais.
         assert!(
             relay
-                .store("AAAAAAAAAA", to, "l1", "x", true, true)
+                .store(Some("AAAAAAAAAA"), to, "l1", "x", true, true)
                 .2
                 .is_empty()
         );
         // Un vrai message : un réveil…
         assert_eq!(
-            relay.store("AAAAAAAAAA", to, "m1", "x", false, true).2,
+            relay
+                .store(Some("AAAAAAAAAA"), to, "m1", "x", false, true)
+                .2,
             vec![format!("{FCM}b")]
         );
         // … puis plus rien pendant 20 secondes.
         assert!(
             relay
-                .store("AAAAAAAAAA", to, "m2", "x", false, true)
+                .store(Some("AAAAAAAAAA"), to, "m2", "x", false, true)
                 .2
                 .is_empty()
         );
@@ -779,7 +889,7 @@ mod tests {
             .insert(to.to_owned(), Instant::now() - WAKE_EVERY);
         assert_eq!(
             relay
-                .store("AAAAAAAAAA", to, "m3", "x", false, true)
+                .store(Some("AAAAAAAAAA"), to, "m3", "x", false, true)
                 .2
                 .len(),
             1
@@ -787,7 +897,7 @@ mod tests {
         // Un code sans adresse : personne à réveiller.
         assert!(
             relay
-                .store("AAAAAAAAAA", "CCCCCCCCCC", "m4", "x", false, true)
+                .store(Some("AAAAAAAAAA"), "CCCCCCCCCC", "m4", "x", false, true)
                 .2
                 .is_empty()
         );
@@ -801,7 +911,7 @@ mod tests {
         let (_id, _rx) = relay.register(to, String::new(), String::new(), true);
         assert!(
             relay
-                .store("AAAAAAAAAA", to, "m1", "x", false, true)
+                .store(Some("AAAAAAAAAA"), to, "m1", "x", false, true)
                 .2
                 .is_empty()
         );
