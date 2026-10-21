@@ -789,20 +789,14 @@ struct MessageRow: View {
             }
             .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, big ? 4 : 9)
-        .padding(.vertical, 6)
+        // Une photo : un cadre de verre fin autour, pas un grand aplat.
+        .padding(.horizontal, big ? 4 : m.kind == "image" ? 4 : 9)
+        .padding(.vertical, m.kind == "image" ? 4 : 6)
         .frame(maxWidth: m.kind == "image" ? 280 : 520, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .background {
-            // Translucides : la même couleur, le fond d'écran deviné derrière
-            // (un léger flou garde le texte lisible).
-            if !big {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(.ultraThinMaterial)
-                    .overlay(RoundedRectangle(cornerRadius: 12).fill((mine ? Color.bubbleOut : Color.bubbleIn).opacity(0.78)))
-            }
-        }
-        .shadow(color: .black.opacity(big ? 0 : 0.08), radius: 0.5, y: 1)
+        // Du verre, teinté de la couleur de la bulle : le fond d'écran se
+        // voit à travers (comme la barre de saisie).
+        .bubbleGlass(mine ? Color.bubbleOut : Color.bubbleIn, enabled: !big, in: .rect(cornerRadius: 14))
     }
 
     @ViewBuilder func content(_ e: Engine, _ m: Message, size: CGFloat, big: Bool) -> some View {
