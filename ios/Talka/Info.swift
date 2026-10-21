@@ -67,9 +67,7 @@ struct ContactInfoView: View {
                         } label: {
                             Label("Messages éphémères", systemImage: "timer")
                         }
-                        Toggle(isOn: Binding(get: { chat?.muted ?? false }, set: { v in e.updateChat(code) { $0.muted = v } })) {
-                            Label("Silence", systemImage: "bell.slash")
-                        }
+                        if chat != nil { MuteMenu(chatId: code) }
                         WallpaperPicker(chatId: code)
                     }
                 }
@@ -129,6 +127,53 @@ struct ContactInfoView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(Color.talkaGreen)
+    }
+}
+
+/// « jusqu'à 18:30 », « jusqu'à demain 09:00 », « Toujours », « Non ».
+func muteState(_ chat: Chat?) -> String {
+    guard let chat, chat.muted else { return "Non" }
+    guard let until = chat.muteUntil else { return "Toujours" }
+    let day = Dates.when(until)
+    return "Jusqu'à " + (day == "aujourd'hui" ? "" : day + " ") + Dates.clock(until)
+}
+
+/// La sourdine, comme WhatsApp : 8 heures, une semaine ou toujours ; elle
+/// se lève d'elle-même à l'échéance. Le même choix que dans le navigateur.
+struct MuteMenu: View {
+    @Environment(AppModel.self) private var model
+    let chatId: String
+
+    var body: some View {
+        if let e = model.engine {
+            let chat = e.chat(chatId)
+            Menu {
+                MuteChoices(engine: e, chatId: chatId, muted: chat?.muted ?? false)
+            } label: {
+                HStack {
+                    Label("Silence", systemImage: "bell.slash").foregroundStyle(.primary)
+                    Spacer()
+                    Text(muteState(chat)).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+/// Les choix de la sourdine (menus et dialogues).
+struct MuteChoices: View {
+    let engine: Engine
+    let chatId: String
+    let muted: Bool
+
+    var body: some View {
+        if muted {
+            Button { engine.mute(chatId, seconds: 0) } label: { Label("Réactiver le son", systemImage: "bell") }
+        } else {
+            Button("8 heures") { engine.mute(chatId, seconds: 8 * 3600) }
+            Button("1 semaine") { engine.mute(chatId, seconds: 7 * 86400) }
+            Button("Toujours") { engine.mute(chatId, seconds: nil) }
+        }
     }
 }
 
@@ -305,9 +350,7 @@ struct GroupInfoView: View {
                         Label("Messages éphémères", systemImage: "timer")
                     }
                     .disabled(chat.left)
-                    Toggle(isOn: Binding(get: { chat.muted }, set: { v in e.updateChat(chatId) { $0.muted = v } })) {
-                        Label("Silence", systemImage: "bell.slash")
-                    }
+                    MuteMenu(chatId: chatId)
                     WallpaperPicker(chatId: chatId)
                 }
                 Section("\(chat.members.count) membres") {

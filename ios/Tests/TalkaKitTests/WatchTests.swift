@@ -178,3 +178,37 @@ final class CapsuleTests: XCTestCase {
         XCTAssertFalse(JSON.encode(m).contains("open_at"))
     }
 }
+
+/// La sourdine pour un temps : levée d'elle-même à l'échéance, et un champ
+/// facultatif (`mute_until`) comme dans le navigateur.
+@MainActor
+final class MuteTests: XCTestCase {
+    func testTimedMuteLiftsByItselfAndForeverStays() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-mute-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Léa", avatar: "")
+        let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
+        _ = e.ensureDirectChat("WGSEAJNSZJ")
+        _ = e.ensureDirectChat("K7Q2MX9PRT")
+        e.mute("WGSEAJNSZJ", seconds: 8 * 3600)
+        e.mute("K7Q2MX9PRT", seconds: nil)
+        XCTAssertEqual(e.chat("WGSEAJNSZJ")?.muted, true)
+        XCTAssertNotNil(e.chat("WGSEAJNSZJ")?.muteUntil)
+        XCTAssertNil(e.chat("K7Q2MX9PRT")?.muteUntil)
+        // L'échéance passée : la sourdine se lève, « toujours » reste.
+        e.updateChat("WGSEAJNSZJ") { $0.muteUntil = nowMs() - 1 }
+        e.sweep()
+        XCTAssertEqual(e.chat("WGSEAJNSZJ")?.muted, false)
+        XCTAssertNil(e.chat("WGSEAJNSZJ")?.muteUntil)
+        XCTAssertEqual(e.chat("K7Q2MX9PRT")?.muted, true)
+        e.mute("K7Q2MX9PRT", seconds: 0)
+        XCTAssertEqual(e.chat("K7Q2MX9PRT")?.muted, false)
+        // Le format : absent sans sourdine pour un temps, relu tel quel sinon.
+        XCTAssertFalse(JSON.encode(try XCTUnwrap(e.chat("K7Q2MX9PRT"))).contains("mute_until"))
+        let old = try XCTUnwrap(JSON.decode(Chat.self, #"{"id":"A","muted":true}"#))
+        XCTAssertTrue(old.muted)
+        XCTAssertNil(old.muteUntil)
+        let timed = try XCTUnwrap(JSON.decode(Chat.self, #"{"id":"A","muted":true,"mute_until":1800000000000}"#))
+        XCTAssertEqual(timed.muteUntil, 1_800_000_000_000)
+    }
+}
