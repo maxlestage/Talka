@@ -552,12 +552,12 @@ pub async fn save_profile(f: impl FnOnce(&mut Profile)) {
     spawn(flush());
 }
 
-/// Notre profil pour `code`, avec son jeton de remise personnel : seulement
-/// pour un contact enregistré et pas bloqué (un inconnu qui nous écrit n'en
-/// reçoit pas).
+/// Notre profil pour `code`, avec son jeton de remise personnel : pour un
+/// contact, ou quelqu'un qui nous écrit (un membre d'un de nos groupes), tant
+/// qu'il n'est pas bloqué (le bloquer le révoque).
 fn profile_body(code: &str) -> Body {
     let jeton = match contact(code) {
-        Some(c) if c.saved && !c.blocked => me().jeton_for(code, c.jeton_epoch),
+        Some(c) if !c.blocked => me().jeton_for(code, c.jeton_epoch),
         _ => String::new(),
     };
     Body::Profile {
@@ -2564,10 +2564,10 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             if let Some(mut sender) = contact(from)
                 && !sender.blocked
                 && (sender.sent_profile_v < profile().v
-                    || (!sender.jeton_perso && sender.saved && net::sealed_supported()))
+                    || (!sender.jeton_perso && net::sealed_supported()))
             {
                 sender.sent_profile_v = profile().v;
-                if sender.saved && net::sealed_supported() {
+                if net::sealed_supported() {
                     sender.jeton_sent = true;
                     sender.jeton_perso = true;
                 }
