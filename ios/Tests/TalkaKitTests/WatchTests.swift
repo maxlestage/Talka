@@ -229,3 +229,27 @@ final class MuteTests: XCTestCase {
         XCTAssertEqual(timed.muteUntil, 1_800_000_000_000)
     }
 }
+
+/// La recherche dans toutes les discussions, comme le navigateur.
+@MainActor
+final class SearchTests: XCTestCase {
+    func testSearchesAllChatsIgnoringAccentsAndHidingSealed() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-search-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Alice", avatar: "")
+        let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
+        let bob = e.ensureDirectChat("WGSEAJNSZJ")
+        let chloe = e.ensureDirectChat("K7Q2MX9PRT")
+        e.send(bob.id, Content(text: "On se voit samedi au marché ?"))
+        e.send(chloe.id, Content(text: "Le cinéma de Samédi est complet"))
+        e.send(chloe.id, Content(text: "Rien à voir"))
+        var sealed = try XCTUnwrap(e.send(chloe.id, Content(text: "Surprise samedi", openAt: nowMs() + 3_600_000)))
+        sealed.from = "K7Q2MX9PRT"
+        store.writeMessage(sealed)
+        let found = e.searchMessages("samedi")
+        XCTAssertEqual(Set(found.map(\.text)), ["On se voit samedi au marché ?", "Le cinéma de Samédi est complet"])
+        XCTAssertTrue(e.searchMessages("s").isEmpty)
+        e.setBlocked("WGSEAJNSZJ", true)
+        XCTAssertEqual(e.searchMessages("samedi").map(\.text), ["Le cinéma de Samédi est complet"])
+    }
+}
