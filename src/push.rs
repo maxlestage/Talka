@@ -144,8 +144,87 @@ pub enum Outcome {
     Failed,
 }
 
-/// Envoie un réveil vide à `endpoint`.
-pub async fn wake(vapid: &'static Vapid, endpoint: String) -> Outcome {
+/// Un abonnement Web Push : l'adresse, et les clés du navigateur (RFC 8291)
+/// pour lui faire passer un aperçu chiffré ; sans clés, un réveil vide.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Subscription {
+    pub endpoint: String,
+    pub p256dh: Vec<u8>,
+    pub auth: Vec<u8>,
+}
+
+/// Un aperçu, tel que l'expéditeur l'a chiffré pour la clé de notification
+/// du destinataire : le relais ne peut pas le lire. 2 Kio au plus.
+pub const MAX_APERCU: usize = 2048;
+
+/// Chiffre `plain` pour le navigateur de `p256dh`/`auth` (RFC 8291,
+/// « aes128gcm » de RFC 8188) : ce que seul ce navigateur ouvre, le service
+/// de notifications ne voyant qu'un bloc chiffré.
+pub fn encrypt(p256dh: &[u8], auth: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
+    let mut seed = [0u8; 32];
+    let mut salt = [0u8; 16];
+    getrandom::getrandom(&mut seed).ok()?;
+    getrandom::getrandom(&mut salt).ok()?;
+    let secret = p256::SecretKey::from_slice(&seed).ok()?;
+    encrypt_with(p256dh, auth, plain, &secret, salt)
+}
+
+// `Nonce::from_slice` : l'API d'aes-gcm 0.10.
+#[allow(deprecated)]
+fn encrypt_with(
+    p256dh: &[u8],
+    auth: &[u8],
+    plain: &[u8],
+    secret: &p256::SecretKey,
+    salt: [u8; 16],
+) -> Option<Vec<u8>> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes128Gcm, Nonce};
+    use hkdf::Hkdf;
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use sha2::Sha256;
+
+    if auth.len() != 16 || plain.len() > 3800 {
+        return None;
+    }
+    let ua = p256::PublicKey::from_sec1_bytes(p256dh).ok()?;
+    let ua_raw = ua.to_encoded_point(false);
+    let as_raw = secret.public_key().to_encoded_point(false);
+    let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), ua.as_affine());
+    // IKM = HKDF(auth, ECDH, « WebPush: info » ‖ 0 ‖ clé du navigateur ‖ la nôtre)
+    let mut info = b"WebPush: info\0".to_vec();
+    info.extend_from_slice(ua_raw.as_bytes());
+    info.extend_from_slice(as_raw.as_bytes());
+    let mut ikm = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(auth), shared.raw_secret_bytes())
+        .expand(&info, &mut ikm)
+        .ok()?;
+    let prk = Hkdf::<Sha256>::new(Some(&salt), &ikm);
+    let mut cek = [0u8; 16];
+    let mut nonce = [0u8; 12];
+    prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek)
+        .ok()?;
+    prk.expand(b"Content-Encoding: nonce\0", &mut nonce).ok()?;
+    // Un seul enregistrement : le texte, puis le délimiteur 0x02.
+    let mut record = plain.to_vec();
+    record.push(2);
+    let ct = Aes128Gcm::new_from_slice(&cek)
+        .ok()?
+        .encrypt(Nonce::from_slice(&nonce), record.as_slice())
+        .ok()?;
+    // En-tête : sel (16) ‖ taille d'enregistrement (4) ‖ longueur de clé (1) ‖ clé.
+    let mut out = salt.to_vec();
+    out.extend_from_slice(&4096u32.to_be_bytes());
+    out.push(65);
+    out.extend_from_slice(as_raw.as_bytes());
+    out.extend(ct);
+    Some(out)
+}
+
+/// Envoie un réveil à `sub` : vide, ou avec `payload` (chiffré pour son
+/// navigateur) quand il en a les clés.
+pub async fn wake(vapid: &'static Vapid, sub: Subscription, payload: Option<String>) -> Outcome {
+    let endpoint = sub.endpoint.clone();
     tokio::task::spawn_blocking(move || {
         static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
         let agent = AGENT.get_or_init(|| {
@@ -157,14 +236,23 @@ pub async fn wake(vapid: &'static Vapid, endpoint: String) -> Outcome {
         let Some(auth) = vapid.authorization(&endpoint, crate::relay::now_ms() / 1000) else {
             return Outcome::Gone;
         };
-        let res = agent
+        let body = payload
+            .filter(|_| !sub.p256dh.is_empty())
+            .and_then(|p| encrypt(&sub.p256dh, &sub.auth, p.as_bytes()));
+        let req = agent
             .post(&endpoint)
             .set("TTL", &TTL_SECS.to_string())
             .set("Urgency", "high")
-            // Plusieurs réveils en attente n'en font qu'un.
-            .set("Topic", "talka")
-            .set("Authorization", &auth)
-            .send_bytes(&[]);
+            .set("Authorization", &auth);
+        let res = match body {
+            // Chaque aperçu compte : pas de « Topic » qui les fusionnerait.
+            Some(body) => req
+                .set("Content-Encoding", "aes128gcm")
+                .set("Content-Type", "application/octet-stream")
+                .send_bytes(&body),
+            // Plusieurs réveils vides en attente n'en font qu'un.
+            None => req.set("Topic", "talka").send_bytes(&[]),
+        };
         match res {
             Ok(_) => Outcome::Sent,
             Err(ureq::Error::Status(404 | 410, _)) => Outcome::Gone,
@@ -181,23 +269,111 @@ pub async fn wake(vapid: &'static Vapid, endpoint: String) -> Outcome {
 /// page : il ne contrôle rien (le service worker hors ligne reste seul à la
 /// racine).
 pub const SERVICE_WORKER: &str = r#"// Talka : les notifications quand l'application est fermée.
-// Le relais n'envoie qu'un réveil vide : ni expéditeur, ni texte. Le message
-// reste chiffré dans la boîte aux lettres, et ne s'ouvre qu'avec Talka.
+// Le relais n'apporte qu'un réveil, et parfois un aperçu que l'expéditeur a
+// chiffré pour la clé de notification de cet appareil : le relais ne peut pas
+// le lire. Cette clé est tirée et gardée ici (IndexedDB, non exportable) ;
+// seule sa moitié publique sort, pour les contacts.
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+
+const b64 = (u8) => btoa(String.fromCharCode(...u8));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const texte = (s) => new TextEncoder().encode(s);
+
+function db() {
+  return new Promise((ok, ko) => {
+    const r = indexedDB.open("talka-notifications", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("cles");
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => ko(r.error);
+  });
+}
+
+async function lire(k) {
+  const d = await db();
+  return new Promise((ok, ko) => {
+    const r = d.transaction("cles").objectStore("cles").get(k);
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => ko(r.error);
+  });
+}
+
+async function ecrire(k, v) {
+  const d = await db();
+  return new Promise((ok, ko) => {
+    const t = d.transaction("cles", "readwrite");
+    t.objectStore("cles").put(v, k);
+    t.oncomplete = () => ok();
+    t.onerror = () => ko(t.error);
+  });
+}
+
+// La clé de notification : tirée une fois, la partie privée jamais exportée.
+async function cle() {
+  let k = await lire("nk");
+  if (!k) {
+    const p = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
+    k = { priv: p.privateKey, pub: b64(new Uint8Array(await crypto.subtle.exportKey("raw", p.publicKey))) };
+    await ecrire("nk", k);
+  }
+  return k;
+}
+
+// Ouvre un aperçu : éphémère (65) ‖ iv (12) ‖ chiffré, comme
+// talka_web::crypto::seal_apercu (ECDH, HKDF-SHA256, AES-256-GCM).
+async function ouvrir(sealed) {
+  const k = await lire("nk");
+  if (!k) return null;
+  const b = unb64(sealed);
+  const eph = b.slice(0, 65);
+  const pub = await crypto.subtle.importKey("raw", eph, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const ikm = await crypto.subtle.deriveBits({ name: "ECDH", public: pub }, k.priv, 256);
+  const hk = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveKey"]);
+  const salt = new Uint8Array(130);
+  salt.set(eph, 0);
+  salt.set(unb64(k.pub), 65);
+  const aes = await crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt, info: texte("talka-apercu-v1") },
+    hk, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const pt = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: b.slice(65, 77), additionalData: texte("talka-apercu") }, aes, b.slice(77));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+// L'application demande la clé publique (pour la donner à ses contacts).
+self.addEventListener("message", (e) => {
+  if (e.data && e.data.t === "nk" && e.ports[0]) {
+    e.waitUntil(cle().then((k) => e.ports[0].postMessage({ nk: k.pub }), () => e.ports[0].postMessage({})));
+  }
+});
+
 self.addEventListener("push", (e) => {
   e.waitUntil((async () => {
+    const app = new URL("../app", self.registration.scope).href;
     const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     // Talka est à l'écran : il s'en occupe lui-même.
-    if (wins.some((w) => w.visibilityState === "visible")) return;
-    await self.registration.showNotification("Talka", {
-      body: "Nouveau message",
-      tag: "talka",
+    if (wins.some((w) => w.visibilityState === "visible" && w.url.startsWith(app))) return;
+    let titre = "Talka", corps = "Nouveau message", tag = "talka";
+    try {
+      const d = e.data ? e.data.json() : null;
+      const a = d && d.a ? await ouvrir(d.a) : null;
+      if (a) {
+        titre = String(a.n || "Talka").slice(0, 80);
+        corps = String(a.t || corps).slice(0, 200);
+        tag = "talka-" + String(a.c || "");
+      }
+    } catch (_) {
+      // Illisible : le réveil seul.
+    }
+    await self.registration.showNotification(titre, {
+      body: corps,
+      tag,
       renotify: true,
       icon: new URL("../icons/icon-192.png", self.registration.scope).href,
     });
   })());
 });
+
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   e.waitUntil((async () => {

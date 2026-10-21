@@ -252,6 +252,54 @@ public enum TalkaCrypto {
                                        sharedInfo: Data("talka-scelle-v1:\(to)".utf8), outputByteCount: 32)
     }
 
+    // ----- L'aperçu des notifications -----------------------------------------
+    //
+    // Chiffré pour la clé de notification du destinataire (son navigateur la
+    // garde, non exportable, dans son service worker) : le relais le
+    // transmet sans le lire. Comme `crypto::seal_apercu` du navigateur.
+
+    /// Une clé de notification valable : un point P-256 (65 octets, base64).
+    public static func validNk(_ nk: String) -> Bool {
+        guard let raw = unb64(nk), raw.count == 65 else { return false }
+        return (try? P256.KeyAgreement.PublicKey(x963Representation: raw)) != nil
+    }
+
+    private static func apercuKey(_ secret: SharedSecret, eph: Data, nk: Data) -> SymmetricKey {
+        secret.hkdfDerivedSymmetricKey(using: SHA256.self, salt: eph + nk,
+                                       sharedInfo: Data("talka-apercu-v1".utf8), outputByteCount: 32)
+    }
+
+    /// Chiffre un aperçu (du JSON) pour la clé `nk` :
+    /// base64(éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag).
+    public static func sealApercu(nk: String, plain: String) -> String? {
+        guard let nkRaw = unb64(nk),
+              let pub = try? P256.KeyAgreement.PublicKey(x963Representation: nkRaw)
+        else { return nil }
+        let eph = P256.KeyAgreement.PrivateKey()
+        let ephRaw = eph.publicKey.x963Representation
+        guard let secret = try? eph.sharedSecretFromKeyAgreement(with: pub),
+              let box = try? AES.GCM.seal(Data(plain.utf8), using: apercuKey(secret, eph: ephRaw, nk: nkRaw),
+                                          nonce: AES.GCM.Nonce(), authenticating: Data("talka-apercu".utf8)),
+              let combined = box.combined
+        else { return nil }
+        return b64(ephRaw + combined)
+    }
+
+    /// Ouvre un aperçu avec la clé privée de notification (32 octets) : ce
+    /// que fait le service worker du navigateur ; ici pour les tests.
+    public static func openApercu(nkPriv: Data, sealed: String) -> String? {
+        guard let data = unb64(sealed), data.count >= 65 + 12 + 16,
+              let key = try? P256.KeyAgreement.PrivateKey(rawRepresentation: nkPriv),
+              let eph = try? P256.KeyAgreement.PublicKey(x963Representation: data.prefix(65)),
+              let secret = try? key.sharedSecretFromKeyAgreement(with: eph),
+              let box = try? AES.GCM.SealedBox(combined: data.dropFirst(65)),
+              let plain = try? AES.GCM.open(box, using: apercuKey(secret, eph: Data(data.prefix(65)),
+                                                                  nk: key.publicKey.x963Representation),
+                                            authenticating: Data("talka-apercu".utf8))
+        else { return nil }
+        return String(data: plain, encoding: .utf8)
+    }
+
     /// Scelle `body` (une enveloppe ordinaire de `from` pour `to`) :
     /// base64(éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag).
     public static func sealSender(from: String, to: String, toDh: String, body: String) -> String? {
