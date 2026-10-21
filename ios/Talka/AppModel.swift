@@ -18,7 +18,11 @@ final class AppModel {
         let text: String
     }
 
-    let store = Store(directory: Store.defaultDirectory(), key: StoreVault.key())
+    /// La base ; protégée par Face ID, elle ne s'ouvre qu'après
+    /// `unlockVault` (jusque-là, une base en lecture seule, vide).
+    var store: Store
+    /// La base attend Face ID (ou le code de l'iPhone).
+    var vaultLocked = false
     var engine: Engine?
     var tab: Tab = .chats
     /// Les discussions ouvertes (navigation de l'onglet Discussions).
@@ -40,6 +44,14 @@ final class AppModel {
     var loading: String? = "Ouverture de Talka…"
 
     init() {
+        if StoreVault.isProtected {
+            store = Store(directory: Store.defaultDirectory(), key: nil)
+            vaultLocked = true
+            loading = nil
+            WatchBridge.shared.start(self)
+            return
+        }
+        store = Store(directory: Store.defaultDirectory(), key: StoreVault.key())
         locked = store.read("kv", "pin", as: PinHash.self) != nil
         adoptBuiltInServer()
         if Engine.hasAccount(store) { start() }
@@ -167,6 +179,42 @@ final class AppModel {
         }
     }
 
+    /// Face ID (ou le code de l'iPhone) ouvre la clé de la base, puis Talka.
+    func unlockVault() async {
+        let ctx = LAContext()
+        ctx.localizedFallbackTitle = "Code de l'iPhone"
+        guard (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Ouvrir vos messages")) == true,
+              let key = StoreVault.key(context: ctx)
+        else { return }
+        store = Store(directory: Store.defaultDirectory(), key: key)
+        // On vient de montrer son visage : pas de code PIN en plus, si Face ID
+        // le remplace déjà.
+        locked = hasPin && !faceID
+        vaultLocked = false
+        adoptBuiltInServer()
+        if Engine.hasAccount(store) { start() }
+        loading = "Ouverture de Talka…"
+        await finishLoading()
+    }
+
+    /// Protéger la base par Face ID (ou retirer cette protection).
+    func protectVault(_ on: Bool) async {
+        guard let key = store.key else { return }
+        if !on {
+            // Retirer la protection demande aussi le visage.
+            let ctx = LAContext()
+            guard (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Retirer la protection")) == true
+            else { return }
+        }
+        if StoreVault.setProtected(on, key: key) {
+            show(on ? "Vos messages ne s'ouvrent qu'avec \(biometryName ?? "Face ID") 🔐" : "Protection retirée")
+        } else {
+            show("Le trousseau de l'iPhone a refusé : réessayez.")
+        }
+    }
+
+    var vaultProtected: Bool { StoreVault.isProtected }
+
     var hasPin: Bool { store.read("kv", "pin", as: PinHash.self) != nil }
 
     func setPin(_ pin: String?) {
@@ -181,7 +229,13 @@ final class AppModel {
 
     func checkPin(_ pin: String) -> Bool {
         guard let stored = store.read("kv", "pin", as: PinHash.self) else { return true }
-        return TalkaCrypto.checkPin(pin, stored)
+        let ok = TalkaCrypto.checkPin(pin, stored)
+        // Un code d'avant (PBKDF2) : rehaché avec Argon2id.
+        if ok, stored.isOld {
+            store.write("kv", "pin", TalkaCrypto.hashPin(pin))
+            store.save()
+        }
+        return ok
     }
 
     var faceID: Bool {

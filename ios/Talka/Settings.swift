@@ -2,6 +2,7 @@
 // l'apparence, les notifications, le serveur, la sauvegarde.
 
 import PhotosUI
+import LocalAuthentication
 import SwiftUI
 import TalkaKit
 import UniformTypeIdentifiers
@@ -53,6 +54,17 @@ struct SettingsTab: View {
                         Text("Brocolis 🥦")
                     } footer: {
                         Text("Une seconde couche de chiffrement, avec les clés de l'app Brocolis.")
+                    }
+                    Section {
+                        if let bio = model.biometryName ?? (LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) ? "le code de l'iPhone" : nil) {
+                            Toggle("Protéger mes messages par \(bio)", isOn: Binding(
+                                get: { model.vaultProtected },
+                                set: { on in Task { await model.protectVault(on) } }))
+                        }
+                    } header: {
+                        Text("Protection des messages")
+                    } footer: {
+                        Text("Vos messages sont chiffrés sur cet iPhone. Protégés, ils ne s'ouvrent qu'avec votre visage, votre empreinte ou le code de l'iPhone : même quelqu'un qui aurait l'iPhone déverrouillé ne pourrait pas ouvrir Talka.")
                     }
                     Section("Verrouillage") {
                         if model.hasPin {
@@ -309,7 +321,7 @@ struct PinSetup: View {
     @Environment(\.dismiss) private var dismiss
     @State private var pin = ""
     @State private var first: String?
-    @State private var mismatch = false
+    @State private var problem: String?
 
     var body: some View {
         VStack(spacing: 24) {
@@ -319,8 +331,8 @@ struct PinSetup: View {
             }
             Spacer()
             Text(first == nil ? "Choisissez un code PIN" : "Confirmez le code PIN").font(.title2.bold())
-            Text(mismatch ? "Les codes ne correspondent pas." : "4 à 6 chiffres, demandés à l'ouverture de Talka.")
-                .foregroundStyle(mismatch ? .red : .secondary)
+            Text(problem ?? "6 à 12 chiffres, demandés à l'ouverture de Talka.")
+                .foregroundStyle(problem != nil ? .red : .secondary)
             PinDots(count: pin.count)
             PinPad(pin: $pin) {
                 if let f = first {
@@ -329,12 +341,16 @@ struct PinSetup: View {
                         model.show("Code PIN activé")
                         dismiss()
                     } else {
-                        mismatch = true
+                        problem = "Les codes ne correspondent pas."
                         first = nil
                     }
+                } else if pin.count < TalkaCrypto.pinMin {
+                    problem = "6 chiffres au moins."
+                } else if Set(pin).count == 1 || "01234567890123".contains(pin) || "98765432109876".contains(pin) {
+                    problem = "Trop facile à deviner : choisissez-en un autre."
                 } else {
                     first = pin
-                    mismatch = false
+                    problem = nil
                 }
                 pin = ""
             }
