@@ -116,6 +116,23 @@ fn main() {
                 ..Default::default()
             },
         }),
+        // Une mention dans un groupe : « @Bob ».
+        Wire {
+            body: Body::Msg {
+                id: "m10".into(),
+                at: 1_700_000_000_200.0,
+                pn: String::new(),
+                content: Content {
+                    kind: "text".into(),
+                    text: "Tu viens @Bob ?".into(),
+                    mentions: vec![b.code.clone()],
+                    ..Default::default()
+                },
+            },
+            grp: None,
+            g: Some("g1".into()),
+            ttl: None,
+        },
     ];
     let wire_json: Vec<String> = wires
         .iter()
