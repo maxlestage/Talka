@@ -148,11 +148,12 @@ public final class Engine {
         }
     }
 
-    /// Notre profil pour `code`, avec son jeton de remise personnel :
-    /// seulement pour un contact enregistré et pas bloqué. Comme le navigateur.
+    /// Notre profil pour `code`, avec son jeton de remise personnel : pour un
+    /// contact, ou quelqu'un qui nous écrit (un membre d'un de nos groupes),
+    /// tant qu'il n'est pas bloqué. Comme le navigateur.
     func profileBody(for code: String) -> Body {
         let c = contacts[code]
-        let jeton = c.map { $0.saved && !$0.blocked } == true ? me.jeton(for: code, epoch: c?.jetonEpoch ?? 0) : ""
+        let jeton = c.map { !$0.blocked } == true ? me.jeton(for: code, epoch: c?.jetonEpoch ?? 0) : ""
         return .profile(profile, jeton: jeton, nk: "", pj: true)
     }
 
@@ -1419,9 +1420,9 @@ public final class Engine {
             if active, settings.readReceipts { queueReceipt(from, c.id, [id], "read") }
             // Votre profil, pour qui ne l'a pas encore.
             if var sender = contacts[from], !sender.blocked,
-               sender.sentProfileV < profile.v || (!sender.jetonPerso && sender.saved && relay.sealed) {
+               sender.sentProfileV < profile.v || (!sender.jetonPerso && relay.sealed) {
                 sender.sentProfileV = profile.v
-                if sender.saved, relay.sealed { sender.jetonSent = true; sender.jetonPerso = true }
+                if relay.sealed { sender.jetonSent = true; sender.jetonPerso = true }
                 saveContact(sender)
                 enqueue(from, Wire(profileBody(for: from)))
             }

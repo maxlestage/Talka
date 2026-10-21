@@ -312,6 +312,25 @@ final class VoiceChainTests: XCTestCase {
 /// est bien signé.
 @MainActor
 final class SealedSenderTests: XCTestCase {
+    /// Notre jeton personnel va à un contact comme à un membre de groupe qui
+    /// nous écrit (pas dans nos contacts) ; jamais à qui est bloqué.
+    func testJetonGoesToCorrespondentsButNotBlocked() {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-jeton-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Léa", avatar: "")
+        let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
+        let member = Identity.create()
+        e.saveContact(Contact(code: member.code))
+        guard case let .profile(_, jeton, _, pj) = e.profileBody(for: member.code) else { return XCTFail() }
+        XCTAssertTrue(pj)
+        XCTAssertEqual(jeton.split(separator: ".").first.map(String.init), e.me.jetonNonce(for: member.code, epoch: 0))
+        e.setBlocked(member.code, true)
+        guard case let .profile(_, none, _, _) = e.profileBody(for: member.code) else { return XCTFail() }
+        XCTAssertEqual(none, "")
+        guard case let .profile(_, stranger, _, _) = e.profileBody(for: Identity.create().code) else { return XCTFail() }
+        XCTAssertEqual(stranger, "", "quelqu'un qu'on ne connaît pas du tout")
+    }
+
     func testSealedEnvelopeAndJeton() async throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-scelle-\(randomId(4))")
         let store = Store(directory: dir)
