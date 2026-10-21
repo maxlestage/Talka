@@ -88,6 +88,11 @@ pub struct Contact {
     /// trouvées pour son code doivent y correspondre.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub fp: String,
+    /// Il nous a déjà écrit en v3 (double cliquet) : l'ancien format, que le
+    /// relais pourrait rejouer, ne change plus rien chez nous (minuterie,
+    /// modifications, suppressions, groupe, appels).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub v3: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -367,6 +372,22 @@ pub struct Content {
     /// suite.
     #[serde(skip_serializing_if = "is_zero")]
     pub open_at: f64,
+}
+
+impl Body {
+    /// Ce qui change un état déjà là (et qu'un rejeu suffirait à défaire) :
+    /// refusé dans l'ancien format d'un contact passé en v3.
+    pub fn changes_state(&self) -> bool {
+        matches!(
+            self,
+            Body::Timer { .. }
+                | Body::Edit { .. }
+                | Body::Delete { .. }
+                | Body::Group { .. }
+                | Body::Call { .. }
+                | Body::StatusDelete { .. }
+        )
+    }
 }
 
 /// Une donnée reçue (photo, vocal, fichier, avatar) : seulement une adresse
