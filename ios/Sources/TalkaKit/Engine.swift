@@ -272,6 +272,15 @@ public final class Engine {
 
     /// Les clés d'un code, vérifiées : le code doit être leur empreinte.
     func keys(for code: String) async -> Contact? {
+        guard let c = await fetchKeys(code) else { return nil }
+        if contacts[code]?.sign.isEmpty ?? true { saveContact(c) }
+        return c
+    }
+
+    /// Les clés d'un code (gardées, ou demandées au relais et vérifiées), sans
+    /// rien enregistrer : un message scellé n'ajoute son expéditeur qu'une
+    /// fois prouvé (l'enveloppe intérieure ouverte).
+    func fetchKeys(_ code: String) async -> Contact? {
         if let c = contacts[code], !c.sign.isEmpty, !c.dh.isEmpty { return c }
         guard let found = await relay.lookup(code),
               let sign = found["sign"] as? String, let dh = found["dh"] as? String,
@@ -287,7 +296,6 @@ public final class Engine {
         }
         c.sign = sign
         c.dh = dh
-        saveContact(c)
         return c
     }
 
@@ -412,6 +420,17 @@ public final class Engine {
 
     var allBrocolisKeys: [SymmetricKey] { brocolisKeys.compactMap { Brocolis.key(base64: $0.key) } }
 
+    /// Les clés qui ouvrent les jetons reçus dans `chat` : celles liées à
+    /// cette discussion, et celles liées à aucune. Pas la clé partagée avec
+    /// quelqu'un d'autre : un jeton capturé ailleurs et renvoyé ici ne s'ouvre
+    /// pas (ni ne se recopie en clair dans une réponse). Comme le navigateur.
+    func brocolisKeys(for chat: String) -> [SymmetricKey] {
+        let used = Set(chats.values.flatMap(\.brocolis))
+        let here = Set(chats[chat]?.brocolis ?? [])
+        return brocolisKeys.filter { here.contains($0.id) || !used.contains($0.id) }
+            .compactMap { Brocolis.key(base64: $0.key) }
+    }
+
     func sealText(_ c: Chat, _ text: String) -> String {
         Brocolis.seal(text, keys: chatBrocolis(c).compactMap { Brocolis.key(base64: $0.key) })
     }
@@ -434,12 +453,13 @@ public final class Engine {
     @discardableResult
     func openMessage(_ m: inout Message) -> Bool {
         var changed = false
+        let keys = brocolisKeys(for: m.chat)
         if Brocolis.hasToken(m.text) {
-            let o = Brocolis.open(m.text, keys: allBrocolisKeys)
+            let o = Brocolis.open(m.text, keys: keys)
             if o.opened > 0 { m.text = o.text; m.bro = true; changed = true }
         }
         if var r = m.reply, Brocolis.hasToken(r.text) {
-            let o = Brocolis.open(r.text, keys: allBrocolisKeys)
+            let o = Brocolis.open(r.text, keys: keys)
             if o.opened > 0 { r.text = o.text; m.reply = r; changed = true }
         }
         return changed
@@ -1061,7 +1081,7 @@ public final class Engine {
             guard let opened = TalkaCrypto.openSealed(me, body) else { return }
             (from, body) = (opened.from, opened.body)
         }
-        guard !from.isEmpty, !blocked(from), let peer = await keys(for: from) else { return }
+        guard !from.isEmpty, !blocked(from), let peer = await fetchKeys(from) else { return }
         loadV3(from)
         var repair = false
         // Le message, et l'état de session qui l'a ouvert : une seule
@@ -1073,6 +1093,12 @@ public final class Engine {
             let device = saveV3Sessions()
             switch opened {
             case .legacy(let plain), .v3(let plain):
+                // Prouvé : ses clés sont gardées (s'il est nouveau).
+                if contacts[from]?.sign.isEmpty ?? true {
+                    var c = contacts[from] ?? peer
+                    c.sign = peer.sign; c.dh = peer.dh
+                    saveContact(c)
+                }
                 if let wire = Wire.parse(plain) {
                     handle(from, wire, ts: env["ts"] as? Double ?? nowMs(), live: env["live"] as? Bool ?? false)
                 }
@@ -1220,6 +1246,18 @@ public final class Engine {
             if let open = safe.openAt { safe.openAt = open > mAt ? min(open, mAt + capsuleMaxMs) : nil }
             var m = Message(chat: c.id, id: id, from: from, at: mAt, content: safe)
             if let ttl = wire.ttl { m.exp = m.at + Double(ttl) * 1000 }
+            // La citation : celle de notre copie du message cité, jamais ce que
+            // l'expéditeur prétend (« Vous : je te dois 500 € »).
+            if var r = m.reply {
+                if let orig = store.message(c.id, r.id) {
+                    r.from = orig.from
+                    r.text = String(readable(orig).prefix(140))
+                } else {
+                    r.from = ""
+                    r.text = String(r.text.prefix(140))
+                }
+                m.reply = r
+            }
             openMessage(&m)
             if var sender = contacts[from], sender.profileName.isEmpty, !pn.isEmpty {
                 sender.profileName = String(pn.prefix(40))
@@ -1257,7 +1295,7 @@ public final class Engine {
             if m.from == me.code, !emoji.isEmpty { onReaction?(c, from, emoji) }
         case let .edit(id, text):
             guard var m = store.message(c.id, id), m.from == from, !m.deleted else { return }
-            let opened = Brocolis.open(String(text.prefix(65_536)), keys: allBrocolisKeys)
+            let opened = Brocolis.open(String(text.prefix(65_536)), keys: brocolisKeys(for: c.id))
             m.text = opened.text
             m.bro = opened.opened > 0
             m.edited = true

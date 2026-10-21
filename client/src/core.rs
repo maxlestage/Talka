@@ -589,6 +589,17 @@ async fn save_contact(c: Contact) {
 
 /// Les clés d'un code, vérifiées : le code doit être leur empreinte.
 async fn keys_for(code: &str) -> Option<Contact> {
+    let c = fetch_keys(code).await?;
+    if contact(code).is_none_or(|k| k.sign.is_empty()) {
+        save_contact(c.clone()).await;
+    }
+    Some(c)
+}
+
+/// Les clés d'un code (gardées, ou demandées au relais et vérifiées), sans
+/// rien enregistrer : un message scellé n'ajoute son expéditeur qu'une fois
+/// prouvé (l'enveloppe intérieure ouverte).
+async fn fetch_keys(code: &str) -> Option<Contact> {
     if let Some(c) = contact(code).filter(|c| !c.sign.is_empty() && !c.dh.is_empty()) {
         return Some(c);
     }
@@ -617,7 +628,6 @@ async fn keys_for(code: &str) -> Option<Contact> {
     }
     c.sign = sign;
     c.dh = dh;
-    save_contact(c.clone()).await;
     Some(c)
 }
 
@@ -796,16 +806,34 @@ fn seal_content(c: &Chat, content: &mut Content) -> bool {
     bro
 }
 
-/// Ouvre les jetons de `text` avec toutes vos clés.
-pub fn open_brocolis(text: &str) -> jetons::Opened {
-    jetons::open(text, &raw_keys(&brocolis_keys()))
+/// Ouvre les jetons de `text` reçus dans la discussion `chat_id` : avec les
+/// clés liées à cette discussion, et celles liées à aucune. Pas avec la clé
+/// partagée avec quelqu'un d'autre : un contact qui renverrait un jeton
+/// capturé ailleurs ne le ferait pas ouvrir (ni recopier en clair dans une
+/// réponse).
+pub fn open_brocolis(chat_id: &str, text: &str) -> jetons::Opened {
+    let keys = with(|s| {
+        let used: HashSet<&String> = s.chats.values().flat_map(|c| c.brocolis.iter()).collect();
+        let here: HashSet<&String> = s
+            .chats
+            .get(chat_id)
+            .map(|c| c.brocolis.iter().collect())
+            .unwrap_or_default();
+        s.brocolis
+            .iter()
+            .filter(|k| here.contains(&k.id) || !used.contains(&k.id))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    jetons::open(text, &raw_keys(&keys))
 }
 
 /// Ouvre les jetons d'un message et de sa citation ; `true` si l'un l'a été.
 fn open_message(m: &mut Message) -> bool {
     let mut changed = false;
+    let chat_id = m.chat.clone();
     if jetons::has_token(&m.text) {
-        let o = open_brocolis(&m.text);
+        let o = open_brocolis(&chat_id, &m.text);
         if o.opened > 0 {
             m.text = o.text;
             m.bro = true;
@@ -815,7 +843,7 @@ fn open_message(m: &mut Message) -> bool {
     if let Some(r) = m.reply.as_mut()
         && jetons::has_token(&r.text)
     {
-        let o = open_brocolis(&r.text);
+        let o = open_brocolis(&chat_id, &r.text);
         if o.opened > 0 {
             r.text = o.text;
             changed = true;
@@ -1974,7 +2002,7 @@ async fn receive(env: &Value) {
     if from.is_empty() || blocked(&from) {
         return;
     }
-    let Some(peer) = keys_for(&from).await else {
+    let Some(peer) = fetch_keys(&from).await else {
         return;
     };
     load_v3(&from).await;
@@ -2004,6 +2032,13 @@ async fn receive(env: &Value) {
             return;
         }
     };
+    // Prouvé : ses clés sont gardées (s'il est nouveau).
+    if contact(&from).is_none_or(|c| c.sign.is_empty()) {
+        let mut c = contact(&from).unwrap_or_else(|| peer.clone());
+        c.sign = peer.sign.clone();
+        c.dh = peer.dh.clone();
+        save_contact(c).await;
+    }
     let Ok(wire) = serde_json::from_str::<Wire>(&plain) else {
         return;
     };
@@ -2030,7 +2065,7 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool
                 id: id.clone(),
                 group: true,
                 name: grp.name.clone(),
-                avatar: grp.avatar.clone(),
+                avatar: safe_data("avatar", &grp.avatar),
                 members: grp.members.clone(),
                 admins: grp.admins.clone(),
                 created_by: from.to_owned(),
@@ -2062,7 +2097,7 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool
         Some(mut c) if c.accepts(from, grp) => {
             let was_in = c.members.contains(&me);
             c.name = grp.name.clone();
-            c.avatar = grp.avatar.clone();
+            c.avatar = safe_data("avatar", &grp.avatar);
             c.members = grp.members.clone();
             c.admins = grp.admins.clone();
             c.v = grp.v;
@@ -2104,7 +2139,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 c.profile_name = profile.name.chars().take(40).collect();
                 c.about = profile.about.chars().take(140).collect();
                 c.avatar = if profile.avatar.len() <= 60_000 {
-                    profile.avatar.clone()
+                    safe_data("avatar", &profile.avatar)
                 } else {
                     String::new()
                 };
@@ -2167,7 +2202,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 kind: kind.clone(),
                 text: text.chars().take(700).collect(),
                 bg: bg.clone(),
-                data: data.clone(),
+                data: safe_data("image", data),
                 at: *at,
                 ..Default::default()
             };
@@ -2237,6 +2272,13 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 "text".into()
             };
             let at = at.min(ts + 60_000.0);
+            // Une clé Brocolis partagée garde sa clé ; le reste, seulement des
+            // données `data:` du bon type.
+            let data = if shared_key {
+                content.data
+            } else {
+                safe_data(&kind, &content.data)
+            };
             let mut m = Message {
                 chat: c.id.clone(),
                 id: id.clone(),
@@ -2244,7 +2286,9 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 at,
                 kind,
                 text: content.text.chars().take(65_536).collect(),
-                data: content.data,
+                // Une clé Brocolis partagée garde sa clé ; le reste, seulement
+                // des données `data:` du bon type.
+                data,
                 name: content.name,
                 mime: content.mime,
                 size: content.size,
@@ -2264,6 +2308,20 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             };
             if let Some(ttl) = wire.ttl {
                 m.exp = Some(at + ttl as f64 * 1000.0);
+            }
+            // La citation : celle de notre copie du message cité, jamais ce
+            // que l'expéditeur prétend (« Vous : je te dois 500 € »).
+            if let Some(r) = m.reply.as_mut() {
+                match get_message(&c.id, &r.id).await {
+                    Some(orig) => {
+                        r.from = orig.from.clone();
+                        r.text = readable(&orig).chars().take(140).collect();
+                    }
+                    None => {
+                        r.from = String::new();
+                        r.text = r.text.chars().take(140).collect();
+                    }
+                }
             }
             open_message(&mut m);
             if let Some(mut sender) = contact(from)
@@ -2358,7 +2416,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 return;
             }
             let text: String = text.chars().take(65_536).collect();
-            let o = open_brocolis(&text);
+            let o = open_brocolis(&c.id, &text);
             m.bro = o.opened > 0;
             m.text = o.text;
             m.edited = true;
