@@ -186,6 +186,12 @@ struct ConversationView: View {
                 e.activeChat = chatId
                 e.markRead(chatId)
                 if text.isEmpty { text = chat.draft }
+                // Arrivé par « Répondre en privé » : la réponse est prête.
+                if let m = model.privateReply, m.from == chatId {
+                    model.privateReply = nil
+                    reply = m
+                    focused = true
+                }
             }
             .onDisappear {
                 if e.activeChat == chatId { e.activeChat = nil }
@@ -389,6 +395,16 @@ struct ConversationView: View {
                 }
             }
             Button { reply = m; focused = true } label: { Label("Répondre", systemImage: "arrowshape.turn.up.left") }
+            // Dans un groupe, sur le message d'un autre membre : lui répondre
+            // dans votre discussion à deux, sa phrase citée (comme le navigateur).
+            if chat.group, !mine, m.from != "system", !e.blocked(m.from) {
+                Button {
+                    model.privateReply = m
+                    model.openChat(m.from)
+                } label: {
+                    Label("Répondre en privé", systemImage: "person.crop.circle")
+                }
+            }
             if !m.text.isEmpty, !sealed {
                 Button { UIPasteboard.general.string = m.text } label: { Label("Copier", systemImage: "doc.on.doc") }
             }
