@@ -40,6 +40,8 @@ thread_local! {
     static TIMER: Cell<i32> = const { Cell::new(0) };
     static SKEW: Cell<f64> = const { Cell::new(0.0) };
     static BOOT: RefCell<String> = const { RefCell::new(String::new()) };
+    /// La clé VAPID du relais (`ready.push`) : vide s'il n'envoie pas de notifications.
+    static PUSH_KEY: RefCell<String> = const { RefCell::new(String::new()) };
     static STOPPED: Cell<bool> = const { Cell::new(false) };
     static PENDING: RefCell<HashMap<String, Sender<Ack>>> = RefCell::new(HashMap::new());
     static LOOKUPS: RefCell<HashMap<String, Vec<Sender<Value>>>> = RefCell::new(HashMap::new());
@@ -227,8 +229,11 @@ fn on_text(text: &str) {
             RETRY.with(|r| r.set(0));
             let boot = msg["boot"].as_str().unwrap_or("").to_owned();
             BOOT.with(|b| *b.borrow_mut() = boot);
+            let push = msg["push"].as_str().unwrap_or("").to_owned();
+            PUSH_KEY.with(|k| *k.borrow_mut() = push);
             RELAY_V3.with(|r| r.set(None));
             set_state(State::Online);
+            crate::dom::spawn(crate::push::sync());
             let watched: Vec<String> = WATCHED.with(|w| w.borrow().iter().cloned().collect());
             if !watched.is_empty() {
                 raw(&json!({ "t": "watch", "codes": watched }));
@@ -293,10 +298,26 @@ fn on_text(text: &str) {
     }
 }
 
-/// Envoie une enveloppe ; tenue quand le relais l'a reçue.
-pub async fn send(id: &str, to: &str, body: &str, live: bool) -> Ack {
+/// La clé VAPID du relais, vide s'il n'envoie pas de notifications.
+pub fn push_key() -> String {
+    PUSH_KEY.with(|k| k.borrow().clone())
+}
+
+/// Donne (ou retire) au relais l'adresse Web Push de ce navigateur.
+pub fn push_endpoint(endpoint: &str, on: bool) -> bool {
+    raw(&json!({ "t": "push", "endpoint": endpoint, "on": on }))
+}
+
+/// Envoie une enveloppe ; tenue quand le relais l'a reçue. `wake` : un vrai
+/// message, qui réveille un destinataire hors ligne (pas un accusé de
+/// lecture, une réaction ou un profil).
+pub async fn send(id: &str, to: &str, body: &str, live: bool, wake: bool) -> Ack {
     let d = Deferred::<Ack>::new();
-    if !raw(&json!({ "t": "send", "id": id, "to": to, "body": body, "live": live })) {
+    let mut msg = json!({ "t": "send", "id": id, "to": to, "body": body, "live": live });
+    if wake {
+        msg["wake"] = json!(true);
+    }
+    if !raw(&msg) {
         return Ack::Err("offline".into());
     }
     PENDING.with(|p| p.borrow_mut().insert(id.to_owned(), d.sender()));
