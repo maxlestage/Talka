@@ -3368,3 +3368,40 @@ body.locked .lock-screen {
   text-decoration: underline;
   background: none;
 }
+
+/* Les mentions (« @Léa ») : la liste des membres au-dessus de la saisie, le
+   badge « @ » de la liste des discussions, et la mention dans la bulle. */
+.mention-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.mention-list:empty {
+  display: none;
+}
+
+.mention-item {
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  font-weight: 600;
+  text-align: left;
+}
+
+.mention-item:hover,
+.mention-item:focus-visible {
+  background: var(--hover);
+}
+
+.badge.mention {
+  min-width: 22px;
+  padding: 0;
+  font-weight: 700;
+}
+
+.text .mention {
+  color: var(--accent);
+  font-weight: 600;
+}

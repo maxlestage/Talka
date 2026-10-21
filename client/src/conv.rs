@@ -15,7 +15,7 @@ use crate::crypto::pretty;
 use crate::dom::*;
 use crate::emoji::{QUICK, picker, remember};
 use crate::media::{self, MAX_FILE, Recorder};
-use crate::model::{Chat, Content, Message, Reply};
+use crate::model::{Chat, Content, Message, Reply, fold, mention_query, mentions_in};
 use crate::sounds;
 use crate::ui::{
     avatar, avatar_presence, color_of, open_add_contact, open_chat, open_image, open_info,
@@ -1296,7 +1296,13 @@ fn content(m: &Message) -> El {
         }
         _ => h("div.text")
             .class_if("big-emoji", only_emoji(&m.text))
-            .children(rich_text(&m.text)),
+            .children(rich_text_with(
+                &m.text,
+                &m.mentions
+                    .iter()
+                    .map(|c| core::mention_label(c))
+                    .collect::<Vec<_>>(),
+            )),
     }
 }
 
@@ -1805,6 +1811,70 @@ fn autosize(ta: &HtmlTextAreaElement) {
     let _ = ta.style().set_property("height", &format!("{hgt}px"));
 }
 
+/// Les membres que « @… » (avant le curseur) désigne ; en choisir un écrit
+/// « @Nom » à sa place.
+fn refresh_mention_list(
+    ta: &HtmlTextAreaElement,
+    list: &Element,
+    chat: &Chat,
+    update_btn: Rc<dyn Fn()>,
+) {
+    let value: Vec<u16> = ta.value().encode_utf16().collect();
+    let cursor = (ta
+        .selection_start()
+        .ok()
+        .flatten()
+        .unwrap_or(value.len() as u32) as usize)
+        .min(value.len());
+    let before = String::from_utf16_lossy(&value[..cursor]);
+    let after = String::from_utf16_lossy(&value[cursor..]);
+    let Some(q) = chat.group.then(|| mention_query(&before)).flatten() else {
+        replace(list, Child::None);
+        return;
+    };
+    let me = core::my_code();
+    let fq = fold(&q);
+    let found: Vec<(String, String)> = chat
+        .members
+        .iter()
+        .filter(|c| **c != me)
+        .map(|c| (c.clone(), core::mention_label(c)))
+        .filter(|(_, label)| fold(label).contains(&fq))
+        .take(6)
+        .collect();
+    let items: Vec<Element> = found
+        .into_iter()
+        .map(|(code, label)| {
+            let (ta, list, before, after, u) = (
+                ta.clone(),
+                list.clone(),
+                before.clone(),
+                after.clone(),
+                update_btn.clone(),
+            );
+            let q_len = q.len();
+            h("button.mention-item")
+                .attr("type", "button")
+                .attr("role", "option")
+                .style("color", color_of(&code))
+                .text(format!("@{label}"))
+                .click(move || {
+                    let head = &before[..before.len() - q_len - 1];
+                    let inserted = format!("{head}@{label} ");
+                    let pos = inserted.encode_utf16().count() as u32;
+                    ta.set_value(&format!("{inserted}{after}"));
+                    let _ = ta.set_selection_range(pos, pos);
+                    let _ = ta.focus();
+                    replace(&list, Child::None);
+                    autosize(&ta);
+                    u();
+                })
+                .el()
+        })
+        .collect();
+    replace(list, items);
+}
+
 pub fn render_composer(focus_it: bool) {
     let (Some(id), Some(host)) = (current(), el(|c| c.composer.clone())) else {
         return;
@@ -1863,9 +1933,29 @@ pub fn render_composer(focus_it: bool) {
                     b.set_attribute("aria-label", if has { "Envoyer" } else { "Message vocal" });
             })
         };
+        // « @ » dans un groupe : les membres à mentionner.
+        let mention_list = h("div.mention-list")
+            .attr("role", "listbox")
+            .attr("aria-label", "Mentionner un membre")
+            .el();
+        let refresh_mentions: Rc<dyn Fn()> = {
+            let (ta, list, update_btn, chat) = (
+                ta.clone(),
+                mention_list.clone(),
+                update_btn.clone(),
+                chat.clone(),
+            );
+            Rc::new(move || refresh_mention_list(&ta, &list, &chat, update_btn.clone()))
+        };
         let submit: Rc<dyn Fn()> = {
-            let (ta, update_btn) = (ta.clone(), update_btn.clone());
+            let (ta, update_btn, list, chat) = (
+                ta.clone(),
+                update_btn.clone(),
+                mention_list.clone(),
+                chat.clone(),
+            );
             Rc::new(move || {
+                replace(&list, Child::None);
                 let text = ta.value().trim().to_owned();
                 let Some(chat_id) = current() else { return };
                 if let Some(editing) = with(|c| c.editing.take()) {
@@ -1891,6 +1981,19 @@ pub fn render_composer(focus_it: bool) {
                 if crate::brocoli::summons(&text) {
                     crate::brocoli::rain();
                 }
+                // Les membres mentionnés (« @Léa ») qui sont restés dans le texte.
+                let mentions = if chat.group {
+                    let me = core::my_code();
+                    let members: Vec<(String, String)> = chat
+                        .members
+                        .iter()
+                        .filter(|c| **c != me)
+                        .map(|c| (c.clone(), core::mention_label(c)))
+                        .collect();
+                    mentions_in(&text, &members)
+                } else {
+                    Vec::new()
+                };
                 spawn(async move {
                     core::send_message(
                         &chat_id,
@@ -1898,6 +2001,7 @@ pub fn render_composer(focus_it: bool) {
                             kind: "text".into(),
                             text,
                             reply,
+                            mentions,
                             ..Default::default()
                         },
                     )
@@ -1913,10 +2017,11 @@ pub fn render_composer(focus_it: bool) {
             })
         };
         {
-            let (t, u) = (ta.clone(), update_btn.clone());
+            let (t, u, rm) = (ta.clone(), update_btn.clone(), refresh_mentions.clone());
             listen(&ta, "input", move |_| {
                 autosize(&t);
                 u();
+                rm();
                 if !t.value().is_empty()
                     && let Some(id) = current()
                 {
@@ -1936,6 +2041,10 @@ pub fn render_composer(focus_it: bool) {
                 {
                     e.prevent_default();
                     s();
+                } else if k.key() == "Escape" && query(".mention-list button").is_some() {
+                    if let Some(l) = query(".mention-list") {
+                        replace(&l, Child::None);
+                    }
                 } else if k.key() == "Escape" && with(|c| c.reply.is_some() || c.editing.is_some())
                 {
                     with(|c| {
@@ -2074,6 +2183,7 @@ pub fn render_composer(focus_it: bool) {
         replace(
             &host,
             vec![
+                Child::from(mention_list),
                 Child::from(bar),
                 h("div.composer")
                     .child(

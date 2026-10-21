@@ -1054,6 +1054,13 @@ fn chat_item(chat: &Chat) -> Element {
                                         .child(icon_class("belloff", "small"))
                                 }))
                                 .child(chat.pinned.then(|| icon_class("pin", "small")))
+                                // Mentionné depuis la dernière lecture.
+                                .child(chat.mentioned.then(|| {
+                                    h("span.badge.mention")
+                                        .attr("title", "Vous êtes mentionné")
+                                        .attr("aria-label", "Vous êtes mentionné")
+                                        .text("@")
+                                }))
                                 .child(unread.then(|| {
                                     h("span.badge").class_if("muted", chat.muted).text(
                                         if chat.unread > 0 {
@@ -1266,7 +1273,8 @@ fn on_incoming(chat: Chat, message: crate::model::Message, active: bool) {
         }
         return;
     }
-    if chat.muted {
+    // En sourdine, seulement si l'on nous mentionne (« @Léa »).
+    if chat.muted && !message.mentions.contains(&core::my_code()) {
         return;
     }
     let text = if message.kind == "text" && !message.is_capsule() {
