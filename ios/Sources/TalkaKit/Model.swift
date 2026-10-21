@@ -92,9 +92,13 @@ public struct Settings: Codable, Equatable, Sendable {
     public var lockAfter = 0
     /// L'adresse du serveur Talka.
     public var server = ""
+    /// Les messages plus vieux que ça (en jours) s'effacent de l'appareil,
+    /// sauf les messages importants (⭐). 0 : gardés pour toujours.
+    public var keepDays = keepDaysDefault
 
     enum CodingKeys: String, CodingKey {
         case theme, notify, sound, wallpaper, server
+        case keepDays = "keep_days"
         case readReceipts = "read_receipts"
         case hideOnline = "hide_online"
         case presenceDot = "presence_dot"
@@ -114,6 +118,18 @@ public struct Settings: Codable, Equatable, Sendable {
         wallpaper = c.v(.wallpaper, d.wallpaper); fontSize = c.v(.fontSize, d.fontSize)
         lockAfter = c.v(.lockAfter, d.lockAfter); server = c.v(.server, d.server)
         presenceDot = c.v(.presenceDot, d.presenceDot)
+        keepDays = c.v(.keepDays, d.keepDays)
+    }
+}
+
+/// Par défaut, les messages s'effacent au bout de 3 mois (comme le navigateur).
+public let keepDaysDefault = 90
+
+extension Message {
+    /// Trop vieux pour être gardé (`keepDays` jours, 0 : jamais) ? Les
+    /// messages importants (⭐) restent.
+    public func tooOld(keepDays: Int, now: Double) -> Bool {
+        keepDays > 0 && !starred && at < now - Double(keepDays) * 86_400_000
     }
 }
 

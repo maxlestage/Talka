@@ -32,6 +32,9 @@ pub struct Settings {
     pub lock_after: u32,
     /// Sur GitHub Pages sans relais configuré : l'adresse choisie.
     pub server: String,
+    /// Les messages plus vieux que ça (en jours) s'effacent de l'appareil,
+    /// sauf les messages importants (⭐). 0 : gardés pour toujours.
+    pub keep_days: u32,
 }
 
 impl Default for Settings {
@@ -48,6 +51,7 @@ impl Default for Settings {
             font_size: 15,
             lock_after: 0,
             server: String::new(),
+            keep_days: KEEP_DAYS,
         }
     }
 }
@@ -196,7 +200,17 @@ pub(crate) fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
 
+/// Par défaut, les messages s'effacent au bout de 3 mois.
+pub const KEEP_DAYS: u32 = 90;
+const DAY_MS: f64 = 86_400_000.0;
+
 impl Message {
+    /// Trop vieux pour être gardé (`keep_days` jours, 0 : jamais) ? Les
+    /// messages importants (⭐) restent.
+    pub fn too_old(&self, keep_days: u32, now: f64) -> bool {
+        keep_days > 0 && !self.starred && self.at < now - f64::from(keep_days) * DAY_MS
+    }
+
     /// Une capsule temporelle (scellée ou déjà ouverte).
     pub fn is_capsule(&self) -> bool {
         self.open_at > 0.0
@@ -467,6 +481,27 @@ mod tests {
 
     fn b64_len(n: usize) -> usize {
         n.div_ceil(3) * 4
+    }
+
+    #[test]
+    fn old_messages_go_except_starred() {
+        let now = 1_800_000_000_000.0;
+        let m = |days: f64, starred: bool| Message {
+            at: now - days * DAY_MS,
+            starred,
+            ..Default::default()
+        };
+        assert!(m(91.0, false).too_old(KEEP_DAYS, now));
+        assert!(!m(89.0, false).too_old(KEEP_DAYS, now));
+        assert!(
+            !m(400.0, true).too_old(KEEP_DAYS, now),
+            "les importants restent"
+        );
+        assert!(!m(4000.0, false).too_old(0, now), "0 : pour toujours");
+        assert!(m(31.0, false).too_old(30, now));
+        // Un réglage d'avant cette version : 3 mois.
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(old.keep_days, KEEP_DAYS);
     }
 
     #[test]
