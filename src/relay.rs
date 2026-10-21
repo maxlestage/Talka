@@ -29,11 +29,15 @@
 //! | → (anonyme) | `{"t":"send","id","to","sign","dh","jeton","body","live","wake","apercu"}` | `body` scellé ; `jeton` : le jeton de remise de `to`, signé par sa clé (`sign`, `dh` : ses clés publiques) ; ← `ack` ou `error` (`"jeton"`) |
 //! | ← | `{"t":"msg","n","id","sealed":true,"body","ts"}` | un message scellé : l'expéditeur est dans `body`, que seul le destinataire ouvre |
 //! | → | `{"t":"push","endpoint","p256dh","auth","on"}` | l'abonnement Web Push de cet appareil (`"on":false` pour l'oublier) ; ← `{"t":"push","ok"}` |
+//! | → | `{"t":"revoke","nonces":[…]}` | les nonces des jetons de remise révoqués par ce code (contacts bloqués) ; la liste remplace la précédente |
 //!
-//! L'expéditeur scellé (voir `docs/SECURITE.md`, §7.10) : sur une connexion
+//! Une boîte (ou toutes ensemble) pleine refuse un envoi (`"error":"full"`) ;
+//! une adresse IP n'ouvre pas plus de `MAX_PER_IP` connexions à la fois.
+//!
+//! L'expéditeur scellé (voir `docs/SECURITE.md`, §7.9) : sur une connexion
 //! anonyme, le relais ne sait pas qui écrit ; il vérifie seulement que
-//! l'expéditeur détient le jeton de remise du destinataire (que celui-ci ne
-//! donne qu'à ses contacts), et livre sans `from`. `ready.sealed` annonce
+//! l'expéditeur détient un jeton de remise du destinataire (un par contact,
+//! révocable) et qu'il n'est pas révoqué, et livre sans `from`. `ready.sealed` annonce
 //! qu'il sait le faire.
 //!
 //! Les notifications (voir `crate::push`) : quand un message marqué `wake`
