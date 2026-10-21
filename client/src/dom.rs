@@ -1202,6 +1202,12 @@ pub fn scope_into<T>(name: &str, f: impl FnOnce() -> T) -> T {
 
 /// Le texte d'un message : liens cliquables, *gras*, _italique_, ~barré~, `code`.
 pub fn rich_text(text: &str) -> Vec<Child> {
+    rich_text_with(text, &[])
+}
+
+/// Le même, avec les mentions (« @Léa ») des libellés donnés mises en
+/// valeur.
+pub fn rich_text_with(text: &str, mentions: &[String]) -> Vec<Child> {
     // Un jeton Brocolis qu'aucune clé n'ouvre : « 🔒🥦 », pas un pavé de base64.
     let masked = crate::jetons::masked(text);
     let text: &str = &masked;
@@ -1240,6 +1246,20 @@ pub fn rich_text(text: &str) -> Vec<Child> {
             );
             i = j;
             continue;
+        }
+        // Une mention : « @ » en début de mot, suivi d'un libellé connu.
+        if chars[i] == '@' && at_word_start {
+            let after: String = chars[i + 1..].iter().collect();
+            if let Some(label) = mentions.iter().find(|l| {
+                !l.is_empty() && crate::model::fold(&after).starts_with(&crate::model::fold(l))
+            }) {
+                let n = label.chars().count().min(chars.len() - i - 1);
+                let shown: String = chars[i..i + 1 + n].iter().collect();
+                flush(&mut plain, &mut out);
+                out.push(h("span.mention").text(&shown).into());
+                i += 1 + n;
+                continue;
+            }
         }
         let c = chars[i];
         if "*_~`".contains(c)

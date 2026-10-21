@@ -491,6 +491,7 @@ struct ConversationView: View {
                 .background(.bar)
         } else {
             VStack(spacing: 0) {
+                mentionSuggestions(e, chat)
                 if let m = editing ?? reply {
                     HStack {
                         RoundedRectangle(cornerRadius: 2).fill(Color.talkaGreen).frame(width: 4)
@@ -601,6 +602,27 @@ struct ConversationView: View {
         }
     }
 
+    /// « @… » dans un groupe : les membres dont le nom correspond, comme
+    /// WhatsApp ; un toucher complète « @Léa ».
+    @ViewBuilder func mentionSuggestions(_ e: Engine, _ chat: Chat) -> some View {
+        if let match = mentionMatches(e, chat) {
+            MentionBar(items: match.found) { label in
+                text = String(text.dropLast(match.query.count + 1)) + "@" + label + " "
+            }
+        }
+    }
+
+    /// Ce qu'on tape après « @ », et les membres dont le nom correspond.
+    func mentionMatches(_ e: Engine, _ chat: Chat) -> (query: String, found: [MentionCandidate])? {
+        guard chat.group, editing == nil, let q = Mentions.query(text) else { return nil }
+        let fq = Mentions.fold(q)
+        let found: [MentionCandidate] = e.mentionCandidates(chat)
+            .filter { Mentions.fold($0.label).contains(fq) }
+            .prefix(6)
+            .map { MentionCandidate(code: $0.code, label: $0.label) }
+        return found.isEmpty ? nil : (query: q, found: found)
+    }
+
     func submit(_ e: Engine) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
@@ -608,7 +630,11 @@ struct ConversationView: View {
             if t != m.text { e.edit(chatId, m.id, text: t) }
             editing = nil
         } else {
-            send(e, Content(text: String(t.prefix(8000))))
+            var content = Content(text: String(t.prefix(8000)))
+            if let chat = e.chat(chatId), chat.group {
+                content.mentions = Mentions.found(in: content.text, members: e.mentionCandidates(chat))
+            }
+            send(e, content)
         }
         text = ""
         e.updateChat(chatId) { $0.draft = "" }
@@ -855,7 +881,7 @@ struct MessageRow: View {
                 } else {
                     Label("Photo", systemImage: "photo")
                 }
-                if !m.text.isEmpty { Text(richText(m.text)).font(.system(size: size)) }
+                if !m.text.isEmpty { Text(richText(m.text, mentions: mentionLabels(e, m))).font(.system(size: size)) }
             }
         case "voice":
             VoiceBubble(message: m)
@@ -866,7 +892,7 @@ struct MessageRow: View {
         case "contact":
             ContactBubble(engine: e, message: m)
         default:
-            Text(richText(m.text))
+            Text(richText(m.text, mentions: mentionLabels(e, m)))
                 .font(.system(size: big ? 46 : size))
                 .textSelection(.enabled)
         }
@@ -1122,5 +1148,51 @@ struct ReactionsSheet: View {
                 ToolbarItem(placement: .confirmationAction) { Button("OK") { dismiss() } }
             }
         }
+    }
+}
+
+/// Les libellés des personnes que `m` mentionne.
+@MainActor func mentionLabels(_ e: Engine, _ m: Message) -> [String] {
+    m.mentions.map { code in e.mentionLabel(code) }
+}
+
+/// Un membre à mentionner (« @Léa »).
+struct MentionCandidate: Identifiable {
+    let code: String
+    let label: String
+    var id: String { code }
+}
+
+/// Les membres proposés au-dessus de la saisie ; un toucher complète.
+struct MentionBar: View {
+    let items: [MentionCandidate]
+    let onPick: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(items) { item in
+                    chip(item)
+                }
+            }
+            .padding(.horizontal, 8)
+        }
+        .padding(.top, 6)
+        .accessibilityLabel("Mentionner un membre")
+    }
+
+    func chip(_ item: MentionCandidate) -> some View {
+        let color: Color = Avatar.color(item.code)
+        return Button {
+            onPick(item.label)
+        } label: {
+            Text("@" + item.label)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(color)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .frosted(in: .capsule)
+        }
+        .buttonStyle(.plain)
     }
 }

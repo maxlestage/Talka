@@ -256,6 +256,8 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public var lastAt: Double = 0
     public var unread = 0
     public var markedUnread = false
+    /// On nous y a mentionné depuis la dernière lecture (« @ » dans la liste).
+    public var mentioned = false
     public var pinned = false
     public var archived = false
     public var muted = false
@@ -283,6 +285,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
         case createdAt = "created_at"
         case lastAt = "last_at"
         case markedUnread = "marked_unread"
+        case mentioned
         case hasExp = "has_exp"
         case pinMsg = "pin_msg"
     }
@@ -302,7 +305,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
         muted = c.v(.muted, false); timer = c.v(.timer, 0); draft = c.v(.draft, ""); wallpaper = c.v(.wallpaper, "")
         left = c.v(.left, false); v = c.v(.v, 0); last = c.v(.last, nil); hasExp = c.v(.hasExp, false)
         pinMsg = c.v(.pinMsg, ""); brocolis = c.v(.brocolis, [])
-        muteUntil = c.v(.muteUntil, nil)
+        muteUntil = c.v(.muteUntil, nil); mentioned = c.v(.mentioned, false)
     }
 }
 
@@ -361,18 +364,20 @@ public struct Content: Codable, Equatable, Sendable {
     /// Une capsule temporelle : à ouvrir à cette heure (ms). Absent sinon ;
     /// les versions qui ne la connaissent pas affichent le message.
     public var openAt: Double?
+    /// Dans un groupe : les membres mentionnés (« @Léa »), par leur code.
+    public var mentions: [String] = []
 
     enum CodingKeys: String, CodingKey {
-        case kind, text, data, name, mime, size, dur, w, h, code, reply, fwd
+        case kind, text, data, name, mime, size, dur, w, h, code, reply, fwd, mentions
         case openAt = "open_at"
     }
 
     public init(kind: String = "text", text: String = "", data: String = "", name: String = "", mime: String = "",
                 size: Double = 0, dur: Double = 0, w: Int = 0, h: Int = 0, code: String = "", reply: Reply? = nil, fwd: Bool = false,
-                openAt: Double? = nil) {
+                openAt: Double? = nil, mentions: [String] = []) {
         self.kind = kind; self.text = text; self.data = data; self.name = name; self.mime = mime
         self.size = size; self.dur = dur; self.w = w; self.h = h; self.code = code; self.reply = reply; self.fwd = fwd
-        self.openAt = openAt
+        self.openAt = openAt; self.mentions = mentions
     }
 
     public init(from decoder: Decoder) throws {
@@ -380,7 +385,7 @@ public struct Content: Codable, Equatable, Sendable {
         kind = c.v(.kind, "text"); text = c.v(.text, ""); data = c.v(.data, ""); name = c.v(.name, "")
         mime = c.v(.mime, ""); size = c.v(.size, 0); dur = c.v(.dur, 0); w = c.v(.w, 0); h = c.v(.h, 0)
         code = c.v(.code, ""); reply = c.v(.reply, nil); fwd = c.v(.fwd, false)
-        openAt = c.v(.openAt, nil)
+        openAt = c.v(.openAt, nil); mentions = c.v(.mentions, [])
     }
 
     /// Seulement ce qui n'est pas vide (le navigateur complète avec les
@@ -400,6 +405,7 @@ public struct Content: Codable, Equatable, Sendable {
         try c.encodeIfPresent(reply, forKey: .reply)
         if fwd { try c.encode(fwd, forKey: .fwd) }
         try c.encodeIfPresent(openAt, forKey: .openAt)
+        if !mentions.isEmpty { try c.encode(mentions, forKey: .mentions) }
     }
 }
 
@@ -438,9 +444,11 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     public var openAt: Double?
     /// Arrivé ou parti chiffré par Brocolis 🥦 (et ouvert sur cet appareil).
     public var bro = false
+    /// Les membres mentionnés (« @Léa »), par leur code.
+    public var mentions: [String] = []
 
     enum CodingKeys: String, CodingKey {
-        case chat, id, from, at, kind, text, data, name, mime, size, dur, w, h, code, reply, fwd, status, to, reactions, edited, deleted, starred, exp, bro
+        case chat, id, from, at, kind, text, data, name, mime, size, dur, w, h, code, reply, fwd, status, to, reactions, edited, deleted, starred, exp, bro, mentions
         case openAt = "open_at"
         case sentTo = "sent_to"
         case deliveredTo = "delivered_to"
@@ -452,7 +460,7 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         self.chat = chat; self.id = id; self.from = from; self.at = at
         kind = content.kind; text = content.text; data = content.data; name = content.name; mime = content.mime
         size = content.size; dur = content.dur; w = content.w; h = content.h; code = content.code
-        reply = content.reply; fwd = content.fwd; openAt = content.openAt
+        reply = content.reply; fwd = content.fwd; openAt = content.openAt; mentions = content.mentions
     }
 
     /// Une capsule temporelle (scellée ou déjà ouverte).
@@ -484,7 +492,7 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         sentTo = c.v(.sentTo, []); deliveredTo = c.v(.deliveredTo, []); readBy = c.v(.readBy, [])
         reactions = c.v(.reactions, [:]); edited = c.v(.edited, false); deleted = c.v(.deleted, false)
         starred = c.v(.starred, false); exp = c.v(.exp, nil); readByMe = c.v(.readByMe, false)
-        openAt = c.v(.openAt, nil); bro = c.v(.bro, false)
+        openAt = c.v(.openAt, nil); bro = c.v(.bro, false); mentions = c.v(.mentions, [])
     }
 
     /// `chat|id` : la clé dans le stockage.
@@ -492,7 +500,7 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
 
     public var content: Content {
         Content(kind: kind, text: text, data: data, name: name, mime: mime, size: size, dur: dur, w: w, h: h, code: code, reply: reply, fwd: fwd,
-                openAt: openAt)
+                openAt: openAt, mentions: mentions)
     }
 
     public enum Tick: String, Sendable { case pending, sent, delivered, read, failed }
@@ -809,5 +817,34 @@ public enum Attachment {
         }
         wire.body = .msg(id: id, at: at, pn: pn, content: full)
         return wire.json()
+    }
+}
+
+// ----- Les mentions (« @Léa ») -------------------------------------------------
+//
+// Comme `mention_query` / `mentions_in` du navigateur.
+public enum Mentions {
+    /// Sans majuscules ni accents, comme `fold` du navigateur.
+    public static func fold(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+
+    /// Ce qu'on tape après « @ » (le texte jusqu'au curseur) : le « @ » doit
+    /// commencer un mot ; pas de retour à la ligne, 30 caractères au plus.
+    public static func query(_ before: String) -> String? {
+        guard let at = before.lastIndex(of: "@") else { return nil }
+        if at > before.startIndex, !before[before.index(before: at)].isWhitespace { return nil }
+        let q = String(before[before.index(after: at)...])
+        return !q.contains("\n") && q.count <= 30 ? q : nil
+    }
+
+    /// Les membres mentionnés dans `text` : ceux dont « @libellé » y figure.
+    public static func found(in text: String, members: [(code: String, label: String)]) -> [String] {
+        let folded = fold(text)
+        var out: [String] = []
+        for m in members where !m.label.isEmpty && folded.contains("@" + fold(m.label)) && !out.contains(m.code) {
+            out.append(m.code)
+        }
+        return out
     }
 }

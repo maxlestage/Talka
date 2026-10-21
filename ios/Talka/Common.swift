@@ -148,6 +148,25 @@ func temporaryFile(_ data: Data, name: String) -> URL {
 
 // MARK: Le texte des messages
 
+/// Le texte d'un message, avec les « @Léa » qu'il mentionne en couleur.
+func richText(_ text: String, mentions: [String]) -> AttributedString {
+    var out = richText(text)
+    var found: [Range<AttributedString.Index>] = []
+    for label in mentions where !label.isEmpty {
+        var from = out.startIndex
+        while from < out.endIndex,
+              let r = out[from...].range(of: "@" + label, options: [.caseInsensitive, .diacriticInsensitive]) {
+            found.append(r)
+            from = r.upperBound
+        }
+    }
+    for r in found {
+        out[r].swiftUI.foregroundColor = Color.talkaAccent
+        out[r].inlinePresentationIntent = .stronglyEmphasized
+    }
+    return out
+}
+
 /// Liens cliquables, *gras*, _italique_, ~barré~, `code` : comme le navigateur.
 func richText(_ text: String) -> AttributedString {
     // Un jeton Brocolis qu'aucune clé n'ouvre : « 🔒🥦 », pas un pavé de base64.
