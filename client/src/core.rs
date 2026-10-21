@@ -674,6 +674,9 @@ fn profile_body(code: &str) -> Body {
 
 // ----- Plusieurs appareils (v4, docs/SECURITE.md §7.11) ------------------------
 
+/// Le nom d'un appareil qui vient d'être lié, jusqu'à ce qu'il donne le sien.
+const NEW_DEVICE: &str = "Nouvel appareil";
+
 /// Le nom de cet appareil, tel que le montre la liste des appareils.
 fn device_name() -> String {
     let ua = dom::window().navigator().user_agent().unwrap_or_default();
@@ -720,6 +723,16 @@ async fn ensure_device() {
     }
     DEV.with(|d| *d.borrow_mut() = dev.clone());
     let mut list: Devices = store::read("kv", "appareils").await.unwrap_or_default();
+    // Lié depuis un autre appareil : il prend son vrai nom.
+    if let Some(d) = list
+        .list
+        .iter_mut()
+        .find(|d| d.dev == dev && d.name == NEW_DEVICE)
+    {
+        d.name = device_name();
+        list.v += 1;
+        store::write("kv", "appareils", &list).await;
+    }
     if !list.has(&dev) {
         list.list.push(Device {
             dev: dev.clone(),
@@ -881,7 +894,7 @@ pub async fn link_device(text: &str) -> Result<String, String> {
     let (ek, key) = crypto::link_answer(&offer).ok_or("Code de liaison illisible.".to_owned())?;
     list.list.push(Device {
         dev: offer.dev.clone(),
-        name: "Nouvel appareil".into(),
+        name: NEW_DEVICE.into(),
         at: now(),
         nk: String::new(),
     });
