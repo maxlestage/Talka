@@ -359,6 +359,15 @@ pub async fn on_signal(from: String, body: Body, live: bool) {
         }));
         return;
     }
+    // Pris ou refusé sur un autre de nos appareils (v4) : on cesse de sonner.
+    if op == "elsewhere" {
+        if let Some(c) =
+            current().filter(|c| c.id == call_id && c.incoming && c.pc.borrow().is_none())
+        {
+            end(&c, "Pris sur un autre appareil", false).await;
+        }
+        return;
+    }
     let Some(c) = current().filter(|c| c.id == call_id && c.peer == from) else {
         return;
     };
@@ -406,6 +415,8 @@ pub async fn on_signal(from: String, body: Body, live: bool) {
 async fn accept(c: Rc<Call>) {
     clear_timer(c.no_answer.get());
     sounds::stop_ring();
+    // Nos autres appareils cessent de sonner.
+    core::call_taken(&c.id);
     toggle_class(&c.root, "ringing", false);
     set_status(&c, "Connexion…");
     if !get_media(&c).await {
@@ -455,6 +466,9 @@ fn hangup(c: &Rc<Call>) {
     } else {
         "end"
     };
+    if op == "reject" {
+        core::call_taken(&c.id);
+    }
     core::send_call_signal(
         &c.peer,
         Body::Call {

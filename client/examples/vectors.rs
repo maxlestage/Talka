@@ -54,6 +54,7 @@ fn main() {
             body: Body::Receipt {
                 st: "read".into(),
                 ids: vec!["m1".into(), "m2".into()],
+                dev: "00000000000000b1".into(),
             },
             grp: None,
             g: Some("g1".into()),
@@ -79,6 +80,18 @@ fn main() {
             jeton: String::new(),
             nk: nk.clone(),
             pj: true,
+            devs: vec![
+                DevInfo {
+                    d: "00000000000000b1".into(),
+                    nk: nk.clone(),
+                },
+                DevInfo {
+                    d: "00000000000000b2".into(),
+                    nk: String::new(),
+                },
+            ],
+            dv: 3,
+            bx: true,
         }),
         Wire::new(Body::Group {
             op: "update".into(),
@@ -133,6 +146,23 @@ fn main() {
             g: Some("g1".into()),
             ttl: None,
         },
+        // Entre deux appareils d'un même compte (v4) : un message envoyé
+        // depuis l'autre appareil.
+        Wire::new(Body::Sync {
+            op: "wire".into(),
+            c: b.code.clone(),
+            w: Some(Box::new(Wire::new(Body::Msg {
+                id: "m11".into(),
+                at: 1_700_000_000_300.0,
+                pn: String::new(),
+                content: Content {
+                    kind: "text".into(),
+                    text: "Envoyé de l'iPad".into(),
+                    ..Default::default()
+                },
+            }))),
+            d: serde_json::Value::Null,
+        }),
     ];
     let wire_json: Vec<String> = wires
         .iter()
@@ -224,6 +254,8 @@ fn main() {
         msg_id: "m1".into(),
         seq: 1.0,
         boot: "B00T".into(),
+        sent: vec!["00000000000000b1".into()],
+        got: Vec::new(),
     };
 
     // Brocolis 🥦 : des jetons du navigateur, que l'iPhone doit ouvrir.
@@ -259,7 +291,45 @@ fn main() {
         .unwrap(),
     )
     .unwrap();
+    // v4 : boîtes tournantes, liaison, paquet d'appareil, expéditeur
+    // scellé avec l'appareil (docs/SECURITE.md §7.11 à §7.13).
+    let boites = crypto::boites_key(&a, &b.code, &b.dh).unwrap();
+    let lk = p256::SecretKey::random(&mut rand_core::OsRng);
+    let offer = crypto::LinkOffer {
+        dev: "00000000000000c3".into(),
+        lid: [7u8; 16],
+        lk: lk.public_key().to_encoded_point(false).as_bytes().to_vec(),
+    };
+    let (ek, link_key) = crypto::link_answer(&offer).unwrap();
+    let link_chunks = crypto::link_seal(
+        &link_key,
+        &offer.lid,
+        &ek,
+        "{\"talka\":\"lien\"}".as_bytes(),
+    )
+    .unwrap();
+    let engine = talka_web::v3::Engine::start(None, 1_000);
+    let (dev_bundle, dev_sig) = engine.published_device(&a, "00000000000000a1").unwrap();
+    let v4 = json!({
+        "relais": crypto::OFFICIAL_RELAY,
+        "jour": { "ms": 1_700_000_000_000.0_f64, "jour": crypto::day(1_700_000_000_000.0) },
+        "boites_ab": crypto::b64(&boites),
+        "boite_a_vers_b1": crypto::boite(&boites, &b.code, "00000000000000b1", 19_675),
+        "scelle_fd": crypto::seal_sender_from(&a.code, "00000000000000a1", &b.code, &b.dh, "corps").unwrap(),
+        "paquet": { "dev": "00000000000000a1", "bundle": dev_bundle, "sig": dev_sig },
+        "lien": {
+            "texte": offer.text(),
+            "lk_priv": crypto::b64(&lk.to_bytes()),
+            "boite": offer.boite(),
+            "ek": crypto::b64(&ek),
+            "cle": crypto::b64(&link_key),
+            "verif": crypto::link_verification(&ek, &offer.lk),
+            "morceaux": link_chunks,
+            "clair": "{\"talka\":\"lien\"}",
+        },
+    });
     let vectors = json!({
+        "v4": v4,
         "brocolis": brocolis,
         "code_of_empty": crypto::code_of(&[], &[]),
         "a": a,
