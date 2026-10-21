@@ -152,7 +152,8 @@ en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
   suppression pour tous ; réactions (double-clic ❤️) ; recherche ; brouillons ;
   `*gras*`, `_italique_`, `~barré~`, `` `code` ``, liens
 - 👥 groupes : création, photo, renommage, ajout et retrait de membres,
-  admins, départ
+  admins, départ ; mentions « @Léa » (la personne est prévenue même en
+  sourdine, « @ » dans la liste des discussions)
 - 📹 appels audio et vidéo en WebRTC (d'appareil à appareil), micro, caméra,
   changement de caméra, historique ; serveurs TURN avec `TALKA_ICE_SERVERS`
 - 🎙️ vocaux avec forme d'onde et vitesse 1×/1,5×/2× ; 📷 photos réduites

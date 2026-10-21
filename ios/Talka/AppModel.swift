@@ -331,7 +331,8 @@ final class AppModel {
             if e.settings.sound { Sounds.sent() }
             return
         }
-        guard !chat.muted else { return }
+        // En sourdine, seulement si l'on nous mentionne (« @Léa »).
+        guard !chat.muted || message.mentions.contains(e.me.code) else { return }
         let who = e.displayName(message.from)
         let text = message.kind == "text" && !message.isCapsule ? Brocolis.masked(message.text) : Engine.preview(message)
         let body = chat.group ? "\(who) : \(text)" : text
