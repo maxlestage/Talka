@@ -371,6 +371,19 @@ extension View {
 
     /// Le verre dépoli sur le fond de la discussion : Liquid Glass sur iOS 26,
     /// un matériau très fin avant.
+    /// Une bulle de verre, à peine teintée de sa couleur : le fond d'écran
+    /// se voit à travers, comme la barre de saisie. `enabled` faux : rien.
+    @ViewBuilder func bubbleGlass(_ tint: Color, enabled: Bool = true, in shape: some Shape) -> some View {
+        if !enabled {
+            self
+        } else if #available(iOS 26, *) {
+            glassEffect(.regular.tint(tint.opacity(0.35)), in: shape)
+        } else {
+            background(tint.opacity(0.45), in: shape)
+                .overlay(shape.stroke(.white.opacity(0.35), lineWidth: 0.5))
+        }
+    }
+
     @ViewBuilder func frosted(in shape: some Shape) -> some View {
         if #available(iOS 26, *) {
             glassEffect(.regular, in: shape)
