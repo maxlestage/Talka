@@ -2350,11 +2350,15 @@ pub async fn import_backup(password: &str, file: &str) -> Result<(), String> {
     if data["app"] != "talka" {
         return Err(bad.into());
     }
+    // Une autre identité : l'abonnement aux notifications de l'ancienne ne
+    // doit plus réveiller ce navigateur (la nouvelle se réabonne).
+    crate::push::forget().await;
     store::restore(&data["data"]).await;
     Ok(())
 }
 
 pub async fn wipe_everything() {
+    crate::push::forget().await;
     net::stop();
     store::wipe().await;
     store::local_clear();
