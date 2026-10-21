@@ -160,12 +160,14 @@ func richText(_ text: String) -> AttributedString {
         if !plain.isEmpty { out += AttributedString(plain); plain = "" }
     }
     while i < chars.count {
-        let atStart = i == 0 || chars[i - 1].isWhitespace
+        // Un lien commence après une espace, ou juste après une parenthèse ou
+        // un guillemet ouvrants : « (https://…) », « «https://…» ».
+        let atStart = i == 0 || chars[i - 1].isWhitespace || "([{«\"'“‘".contains(chars[i - 1])
         let rest = String(chars[i..<Swift.min(i + 8, chars.count)])
         if atStart, rest.hasPrefix("https://") || rest.hasPrefix("http://") {
             var j = i
             while j < chars.count, !chars[j].isWhitespace { j += 1 }
-            while j > i, ".,;:!?)]'\"".contains(chars[j - 1]) { j -= 1 }
+            while j > i, ".,;:!?)]}'\"»”’".contains(chars[j - 1]) { j -= 1 }
             let link = String(chars[i..<j])
             flush()
             var a = AttributedString(link)
