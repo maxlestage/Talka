@@ -861,11 +861,7 @@ async fn render_pin(chat_id: &str) {
     scope("conv-pin", || match pinned {
         Some(m) => {
             let (id, chat) = (m.id.clone(), m.chat.clone());
-            let text = if m.kind == "text" && !m.sealed_for(&core::my_code(), now()) {
-                m.text.clone()
-            } else {
-                core::preview(&m)
-            };
+            let text = core::readable(&m);
             replace(
                 &bar,
                 h("div.pin-row")
