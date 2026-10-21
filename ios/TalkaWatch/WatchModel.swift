@@ -67,6 +67,27 @@ final class WatchModel: NSObject {
         perform(WatchAction(.send, chat: chat, text: text))
     }
 
+    /// Un vocal : affiché tout de suite, puis confié à WatchConnectivity, qui
+    /// le livre à l'iPhone dès que possible (même plus tard, loin de lui).
+    func sendVoice(_ chat: String, _ url: URL, seconds: Double) {
+        guard let session else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        let label = "🎙️ Message vocal (\(voiceDuration(seconds)))"
+        update(chat) { c in
+            var m = WatchMessage(id: "montre-\(UUID().uuidString)")
+            m.mine = true
+            m.text = label
+            m.at = Date().timeIntervalSince1970 * 1000
+            m.tick = "pending"
+            c.messages.append(m)
+            c.last = label
+            c.at = m.at
+        }
+        session.transferFile(url, metadata: WatchLink.voiceMetadata(chat: chat, seconds: seconds))
+    }
+
     func react(_ chat: String, _ id: String, _ emoji: String) {
         perform(WatchAction(.react, chat: chat, id: id, text: emoji))
     }
@@ -128,6 +149,12 @@ extension WatchModel: WCSessionDelegate {
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext context: [String: Any]) {
         let data = context[WatchLink.snapshotKey] as? Data
         Task { @MainActor in self.receive(data) }
+    }
+
+    /// Un vocal est arrivé sur l'iPhone (ou n'arrivera jamais) : le fichier
+    /// n'a plus à être gardé.
+    nonisolated func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
+        try? FileManager.default.removeItem(at: fileTransfer.file.fileURL)
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {

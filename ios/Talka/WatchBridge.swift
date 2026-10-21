@@ -8,8 +8,8 @@
 //
 // L'iPhone reste l'appareil Talka (les clés, le relais) : il envoie à la
 // montre le résumé des discussions récentes dès qu'il change, et exécute ce
-// que l'on fait sur la montre (répondre, réagir, marquer comme lu). Voir
-// TalkaKit/WatchLink.swift.
+// que l'on fait sur la montre (répondre, réagir, marquer comme lu, envoyer
+// un vocal). Voir TalkaKit/WatchLink.swift.
 
 import Foundation
 import TalkaKit
@@ -58,10 +58,19 @@ final class WatchBridge: NSObject {
         if WidgetShare.write(data) { WidgetCenter.shared.reloadAllTimelines() }
     }
 
+    /// Le résumé pour la montre, réduit s'il le faut pour passer par
+    /// WatchConnectivity (trop gros, il ne partirait pas du tout).
     func snapshot(_ e: Engine) -> WatchSnapshot {
-        var s = e.watchSnapshot()
-        s.hidden = model?.hasPin ?? false
-        return s
+        let hidden = model?.hasPin ?? false
+        return e.fittedWatchSnapshot { $0.hidden = hidden }
+    }
+
+    /// Le moteur, démarré s'il ne l'est pas encore (iPhone réveillé en
+    /// arrière-plan par la montre).
+    private func engine() -> Engine? {
+        guard let model else { return nil }
+        if model.engine == nil, Engine.hasAccount(model.store) { model.start() }
+        return model.engine
     }
 
     func push(force: Bool = false) {
@@ -80,12 +89,26 @@ final class WatchBridge: NSObject {
 
     /// Une action venue de la montre ; renvoie le résumé à jour.
     func handle(_ data: Data?) -> Data? {
-        guard let e = model?.engine else { return nil }
+        guard let e = engine() else { return nil }
         if let action = WatchLink.decode(WatchAction.self, data) {
             e.perform(action)
             // Réveillé en arrière-plan par la montre : le message part tout de suite.
             if action.kind == .send { e.relay.wake() }
         }
+        return answer(e)
+    }
+
+    /// Un message vocal enregistré sur la montre.
+    func voice(_ audio: Data, chat: String, seconds: Double) {
+        guard let e = engine() else { return }
+        if e.sendWatchVoice(chat: chat, audio: audio, seconds: seconds) { e.relay.wake() }
+        _ = answer(e)
+        if let session, watchReady, session.isReachable, let lastSent {
+            session.sendMessage([WatchLink.snapshotKey: lastSent], replyHandler: nil, errorHandler: nil)
+        }
+    }
+
+    private func answer(_ e: Engine) -> Data? {
         updateWidgets()
         let snapshot = WatchLink.encode(snapshot(e))
         lastSent = snapshot
@@ -123,6 +146,13 @@ extension WatchBridge: WCSessionDelegate {
             let snapshot = self.handle(data)
             replyHandler(snapshot.map { [WatchLink.snapshotKey: $0] } ?? [:])
         }
+    }
+
+    /// Un vocal de la montre : lu tout de suite (le fichier disparaît au retour).
+    nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        guard let voice = WatchLink.voice(file.metadata),
+              let audio = try? Data(contentsOf: file.fileURL) else { return }
+        Task { @MainActor in self.voice(audio, chat: voice.chat, seconds: voice.seconds) }
     }
 
     /// Les actions faites quand l'iPhone n'était pas joignable, livrées dans l'ordre.

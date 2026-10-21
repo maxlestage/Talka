@@ -16,6 +16,14 @@ struct ChatsView: View {
                     EmptyState(waiting: model.snapshot == nil)
                 }
             }
+            // Rien encore : on redemande à l'iPhone, régulièrement, tant que
+            // la liste est vide et la montre à l'écran.
+            .task {
+                while !Task.isCancelled, model.snapshot?.chats.isEmpty ?? true {
+                    model.refresh()
+                    try? await Task.sleep(for: .seconds(4))
+                }
+            }
             .navigationTitle("Talka")
             .navigationDestination(for: String.self) { id in ConversationView(chatId: id) }
             .toolbar {
@@ -33,6 +41,7 @@ struct ChatsView: View {
 }
 
 struct EmptyState: View {
+    @Environment(WatchModel.self) private var model
     let waiting: Bool
 
     var body: some View {
@@ -50,6 +59,12 @@ struct EmptyState: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                Button {
+                    model.refresh()
+                } label: {
+                    Label("Actualiser", systemImage: "arrow.clockwise")
+                }
+                .padding(.top, 4)
             }
             .padding(.top, 8)
         }
@@ -208,21 +223,31 @@ struct TickMark: View {
     }
 }
 
-/// Répondre : dictée ou clavier, une réponse rapide, ou un emoji.
+/// Répondre : un message vocal d'abord ; sinon dictée ou clavier, une
+/// réponse rapide, ou un emoji.
 struct Composer: View {
     @Environment(WatchModel.self) private var model
     let chatId: String
+    @State private var recording = false
 
     var body: some View {
         VStack(spacing: 6) {
+            Button {
+                recording = true
+            } label: {
+                Label("Vocal", systemImage: "mic.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.talkaGreen)
+            .accessibilityHint("Enregistre un message vocal")
             TextFieldLink(prompt: Text("Message")) {
-                Label("Répondre", systemImage: "mic.fill")
+                Label("Écrire", systemImage: "keyboard")
                     .frame(maxWidth: .infinity)
             } onSubmit: { text in
                 model.send(chatId, text)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.talkaGreen)
+            .buttonStyle(.bordered)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(watchReactions, id: \.self) { e in
@@ -238,6 +263,7 @@ struct Composer: View {
             }
         }
         .padding(.top, 6)
+        .sheet(isPresented: $recording) { RecordView(chatId: chatId) }
     }
 }
 
