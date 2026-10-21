@@ -210,10 +210,7 @@ fn chat_menu(chat: &Chat, at: At) {
                 } else {
                     "Mettre en sourdine"
                 },
-                move || {
-                    let c = i3.clone();
-                    spawn(async move { core::update_chat(&c.id, |x| x.muted = !c.muted).await })
-                },
+                move || mute_or_unmute(&i3),
             ),
             item("palette", "Fond d'écran", move || {
                 wallpaper_dialog(Some(i4.clone()))
@@ -313,6 +310,54 @@ async fn delete_chat(chat: Chat) {
     }
     core::delete_chat(&chat.id).await;
     back();
+}
+
+/// La sourdine : réactiver le son d'un geste, ou choisir pour combien de
+/// temps la mettre (8 heures, une semaine, toujours), comme WhatsApp.
+pub fn mute_or_unmute(chat: &Chat) {
+    if chat.muted {
+        let id = chat.id.clone();
+        spawn(async move {
+            core::mute(&id, Some(0)).await;
+            toast("Notifications réactivées");
+        });
+        return;
+    }
+    let options: [(Option<u64>, &str); 3] = [
+        (Some(8 * 3600), "8 heures"),
+        (Some(7 * 86400), "1 semaine"),
+        (None, "Toujours"),
+    ];
+    let id = chat.id.clone();
+    modal(
+        "Mettre en sourdine",
+        move |m| {
+            h("div.stack")
+                .child(h("p.muted").text(
+                    "Plus de notification ni de son pour cette discussion ; les messages arrivent quand même.",
+                ))
+                .children(options.iter().map(|(secs, label)| {
+                    let (id, m, secs, label) = (id.clone(), m.clone(), *secs, *label);
+                    h("button.list-item")
+                        .attr("type", "button")
+                        .child(icon("belloff"))
+                        .child(h("div.grow").text(label))
+                        .click(move || {
+                            let id = id.clone();
+                            m.close();
+                            spawn(async move {
+                                core::mute(&id, secs).await;
+                                toast(match secs {
+                                    None => "Sourdine".to_owned(),
+                                    Some(_) => format!("Sourdine pendant {label}"),
+                                });
+                            });
+                        })
+                }))
+                .into()
+        },
+        ModalOpts::default(),
+    );
 }
 
 pub fn timer_dialog(chat: &Chat) {

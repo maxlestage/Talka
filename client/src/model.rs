@@ -99,6 +99,10 @@ pub struct Chat {
     pub pinned: bool,
     pub archived: bool,
     pub muted: bool,
+    /// Sourdine pour un temps : l'heure (ms) où elle se lève d'elle-même
+    /// (0 : pour toujours, tant que `muted`).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub mute_until: f64,
     /// Messages éphémères : leur durée de vie en secondes (0 : désactivés).
     pub timer: u64,
     pub draft: String,
@@ -466,6 +470,20 @@ mod tests {
         // L'ancienne limite (4 Mo) ne passait pas.
         let old = b64_len(12 + b64_len(4 * 1024 * 1024) + 16);
         assert!(old > MAX_BODY);
+    }
+
+    #[test]
+    fn mute_until_is_optional_in_stored_chats() {
+        let old: Chat = serde_json::from_str(r#"{"id":"A","muted":true}"#).unwrap();
+        assert!(old.muted);
+        assert_eq!(old.mute_until, 0.0);
+        assert!(!serde_json::to_string(&old).unwrap().contains("mute_until"));
+        let timed = Chat {
+            mute_until: 1_800_000_000_000.0,
+            ..old
+        };
+        let back: Chat = serde_json::from_str(&serde_json::to_string(&timed).unwrap()).unwrap();
+        assert_eq!(back.mute_until, 1_800_000_000_000.0);
     }
 
     #[test]

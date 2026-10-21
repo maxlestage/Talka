@@ -273,8 +273,48 @@ pub fn on_presence(msg: &Value) {
 }
 
 /// Les messages éphémères échus et les statuts de plus de 24 heures.
+/// Mettre en sourdine pour `secs` secondes (`None` : pour toujours), ou
+/// réactiver le son (`Some(0)`).
+pub async fn mute(chat_id: &str, secs: Option<u64>) {
+    let until = secs.map_or(0.0, |s| now() + s as f64 * 1000.0);
+    let on = secs != Some(0);
+    update_chat(chat_id, |c| {
+        c.muted = on;
+        c.mute_until = if on { until } else { 0.0 };
+    })
+    .await;
+}
+
+/// « jusqu'à 18:30 », « jusqu'à demain 09:00 », « toujours ».
+pub fn mute_label(c: &Chat) -> String {
+    if !c.muted {
+        return String::new();
+    }
+    if c.mute_until == 0.0 {
+        return "Sourdine".into();
+    }
+    format!(
+        "Sourdine jusqu'à {}{}",
+        match dom::when_day(c.mute_until).as_str() {
+            "aujourd'hui" => String::new(),
+            d => format!("{d} "),
+        },
+        dom::time(c.mute_until)
+    )
+}
+
 async fn sweep() {
     let t = now();
+    // Les sourdines pour un temps qui arrivent à leur terme.
+    for chat in chats() {
+        if chat.muted && chat.mute_until > 0.0 && chat.mute_until <= t {
+            update_chat(&chat.id, |c| {
+                c.muted = false;
+                c.mute_until = 0.0;
+            })
+            .await;
+        }
+    }
     for chat in chats() {
         if chat.timer == 0 && !chat.has_exp {
             continue;
