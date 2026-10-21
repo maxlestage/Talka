@@ -384,8 +384,13 @@ final class KeepDaysTests: XCTestCase {
         put("vieux", daysAgo: 120)
         put("vieux-important", daysAgo: 120, starred: true)
         put("récent", daysAgo: 10)
+        // Une capsule écrite il y a 4 mois, qui s'ouvre dans un mois : gardée.
+        var capsule = Message(chat: c.id, id: "capsule", from: e.me.code, at: now - 120 * day, content: Content(text: "plus tard"))
+        capsule.openAt = now + 30 * day
+        e.store.writeMessage(capsule)
         e.sweep()
-        XCTAssertEqual(Set(e.messages(c.id).map(\.id)), ["vieux-important", "récent"])
+        XCTAssertEqual(Set(e.messages(c.id).map(\.id)), ["vieux-important", "récent", "capsule"])
+        e.store.removeMessage(c.id, "capsule")
 
         // « Toujours » : plus rien ne part.
         put("très-vieux", daysAgo: 1000)
