@@ -174,6 +174,19 @@ async fn relay_end_to_end() {
     assert_eq!(ready["boot"], boot.as_str());
     send(&mut b, json!({ "t": "ping" })).await;
     assert_eq!(next_json(&mut b).await["t"], "pong");
+    // Sans clé VAPID, pas de notifications : le relais ne l'annonce pas et
+    // refuse les adresses (sans erreur).
+    assert!(ready.get("push").is_none());
+    send(
+        &mut b,
+        json!({ "t": "push", "endpoint": "https://fcm.googleapis.com/fcm/send/x" }),
+    )
+    .await;
+    let answer = next_json(&mut b).await;
+    assert_eq!(
+        (answer["t"].as_str(), answer["ok"].as_bool()),
+        (Some("push"), Some(false))
+    );
 
     // En ligne, le message arrive tout de suite.
     send(
@@ -194,6 +207,9 @@ async fn pages_and_api() {
     assert_eq!(client.get("/confidentialite").await.status(), 200);
     assert_eq!(client.get("/nulle-part").await.status(), 404);
     assert_eq!(client.get("/manifest.webmanifest").await.status(), 200);
+    let sw = client.get("/talka-sw.js").await;
+    assert_eq!(sw.status(), 200);
+    assert!(sw.text().contains("showNotification"));
     assert_eq!(client.get("/api/ice").await.status(), 200);
     assert_eq!(client.get("/api/qr/K7Q2MX9PRT").await.status(), 200);
     assert_eq!(client.get("/api/qr/pas-un-code").await.status(), 404);
