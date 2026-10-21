@@ -680,10 +680,13 @@ async fn fetch_keys(code: &str) -> Option<Contact> {
     // Le lien d'invitation donnait l'empreinte de ses clés : ce ne sont pas
     // elles. Quelqu'un d'autre se présente sous ce code ; on n'en veut pas.
     if !c.fp.is_empty() && crypto::fingerprint(&sign, &dh) != c.fp {
-        dom::toast(format!(
-            "Attention : les clés de {} ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.",
-            crypto::pretty(code)
-        ));
+        // Une fois par session (pas à chaque reconnexion).
+        if MISMATCH.with(|m| m.borrow_mut().insert(code.to_owned())) {
+            dom::toast(format!(
+                "Attention : les clés de {} ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.",
+                crypto::pretty(code)
+            ));
+        }
         return None;
     }
     c.sign = sign;
@@ -700,6 +703,8 @@ async fn refresh_missing_keys() {
 }
 
 thread_local! {
+    /// Les codes dont les clés trouvées ne sont pas celles du lien.
+    static MISMATCH: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Les empreintes des liens d'invitation ouverts, par code.
     static FINGERPRINTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
@@ -739,6 +744,15 @@ pub async fn add_contact(code: &str, name: &str) -> Result<bool, String> {
     save_contact(c).await;
     net::watch(&[code.to_owned()]);
     let reachable = keys_for(code).await.is_some();
+    // Les clés trouvées ne sont pas celles du lien : on ne l'ajoute pas (et
+    // on ne lui envoie rien).
+    if !reachable && MISMATCH.with(|m| m.borrow().contains(code)) {
+        update_contact(code, |c| c.saved = false).await;
+        return Err(format!(
+            "Les clés de {} ne correspondent pas à son lien d'invitation : quelqu'un se fait peut-être passer pour lui. Contact non ajouté.",
+            crypto::pretty(code)
+        ));
+    }
     enqueue(code, Wire::new(profile_body(code)), None, None, false).await;
     spawn(flush());
     Ok(reachable)

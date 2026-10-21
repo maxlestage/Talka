@@ -332,7 +332,8 @@ public final class Engine {
         // Le lien d'invitation donnait l'empreinte de ses clés : ce ne sont
         // pas elles. Quelqu'un d'autre se présente sous ce code.
         if !c.fp.isEmpty, TalkaCode.fingerprint(sign: sign, dh: dh) != c.fp {
-            onKeysMismatch?(code)
+            // Une fois par session (pas à chaque reconnexion).
+            if mismatched.insert(code).inserted { onKeysMismatch?(code) }
             return nil
         }
         c.sign = sign
@@ -344,6 +345,8 @@ public final class Engine {
     public var onKeysMismatch: ((String) -> Void)?
     /// Les empreintes des liens d'invitation ouverts, par code.
     var fingerprints: [String: String] = [:]
+    /// Les codes dont les clés trouvées ne sont pas celles du lien.
+    var mismatched: Set<String> = []
 
     /// Un lien d'invitation donne l'empreinte des clés de ce code : elle sera
     /// vérifiée quand il sera ajouté.
@@ -385,6 +388,12 @@ public final class Engine {
         saveContact(c)
         relay.watch([code])
         let reachable = await keys(for: code) != nil
+        // Les clés trouvées ne sont pas celles du lien : on ne l'ajoute pas (et
+        // on ne lui envoie rien).
+        if !reachable, mismatched.contains(code) {
+            updateContact(code) { $0.saved = false }
+            throw AddError.keysMismatch
+        }
         enqueue(code, Wire(profileBody(for: code)))
         Task { await flush() }
         return reachable
