@@ -200,6 +200,32 @@ pub(crate) fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
 
+/// Une ligne d'une discussion exportée en texte, comme TalkaKit
+/// (`exportLine`) : « 21/10/2026 23:21 - Léa : Bonjour » ; sans auteur pour
+/// un message du système. Les retours à la ligne du message sont gardés.
+pub fn export_line(stamp: &str, author: Option<&str>, text: &str) -> String {
+    match author {
+        Some(a) => format!("{stamp} - {a} : {text}"),
+        None => format!("{stamp} - {text}"),
+    }
+}
+
+/// Le nom du fichier d'une discussion exportée : « Talka - Léa.txt », sans
+/// les caractères interdits dans un nom de fichier.
+pub fn export_filename(title: &str) -> String {
+    let clean: String = title
+        .chars()
+        .map(|c| {
+            if "/\\:*?\"<>|".contains(c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    format!("Talka - {}.txt", clean.trim())
+}
+
 /// Par défaut, les messages s'effacent au bout de 3 mois.
 pub const KEEP_DAYS: u32 = 90;
 const DAY_MS: f64 = 86_400_000.0;
@@ -513,6 +539,22 @@ mod tests {
         // Un réglage d'avant cette version : 3 mois.
         let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
         assert_eq!(old.keep_days, KEEP_DAYS);
+    }
+
+    #[test]
+    fn exported_chat_lines() {
+        assert_eq!(
+            export_line("21/10/2026 23:21", Some("Léa"), "Bonjour"),
+            "21/10/2026 23:21 - Léa : Bonjour"
+        );
+        assert_eq!(
+            export_line("21/10/2026 23:22", None, "Léa a rejoint le groupe."),
+            "21/10/2026 23:22 - Léa a rejoint le groupe."
+        );
+        assert_eq!(
+            export_filename("Les amis / 2026 : été?"),
+            "Talka - Les amis _ 2026 _ été_.txt"
+        );
     }
 
     #[test]
