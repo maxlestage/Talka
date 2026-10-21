@@ -279,10 +279,27 @@ public final class Engine {
         else { return nil }
         // Relu après l'attente : un nom donné entre-temps n'est pas écrasé.
         var c = contacts[code] ?? Contact(code: code)
+        // Le lien d'invitation donnait l'empreinte de ses clés : ce ne sont
+        // pas elles. Quelqu'un d'autre se présente sous ce code.
+        if !c.fp.isEmpty, TalkaCode.fingerprint(sign: sign, dh: dh) != c.fp {
+            onKeysMismatch?(code)
+            return nil
+        }
         c.sign = sign
         c.dh = dh
         saveContact(c)
         return c
+    }
+
+    /// Les clés trouvées pour un code ne sont pas celles de son lien.
+    public var onKeysMismatch: ((String) -> Void)?
+    /// Les empreintes des liens d'invitation ouverts, par code.
+    var fingerprints: [String: String] = [:]
+
+    /// Un lien d'invitation donne l'empreinte des clés de ce code : elle sera
+    /// vérifiée quand il sera ajouté.
+    public func expectFingerprint(_ code: String, _ fp: String) {
+        if TalkaCode.validFingerprint(fp) { fingerprints[code] = fp }
     }
 
     func refreshMissingKeys() async {
@@ -292,8 +309,13 @@ public final class Engine {
     }
 
     public enum AddError: Error, LocalizedError {
-        case yourself
-        public var errorDescription: String? { "C'est votre propre code 🙂" }
+        case yourself, keysMismatch
+        public var errorDescription: String? {
+            switch self {
+            case .yourself: "C'est votre propre code 🙂"
+            case .keysMismatch: "Les clés de ce code ne correspondent pas au lien d'invitation : quelqu'un se fait peut-être passer pour lui."
+            }
+        }
     }
 
     /// Ajoute un contact par son code ; `true` s'il est joignable tout de suite.
@@ -301,6 +323,10 @@ public final class Engine {
     public func addContact(_ code: String, name: String) async throws -> Bool {
         guard code != me.code else { throw AddError.yourself }
         var c = contacts[code] ?? Contact(code: code)
+        if let fp = fingerprints.removeValue(forKey: code) {
+            if !c.sign.isEmpty, TalkaCode.fingerprint(sign: c.sign, dh: c.dh) != fp { throw AddError.keysMismatch }
+            c.fp = fp
+        }
         c.saved = true
         let n = String(name.trimmingCharacters(in: .whitespaces).prefix(40))
         if !n.isEmpty { c.name = n }

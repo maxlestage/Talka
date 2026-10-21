@@ -134,8 +134,18 @@ final class CompatTests: XCTestCase {
 
     func testSafetyNumber() throws {
         let a = try identity("a"), b = try identity("b")
-        XCTAssertEqual(TalkaCrypto.safetyNumber(a.code, b.code), v["safety"] as? String)
-        XCTAssertEqual(TalkaCrypto.safetyNumber(b.code, a.code), v["safety"] as? String)
+        let ka = (code: a.code, sign: a.sign, dh: a.dh), kb = (code: b.code, sign: b.sign, dh: b.dh)
+        XCTAssertEqual(TalkaCrypto.safetyNumber(ka, kb), v["safety"] as? String)
+        XCTAssertEqual(TalkaCrypto.safetyNumber(kb, ka), v["safety"] as? String)
+        XCTAssertNotEqual(TalkaCrypto.safetyNumber(ka, (code: b.code, sign: a.sign, dh: b.dh)), v["safety"] as? String)
+        // L'empreinte des liens d'invitation, comme le navigateur.
+        let fp = TalkaCode.fingerprint(sign: a.sign, dh: a.dh)
+        XCTAssertEqual(fp, v["fingerprint_a"] as? String)
+        XCTAssertEqual(TalkaCode.fingerprint(in: "https://talka.example/c/\(fp)/\(a.code)"), fp)
+        XCTAssertEqual(TalkaCode.find(in: "https://talka.example/c/\(fp)/\(a.code)"), a.code)
+        XCTAssertEqual(TalkaCode.fingerprint(in: "https://x.github.io/Talka/app/#k=\(fp)&add=\(a.code)"), fp)
+        XCTAssertEqual(TalkaCode.find(in: "https://x.github.io/Talka/app/#k=\(fp)&add=\(a.code)"), a.code)
+        XCTAssertNil(TalkaCode.fingerprint(in: "https://talka.example/c/\(a.code)"))
     }
 
     func testPinAndBackup() throws {
