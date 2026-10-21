@@ -51,6 +51,15 @@ public final class Relay {
     var pings = 0
     var pongs = 0
     var publishPing: Int?
+    /// Le relais sait-il livrer en expéditeur scellé (`ready.sealed`) ?
+    public private(set) var sealed = false
+    /// La connexion anonyme (expéditeur scellé), ouverte à la demande.
+    var anon: Socket?
+    var anonReady = false
+    var anonWaiting: [CheckedContinuation<Bool, Never>] = []
+    var anonPending: [String: CheckedContinuation<Ack, Never>] = [:]
+    /// Les envois partis scellés (et acceptés), depuis le lancement.
+    public private(set) var sealedSent = 0
     /// L'identifiant du démarrage du relais connecté (vide : relais ancien).
     public private(set) var boot = ""
     /// L'heure du relais moins la nôtre.
@@ -81,6 +90,7 @@ public final class Relay {
         reconnect?.cancel()
         task?.close()
         task = nil
+        anon?.close()
         state = .offline
     }
 
@@ -182,6 +192,7 @@ public final class Relay {
         case "ready":
             retry = 0
             boot = msg["boot"] as? String ?? ""
+            sealed = msg["sealed"] as? Bool ?? false
             relayV3 = nil
             pings = 0
             pongs = 0
@@ -221,6 +232,102 @@ public final class Relay {
             onPresence?(msg["code"] as? String ?? "", msg["online"] as? Bool ?? false, msg["seen"] as? Double)
         default:
             break
+        }
+    }
+
+    // ----- L'expéditeur scellé -----
+    //
+    // Une seconde WebSocket, qui ne se présente pas (`{"t":"anon"}`) : le
+    // relais ne sait pas qui l'a ouverte. Elle ne sert qu'à déposer des
+    // enveloppes scellées, avec le jeton de remise du destinataire.
+
+    func openAnon() {
+        let t = openSocket(wsURL)
+        anon = t
+        anonReady = false
+        Task { @MainActor [weak self] in
+            while true {
+                let text: String
+                do { text = try await t.receive() } catch {
+                    self?.anonClosed(t)
+                    return
+                }
+                guard let self, self.anon === t else { return }
+                guard let msg = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else { continue }
+                switch msg["t"] as? String ?? "" {
+                case "challenge":
+                    Task { try? await t.send(#"{"t":"anon"}"#) }
+                case "ready":
+                    self.anonReady = true
+                    self.anonDone(true)
+                case "ack", "error":
+                    if msg["t"] as? String == "ack" { self.sealedSent += 1 }
+                    if let c = self.anonPending.removeValue(forKey: msg["id"] as? String ?? "") {
+                        c.resume(returning: msg["t"] as? String == "ack" ? .ok : .failed(msg["error"] as? String ?? "error"))
+                    }
+                default:
+                    break
+                }
+            }
+        }
+        // Le relais ferme une connexion silencieuse : un ping régulier.
+        Task { @MainActor [weak self] in
+            while let self, self.anon === t {
+                try? await Task.sleep(nanoseconds: 25_000_000_000)
+                guard self.anon === t else { return }
+                Task { try? await t.send(#"{"t":"ping"}"#) }
+            }
+        }
+    }
+
+    func anonClosed(_ t: Socket) {
+        guard anon === t else { return }
+        t.close()
+        anon = nil
+        anonReady = false
+        anonDone(false)
+        for (_, c) in anonPending { c.resume(returning: .failed("offline")) }
+        anonPending.removeAll()
+    }
+
+    func anonDone(_ ok: Bool) {
+        let waiting = anonWaiting
+        anonWaiting.removeAll()
+        for c in waiting { c.resume(returning: ok) }
+    }
+
+    /// La connexion anonyme, prête (ouverte au besoin, 10 secondes au plus).
+    func anonConnected() async -> Bool {
+        if anonReady, anon != nil { return true }
+        if anon == nil { openAnon() }
+        let t = anon
+        return await withCheckedContinuation { c in
+            anonWaiting.append(c)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                guard let self, !self.anonReady, self.anon === t else { return }
+                if let t { self.anonClosed(t) }
+            }
+        }
+    }
+
+    /// Dépose une enveloppe scellée pour `peer`, avec son jeton de remise.
+    public func sendSealed(id: String, peer: Contact, body: String, live: Bool, wake: Bool) async -> Ack {
+        guard await anonConnected(), let anon else { return .failed("offline") }
+        var msg: [String: Any] = ["t": "send", "id": id, "to": peer.code, "sign": peer.sign, "dh": peer.dh,
+                                  "jeton": peer.jeton, "body": body, "live": live]
+        if wake { msg["wake"] = true }
+        guard let data = try? JSONSerialization.data(withJSONObject: msg),
+              let text = String(data: data, encoding: .utf8) else { return .failed("crypto") }
+        return await withCheckedContinuation { c in
+            anonPending[id] = c
+            Task { @MainActor [weak self] in
+                do { try await anon.send(text) } catch { self?.anonClosed(anon) }
+            }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                self?.anonPending.removeValue(forKey: id)?.resume(returning: .failed("timeout"))
+            }
         }
     }
 

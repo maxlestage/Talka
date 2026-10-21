@@ -1281,6 +1281,14 @@ html.js .features .reveal:nth-child(4n + 4) {
   color: #fff;
 }
 
+.milestone-state.done {
+  background: rgba(0, 128, 105, 0.12);
+}
+
+.milestone-state.done::before {
+  content: "✓ ";
+}
+
 @media (max-width: 900px) {
   .roadmap {
     grid-template-columns: repeat(2, 1fr);
