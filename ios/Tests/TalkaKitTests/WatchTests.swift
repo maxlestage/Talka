@@ -77,8 +77,40 @@ final class WatchTests: XCTestCase {
         theirs.openAt = nowMs() - 1
         XCTAssertEqual(e.watchMessage(theirs, group: false).text, "Plus tard")
 
+        e.setBlocked(c.id, false)
+        // Un vocal enregistré sur la montre part comme celui de l'iPhone.
+        let meta = WatchLink.voiceMetadata(chat: c.id, seconds: 7.4)
+        let voice = try XCTUnwrap(WatchLink.voice(meta))
+        XCTAssertTrue(e.sendWatchVoice(chat: voice.chat, audio: Data([1, 2, 3]), seconds: voice.seconds))
+        let v = try XCTUnwrap(e.messages(c.id).last)
+        XCTAssertEqual(v.kind, "voice")
+        XCTAssertEqual(v.mime, "audio/mp4")
+        XCTAssertEqual(v.dur, 7)
+        XCTAssertEqual(v.data, "data:audio/mp4;base64,AQID")
+        XCTAssertEqual(e.watchMessage(v, group: false).text, "🎙️ Message vocal (0:07)")
+        XCTAssertFalse(e.sendWatchVoice(chat: c.id, audio: Data(), seconds: 3))
+        XCTAssertFalse(e.sendWatchVoice(chat: c.id, audio: Data(count: WatchLink.maxVoiceBytes + 1), seconds: 3))
+        XCTAssertFalse(e.sendWatchVoice(chat: "INCONNU", audio: Data([1]), seconds: 3))
+        XCTAssertNil(WatchLink.voice(["kind": "autre", "chat": c.id, "dur": 3.0]))
+        XCTAssertNil(WatchLink.voice(nil))
+        XCTAssertEqual(WatchLink.voice(WatchLink.voiceMetadata(chat: c.id, seconds: 999))?.seconds, 120)
+
         let data = try XCTUnwrap(WatchLink.encode(WatchAction(.refresh)))
         XCTAssertEqual(WatchLink.decode(WatchAction.self, data)?.kind, .refresh)
+    }
+
+    func testSnapshotAlwaysFitsWatchConnectivity() async throws {
+        let e = phone()
+        for i in 0..<20 {
+            let c = e.ensureDirectChat(String(format: "K7Q2MX%04d", i))
+            for _ in 0..<15 { e.send(c.id, Content(text: String(repeating: "Bonjour ", count: 75))) }
+        }
+        XCTAssertGreaterThan(WatchLink.encode(e.watchSnapshot())?.count ?? 0, WatchLink.maxSnapshotBytes)
+        let s = e.fittedWatchSnapshot { $0.hidden = true }
+        XCTAssertLessThanOrEqual(WatchLink.encode(s)?.count ?? .max, WatchLink.maxSnapshotBytes)
+        XCTAssertEqual(s.hidden, true)
+        XCTAssertFalse(s.chats.isEmpty)
+        XCTAssertFalse(s.chats[0].messages.isEmpty)
     }
 
     func testMarkAllRead() async {

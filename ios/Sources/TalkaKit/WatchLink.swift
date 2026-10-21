@@ -3,7 +3,8 @@
 // La montre n'a ni clés ni relais : c'est l'iPhone qui reste l'appareil Talka.
 // Il envoie à la montre un résumé des discussions récentes (`WatchSnapshot`),
 // la montre lui renvoie ce que l'on y fait (`WatchAction`) : répondre, réagir,
-// marquer comme lu. Rien d'autre ne passe, et seulement entre les deux
+// marquer comme lu ; et ses messages vocaux, en fichier (`transferFile`, avec
+// `voiceMetadata`). Rien d'autre ne passe, et seulement entre les deux
 // appareils appairés.
 //
 // Ce fichier est compilé dans TalkaKit (testé avec le reste) et tel quel dans
@@ -15,6 +16,25 @@ public enum WatchLink {
     /// Les clés des dictionnaires WatchConnectivity.
     public static let snapshotKey = "snapshot"
     public static let actionKey = "action"
+    /// Un message vocal enregistré sur la montre : les métadonnées du fichier.
+    public static let voiceKind = "talka-vocal"
+    /// Un vocal : 2 minutes et 1 Mo au plus (AAC mono 32 kbit/s, comme l'iPhone).
+    public static let maxVoiceSeconds: Double = 120
+    public static let maxVoiceBytes = 1_000_000
+    /// Ce que WatchConnectivity accepte sans broncher pour un résumé.
+    public static let maxSnapshotBytes = 60_000
+
+    public static func voiceMetadata(chat: String, seconds: Double) -> [String: Any] {
+        ["kind": voiceKind, "chat": chat, "dur": seconds]
+    }
+
+    /// (discussion, durée) d'un fichier venu de la montre, s'il est un vocal.
+    public static func voice(_ metadata: [String: Any]?) -> (chat: String, seconds: Double)? {
+        guard let m = metadata, m["kind"] as? String == voiceKind,
+              let chat = m["chat"] as? String, !chat.isEmpty,
+              let dur = m["dur"] as? Double, dur > 0 else { return nil }
+        return (chat, min(dur, maxVoiceSeconds))
+    }
 
     public static func encode<T: Encodable>(_ value: T) -> Data? {
         try? JSONEncoder().encode(value)
