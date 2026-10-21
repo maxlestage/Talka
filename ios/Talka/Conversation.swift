@@ -491,6 +491,7 @@ struct ConversationView: View {
                 .background(.bar)
         } else {
             VStack(spacing: 0) {
+                mentionSuggestions(e, chat)
                 if let m = editing ?? reply {
                     HStack {
                         RoundedRectangle(cornerRadius: 2).fill(Color.talkaGreen).frame(width: 4)
@@ -601,6 +602,37 @@ struct ConversationView: View {
         }
     }
 
+    /// « @… » dans un groupe : les membres dont le nom correspond, comme
+    /// WhatsApp ; un toucher complète « @Léa ».
+    @ViewBuilder func mentionSuggestions(_ e: Engine, _ chat: Chat) -> some View {
+        if chat.group, editing == nil, let q = Mentions.query(text) {
+            let fq = Mentions.fold(q)
+            let found = e.mentionCandidates(chat).filter { Mentions.fold($0.label).contains(fq) }.prefix(6)
+            if !found.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(found), id: \.code) { m in
+                            Button {
+                                text = String(text.dropLast(q.count + 1)) + "@\(m.label) "
+                            } label: {
+                                Text("@\(m.label)")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Color.color(m.code))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .frosted(in: .capsule)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+                .padding(.top, 6)
+                .accessibilityLabel("Mentionner un membre")
+            }
+        }
+    }
+
     func submit(_ e: Engine) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
@@ -608,7 +640,11 @@ struct ConversationView: View {
             if t != m.text { e.edit(chatId, m.id, text: t) }
             editing = nil
         } else {
-            send(e, Content(text: String(t.prefix(8000))))
+            var content = Content(text: String(t.prefix(8000)))
+            if let chat = e.chat(chatId), chat.group {
+                content.mentions = Mentions.found(in: content.text, members: e.mentionCandidates(chat))
+            }
+            send(e, content)
         }
         text = ""
         e.updateChat(chatId) { $0.draft = "" }
@@ -855,7 +891,7 @@ struct MessageRow: View {
                 } else {
                     Label("Photo", systemImage: "photo")
                 }
-                if !m.text.isEmpty { Text(richText(m.text)).font(.system(size: size)) }
+                if !m.text.isEmpty { Text(richText(m.text, mentions: m.mentions.map(e.mentionLabel))).font(.system(size: size)) }
             }
         case "voice":
             VoiceBubble(message: m)
@@ -866,7 +902,7 @@ struct MessageRow: View {
         case "contact":
             ContactBubble(engine: e, message: m)
         default:
-            Text(richText(m.text))
+            Text(richText(m.text, mentions: m.mentions.map(e.mentionLabel)))
                 .font(.system(size: big ? 46 : size))
                 .textSelection(.enabled)
         }

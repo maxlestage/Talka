@@ -214,7 +214,7 @@ final class CompatTests: XCTestCase {
 
     func testWires() throws {
         let wires = try XCTUnwrap(v["wires"] as? [String])
-        XCTAssertEqual(wires.count, 14)
+        XCTAssertEqual(wires.count, 15)
         for text in wires {
             let w = try XCTUnwrap(Wire.parse(text), text)
             if case .unknown = w.body { XCTFail("sorte inconnue : \(text)") }
@@ -236,6 +236,10 @@ final class CompatTests: XCTestCase {
         XCTAssertEqual(msg.groupId, "g1")
         XCTAssertEqual(msg.grp?.v, 3)
         XCTAssertEqual(msg.ttl, 86_400)
+        let mention = try XCTUnwrap(Wire.parse(wires[14]))
+        guard case let .msg(_, _, _, said) = mention.body else { return XCTFail("mention") }
+        XCTAssertEqual(said.mentions, [try identity("b").code])
+        XCTAssertEqual(mention.groupId, "g1")
         let call = try XCTUnwrap(Wire.parse(wires[12]))
         guard case let .call(op, callId, video, _, cand) = call.body else { return XCTFail("call") }
         XCTAssertEqual(op, "ice")

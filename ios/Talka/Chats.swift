@@ -64,7 +64,9 @@ struct ChatsTab: View {
                         .swipeActions(edge: .leading) {
                             Button {
                                 e.updateChat(chat.id) {
-                                    if $0.unread > 0 || $0.markedUnread { $0.unread = 0; $0.markedUnread = false } else { $0.markedUnread = true }
+                                    if $0.unread > 0 || $0.markedUnread {
+                                        $0.unread = 0; $0.markedUnread = false; $0.mentioned = false
+                                    } else { $0.markedUnread = true }
                                 }
                                 if chat.unread > 0 { e.markRead(chat.id) }
                             } label: {
@@ -272,6 +274,15 @@ struct ChatRow: View {
                     Spacer()
                     if chat.muted { Image(systemName: "bell.slash.fill").font(.caption) }
                     if chat.pinned { Image(systemName: "pin.fill").font(.caption) }
+                    if chat.mentioned {
+                        // On nous a mentionné : « @ », même en sourdine.
+                        Text("@")
+                            .font(.caption.bold())
+                            .foregroundStyle(.white)
+                            .frame(minWidth: 20, minHeight: 20)
+                            .background(Color.talkaAccent, in: .circle)
+                            .accessibilityLabel("Vous êtes mentionné")
+                    }
                     if chat.unread > 0 || chat.markedUnread {
                         Text(chat.unread > 0 ? "\(chat.unread)" : " ")
                             .font(.caption.bold())
