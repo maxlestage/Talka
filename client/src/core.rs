@@ -3143,6 +3143,13 @@ async fn receive(env: &Value, boite: Option<&str>) {
             return;
         }
     };
+    // Un appareil dont le relais n'avait pas de paquet (un appareil qu'on
+    // vient de lier) : ouvert en v3, il en a un maintenant. Ce qui
+    // l'attendait part, sans attendre la fin des dix minutes.
+    if !legacy && BUNDLES.with(|b| b.borrow().get(&addr).is_some_and(|(b, _)| b.is_none())) {
+        BUNDLES.with(|b| b.borrow_mut().remove(&addr));
+        spawn(flush());
+    }
     // De nos appareils : seulement de la synchronisation, en v3.
     if mine {
         if legacy {
