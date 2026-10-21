@@ -375,9 +375,6 @@ impl Relay {
         if hidden {
             st.seen.remove(code);
         }
-        if !was_visible && !hidden {
-            st.notify_watchers(code);
-        }
         // Les messages en attente partent tout de suite.
         st.evict_expired();
         if let Some(mb) = st.mailboxes.get(code) {
@@ -386,6 +383,9 @@ impl Relay {
             }
         }
         st.online.entry(code.to_owned()).or_default().push(conn);
+        if !was_visible && !hidden {
+            st.notify_watchers(code);
+        }
         (id, rx, overflow)
     }
 
