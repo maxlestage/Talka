@@ -1300,12 +1300,48 @@ pub fn only_emoji(text: &str) -> bool {
 
 /// Télécharge une adresse (`data:`, `blob:`) sous un nom.
 pub fn download(name: &str, url: &str) {
-    let a = h("a").attr("href", url).attr("download", name).el();
+    // Un nom sans chemin ni caractère de contrôle.
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '/' | '\\' | ':'))
+        .take(120)
+        .collect();
+    let name = if name.trim().is_empty() {
+        "fichier".to_owned()
+    } else {
+        name
+    };
+    // Une donnée reçue part comme des octets (`application/octet-stream`) :
+    // jamais affichée ni exécutée dans l'onglet, quel que soit son type.
+    let blob_url = url
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(";base64,"))
+        .and_then(|(_, b64)| {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.decode(b64).ok()
+        })
+        .and_then(|bytes| {
+            let parts = Array::of1(&js_sys::Uint8Array::from(bytes.as_slice()));
+            let opts = web_sys::BlobPropertyBag::new();
+            opts.set_type("application/octet-stream");
+            web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).ok()
+        })
+        .and_then(|blob| web_sys::Url::create_object_url_with_blob(&blob).ok());
+    if blob_url.is_none() && !url.starts_with("data:") && !url.starts_with("blob:") {
+        return;
+    }
+    let href = blob_url.clone().unwrap_or_else(|| url.to_owned());
+    let a = h("a").attr("href", &href).attr("download", &name).el();
     let _ = document().body().expect("body").append_child(&a);
     if let Some(a) = a.dyn_ref::<HtmlElement>() {
         a.click();
     }
     a.remove();
+    if let Some(u) = blob_url {
+        timer(10_000, move || {
+            let _ = web_sys::Url::revoke_object_url(&u);
+        });
+    }
 }
 
 /// Copie dans le presse-papiers.
