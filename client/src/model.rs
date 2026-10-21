@@ -132,6 +132,9 @@ pub struct Chat {
     pub last_at: f64,
     pub unread: u32,
     pub marked_unread: bool,
+    /// On nous y a mentionné depuis la dernière lecture (« @ » dans la liste).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub mentioned: bool,
     pub pinned: bool,
     pub archived: bool,
     pub muted: bool,
@@ -219,6 +222,9 @@ pub struct Message {
     /// Arrivé ou parti chiffré par Brocolis 🥦 (et ouvert sur cet appareil).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub bro: bool,
+    /// Les membres mentionnés (« @Léa »), par leur code.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<String>,
 }
 
 pub(crate) fn is_zero_u32(n: &u32) -> bool {
@@ -388,6 +394,10 @@ pub struct Content {
     /// suite.
     #[serde(skip_serializing_if = "is_zero")]
     pub open_at: f64,
+    /// Dans un groupe : les membres mentionnés (« @Léa »), par leur code.
+    /// Les versions qui ne le connaissent pas l'ignorent.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<String>,
 }
 
 impl Body {
@@ -404,6 +414,36 @@ impl Body {
                 | Body::StatusDelete { .. }
         )
     }
+}
+
+// ----- Les mentions (« @Léa ») -------------------------------------------------
+
+/// Ce qu'on tape après « @ » (le texte jusqu'au curseur), pour proposer les
+/// membres : le « @ » doit commencer un mot ; pas de retour à la ligne, 30
+/// caractères au plus.
+pub fn mention_query(before: &str) -> Option<String> {
+    let at = before.rfind('@')?;
+    if at > 0 && !before[..at].ends_with(char::is_whitespace) {
+        return None;
+    }
+    let query = &before[at + 1..];
+    (!query.contains('\n') && query.chars().count() <= 30).then(|| query.to_owned())
+}
+
+/// Les membres mentionnés dans `text` : ceux dont « @libellé » y figure
+/// (`members` : code et libellé). Chacun une fois, dans l'ordre donné.
+pub fn mentions_in(text: &str, members: &[(String, String)]) -> Vec<String> {
+    let folded = fold(text);
+    members
+        .iter()
+        .filter(|(_, label)| !label.is_empty() && folded.contains(&format!("@{}", fold(label))))
+        .map(|(code, _)| code.clone())
+        .fold(Vec::new(), |mut out, code| {
+            if !out.contains(&code) {
+                out.push(code);
+            }
+            out
+        })
 }
 
 /// Une donnée reçue (photo, vocal, fichier, avatar) : seulement une adresse
@@ -459,6 +499,9 @@ impl Chat {
 /// Ce qui voyage, chiffré, d'un appareil à l'autre.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "kebab-case")]
+// Un message est le cas courant : le garder en place plutôt que derrière un
+// pointeur (les autres variantes sont plus petites, sans conséquence).
+#[allow(clippy::large_enum_variant)]
 pub enum Body {
     Msg {
         id: String,
@@ -1083,5 +1126,35 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// « @ » propose les membres ; l'envoi garde ceux qui sont mentionnés.
+    #[test]
+    fn mentions() {
+        assert_eq!(mention_query("Salut @Lé").as_deref(), Some("Lé"));
+        assert_eq!(mention_query("@").as_deref(), Some(""));
+        assert_eq!(
+            mention_query("écris à moi@exemple.fr"),
+            None,
+            "pas une adresse"
+        );
+        assert_eq!(mention_query("Salut @Léa\nça va"), None);
+        assert_eq!(mention_query("Salut"), None);
+        let members = vec![
+            ("AAAAAAAAAA".to_owned(), "Léa Martin".to_owned()),
+            ("BBBBBBBBBB".to_owned(), "Bob".to_owned()),
+            ("CCCCCCCCCC".to_owned(), String::new()),
+        ];
+        assert_eq!(
+            mentions_in("Merci @lea martin et @Bob ! @Bob", &members),
+            vec!["AAAAAAAAAA".to_owned(), "BBBBBBBBBB".to_owned()]
+        );
+        assert!(mentions_in("Bonjour Bob", &members).is_empty());
+        assert!(mentions_in("@ tout le monde", &members).is_empty());
+        // Un ancien client ignore le champ ; un message sans mention ne
+        // l'écrit pas.
+        let c: Content = serde_json::from_str(r#"{"kind":"text","text":"x"}"#).unwrap();
+        assert!(c.mentions.is_empty());
+        assert!(!serde_json::to_string(&c).unwrap().contains("mentions"));
     }
 }

@@ -173,6 +173,19 @@ pub fn display_name(code: &str) -> String {
     }
 }
 
+/// Le libellé d'une mention (« @Léa ») : le nom que chacun s'est choisi, le
+/// même sur tous les appareils (à défaut, celui qu'on lui a donné).
+pub fn mention_label(code: &str) -> String {
+    if code == my_code() {
+        return profile().name;
+    }
+    match contact(code) {
+        Some(c) if !c.profile_name.is_empty() => c.profile_name,
+        Some(c) if !c.name.is_empty() => c.name,
+        _ => crypto::pretty(code),
+    }
+}
+
 pub fn avatar_of(code: &str) -> String {
     if code == my_code() {
         return profile().avatar;
@@ -1322,6 +1335,7 @@ pub async fn clear_chat(id: &str) {
     update_chat(id, |c| {
         c.last = None;
         c.unread = 0;
+        c.mentioned = false;
     })
     .await;
     emit(Ev::Messages(id.to_owned()));
@@ -1753,6 +1767,7 @@ pub async fn send_message(chat_id: &str, mut content: Content) -> Option<Message
         reply: plain.reply,
         fwd: plain.fwd,
         open_at: plain.open_at,
+        mentions: plain.mentions,
         bro,
         ..Default::default()
     };
@@ -1923,6 +1938,8 @@ pub async fn forward(m: &Message, chat_ids: &[String]) {
         reply: None,
         fwd: true,
         open_at: 0.0,
+        // Une mention ne suit pas un message transféré.
+        mentions: Vec::new(),
     };
     for id in chat_ids {
         send_message(id, content.clone()).await;
@@ -2141,10 +2158,11 @@ pub async fn mark_read(chat_id: &str) {
             queue_receipt(&code, chat_id, &ids, "read");
         }
     }
-    if c.unread > 0 || c.marked_unread {
+    if c.unread > 0 || c.marked_unread || c.mentioned {
         update_chat(chat_id, |c| {
             c.unread = 0;
             c.marked_unread = false;
+            c.mentioned = false;
         })
         .await;
     }
@@ -2529,6 +2547,18 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 code: content.code,
                 reply: content.reply,
                 fwd: content.fwd,
+                // Seulement des membres du groupe (50 au plus).
+                mentions: if c.group {
+                    content
+                        .mentions
+                        .iter()
+                        .filter(|m| c.members.contains(m))
+                        .take(50)
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                },
                 // Une capsule s'ouvre au plus tard dans dix ans.
                 open_at: if content.open_at > at {
                     content.open_at.min(at + CAPSULE_MAX_MS)
@@ -2567,6 +2597,10 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 m.read_by_me = true;
             } else {
                 c.unread += 1;
+                // Mentionné : « @ » dans la liste, jusqu'à la lecture.
+                if m.mentions.contains(&me) {
+                    c.mentioned = true;
+                }
                 save_chat(c.clone()).await;
             }
             store_message(&m, true).await;
