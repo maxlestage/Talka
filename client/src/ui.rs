@@ -3179,7 +3179,7 @@ pub async fn open_settings() {
                         }))
                         .child(setting("palette", "Fond d'écran", "Pour toutes les discussions", false, || conv::wallpaper_dialog(None)))
                         .child(toggle("Entrée pour envoyer", "Sur ordinateur ; Maj + Entrée va à la ligne", s.enter_sends, |v| spawn(core::save_settings(move |s| s.enter_sends = v))))
-                        .child(select("Conserver les messages", &[("30", "1 mois"), ("90", "3 mois"), ("365", "1 an"), ("0", "Toujours")], &s.keep_days.to_string(), |v| {
+                        .child(select("Conserver les messages", &[("1", "24 heures"), ("7", "7 jours"), ("30", "1 mois"), ("90", "3 mois"), ("180", "6 mois"), ("365", "1 an"), ("0", "Toujours")], &s.keep_days.to_string(), |v| {
                             let days = v.parse().unwrap_or(crate::model::KEEP_DAYS);
                             spawn(core::save_settings(move |s| s.keep_days = days))
                         }))

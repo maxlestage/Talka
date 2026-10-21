@@ -80,8 +80,11 @@ struct SettingsTab: View {
                     }
                     Section {
                         Picker("Conserver les messages", selection: setting(e, \.keepDays)) {
+                            Text("24 heures").tag(1)
+                            Text("7 jours").tag(7)
                             Text("1 mois").tag(30)
                             Text("3 mois").tag(90)
+                            Text("6 mois").tag(180)
                             Text("1 an").tag(365)
                             Text("Toujours").tag(0)
                         }
