@@ -151,14 +151,18 @@ func temporaryFile(_ data: Data, name: String) -> URL {
 /// Le texte d'un message, avec les « @Léa » qu'il mentionne en couleur.
 func richText(_ text: String, mentions: [String]) -> AttributedString {
     var out = richText(text)
+    var found: [Range<AttributedString.Index>] = []
     for label in mentions where !label.isEmpty {
         var from = out.startIndex
         while from < out.endIndex,
               let r = out[from...].range(of: "@" + label, options: [.caseInsensitive, .diacriticInsensitive]) {
-            out[r].swiftUI.foregroundColor = .talkaAccent
-            out[r].inlinePresentationIntent = .stronglyEmphasized
+            found.append(r)
             from = r.upperBound
         }
+    }
+    for r in found {
+        out[r].swiftUI.foregroundColor = Color.talkaAccent
+        out[r].inlinePresentationIntent = .stronglyEmphasized
     }
     return out
 }
