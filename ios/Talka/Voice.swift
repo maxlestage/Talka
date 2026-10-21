@@ -67,11 +67,28 @@ final class VoiceRecorder {
     }
 }
 
+/// Les vocaux d'une discussion qui s'enchaînent : un vocal terminé lance le
+/// suivant s'il vient juste après (comme WhatsApp et le navigateur).
+@MainActor
+@Observable
+final class VoiceChain {
+    /// Le vocal à lancer maintenant (sa bulle le lit, puis remet à nil).
+    var autoplay: String?
+    /// Le suivant d'un vocal, d'après la discussion à l'écran.
+    @ObservationIgnored var next: (String) -> String? = { _ in nil }
+
+    func ended(_ id: String) {
+        autoplay = next(id)
+    }
+}
+
 /// Le lecteur d'un message vocal.
 @MainActor
 @Observable
 final class VoicePlayer: NSObject, AVAudioPlayerDelegate {
     var playing = false
+    /// Augmente à chaque lecture allée jusqu'au bout (pas à l'arrêt manuel).
+    var finished = 0
     /// La vitesse de lecture : 1×, 1,5× ou 2×, comme dans le navigateur.
     var speed: Float = 1
     @ObservationIgnored var player: AVAudioPlayer?
@@ -130,13 +147,17 @@ final class VoicePlayer: NSObject, AVAudioPlayerDelegate {
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor in self.playing = false }
+        Task { @MainActor in
+            self.playing = false
+            if flag { self.finished += 1 }
+        }
     }
 
     nonisolated func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
         Task { @MainActor in
             self.playing = false
             self.web = nil
+            self.finished += 1
         }
     }
 

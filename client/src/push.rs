@@ -114,6 +114,15 @@ async fn clear_shown(reg: &JsValue) {
     }
 }
 
+/// Désabonne ce navigateur (données effacées, ou autre identité importée) :
+/// le relais oublie l'adresse s'il est joignable, et le service de
+/// notifications la refuse de toute façon ensuite (le relais l'oublie alors).
+pub async fn forget() {
+    if !get(&get(&window(), "navigator"), "serviceWorker").is_undefined() {
+        let _ = apply(false).await;
+    }
+}
+
 /// Efface les notifications de réveil (Talka revient à l'écran).
 pub async fn clear() {
     let sw = get(&get(&window(), "navigator"), "serviceWorker");

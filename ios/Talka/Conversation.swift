@@ -24,6 +24,7 @@ struct ConversationView: View {
     @State private var viewing: Message?
     @State private var showInfo = false
     @State private var recorder = VoiceRecorder()
+    @State private var voiceChain = VoiceChain()
     @State private var loaded = false
     /// La recherche dans la discussion (nil : fermée).
     @State private var search: String?
@@ -113,6 +114,18 @@ struct ConversationView: View {
                             proxy.scrollTo(id, anchor: .bottom)
                         }
                         loaded = true
+                    }
+                    // Le vocal suivant démarre : la discussion le montre.
+                    .onChange(of: voiceChain.autoplay) { _, id in
+                        guard let id else { return }
+                        withAnimation { proxy.scrollTo(id, anchor: .center) }
+                    }
+                    .environment(voiceChain)
+                    .task(id: chatId) {
+                        voiceChain.next = { [weak e] id in
+                            guard let e else { return nil }
+                            return nextVoice(after: id, in: e.messages(chatId))
+                        }
                     }
                     .onChange(of: jumpTo) { _, id in
                         guard let id else { return }
@@ -822,6 +835,14 @@ struct MessageRow: View {
 struct VoiceBubble: View {
     let message: Message
     @State private var player = VoicePlayer()
+    /// Absent hors d'une discussion (messages importants…) : pas d'enchaînement.
+    @Environment(VoiceChain.self) private var chain: VoiceChain?
+
+    private func autoplay() {
+        guard let chain, chain.autoplay == message.id else { return }
+        chain.autoplay = nil
+        if !player.playing { player.toggle(Data(dataURL: message.data), mime: message.mime) }
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -847,6 +868,10 @@ struct VoiceBubble: View {
             .accessibilityLabel("Vitesse de lecture : \(player.speedLabel)")
         }
         .frame(minWidth: 220)
+        .onChange(of: player.finished) { _, _ in chain?.ended(message.id) }
+        .onChange(of: chain?.autoplay) { _, _ in autoplay() }
+        // Hors de l'écran quand son tour est venu : il démarre en apparaissant.
+        .onAppear { autoplay() }
         .onDisappear { player.stop() }
     }
 }
