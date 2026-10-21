@@ -315,6 +315,9 @@ pub fn jeton_message(code: &str, nonce: &str) -> Vec<u8> {
 #[derive(Serialize, Deserialize)]
 struct SealedSender {
     from: String,
+    /// L'appareil de l'expéditeur (v4) ; absent d'un ancien client.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    fd: String,
     body: String,
 }
 
@@ -399,6 +402,12 @@ pub fn verify_jeton(to: &str, sign: &str, dh: &str, jeton: &str) -> bool {
 /// Scelle `body` (une enveloppe ordinaire de `from` pour `to`) :
 /// base64(éphémère (65) ‖ iv (12) ‖ chiffré).
 pub fn seal_sender(from: &str, to: &str, to_dh: &str, body: &str) -> Option<String> {
+    seal_sender_from(from, "", to, to_dh, body)
+}
+
+/// Comme `seal_sender`, en disant aussi de quel appareil (`fd`, v4) vient
+/// l'enveloppe.
+pub fn seal_sender_from(from: &str, fd: &str, to: &str, to_dh: &str, body: &str) -> Option<String> {
     let to_dh_raw = unb64(to_dh)?;
     let public = PublicKey::from_sec1_bytes(&to_dh_raw).ok()?;
     let eph = SecretKey::random(&mut OsRng);
@@ -407,6 +416,7 @@ pub fn seal_sender(from: &str, to: &str, to_dh: &str, body: &str) -> Option<Stri
     let cipher = sealed_key(shared.raw_secret_bytes(), &eph_raw, &to_dh_raw, to)?;
     let plain = serde_json::to_string(&SealedSender {
         from: from.to_owned(),
+        fd: fd.to_owned(),
         body: body.to_owned(),
     })
     .ok()?;
@@ -430,6 +440,12 @@ pub fn seal_sender(from: &str, to: &str, to_dh: &str, body: &str) -> Option<Stri
 /// Ouvre une enveloppe scellée pour nous : (code de l'expéditeur, enveloppe
 /// ordinaire). L'expéditeur n'est prouvé qu'en ouvrant ensuite celle-ci.
 pub fn open_sealed(me: &Identity, sealed: &str) -> Option<(String, String)> {
+    open_sealed_from(me, sealed).map(|(from, _, body)| (from, body))
+}
+
+/// Ouvre une enveloppe scellée : (code de l'expéditeur, son appareil (vide
+/// pour un ancien client), enveloppe ordinaire).
+pub fn open_sealed_from(me: &Identity, sealed: &str) -> Option<(String, String, String)> {
     let bytes = unb64(sealed)?;
     if bytes.len() < 65 + 12 + 16 {
         return None;
@@ -456,7 +472,248 @@ pub fn open_sealed(me: &Identity, sealed: &str) -> Option<(String, String)> {
         .ok()?;
     let s: SealedSender = serde_json::from_slice(&pt).ok()?;
     let from = normalize(&s.from).filter(|c| *c == s.from)?;
-    Some((from, s.body))
+    let fd = if is_dev(&s.fd) { s.fd } else { String::new() };
+    Some((from, fd, s.body))
+}
+
+// ----- Plusieurs appareils et boîtes tournantes (v4) -------------------------
+//
+// `docs/SECURITE.md` §7.11 à §7.13.
+
+/// Le relais de Talka : un seul. Son adresse entre dans la dérivation des
+/// boîtes tournantes, qui ne valent que pour lui.
+pub const OFFICIAL_RELAY: &str = "https://talka-maxlestage-e497dd868a8c.herokuapp.com";
+
+/// Un identifiant d'appareil : 16 caractères hexadécimaux minuscules.
+pub fn is_dev(dev: &str) -> bool {
+    dev.len() == 16
+        && dev
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Un nouvel identifiant d'appareil (8 octets aléatoires).
+pub fn new_dev() -> String {
+    random_bytes(8).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Le jour d'un horodatage (ms Unix, UTC) : les boîtes tournantes changent
+/// chaque jour.
+pub fn day(ms: f64) -> u64 {
+    (ms.max(0.0) / 86_400_000.0) as u64
+}
+
+/// La clé des boîtes entre deux codes : ECDH de leurs clés d'identité, puis
+/// HKDF-SHA256 lié au relais (§7.13). Seuls les deux savent la calculer.
+pub fn boites_key(me: &Identity, peer_code: &str, peer_dh: &str) -> Option<[u8; 32]> {
+    let public = PublicKey::from_sec1_bytes(&unb64(peer_dh)?).ok()?;
+    let secret = me.dh_key()?;
+    let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+    let (a, b) = if me.code.as_str() < peer_code {
+        (me.code.as_str(), peer_code)
+    } else {
+        (peer_code, me.code.as_str())
+    };
+    let salt = format!("talka-boites-v1:{OFFICIAL_RELAY}");
+    let hk = Hkdf::<Sha256>::new(Some(salt.as_bytes()), shared.raw_secret_bytes());
+    let mut key = [0u8; 32];
+    hk.expand(format!("{a}:{b}").as_bytes(), &mut key).ok()?;
+    Some(key)
+}
+
+/// La boîte de `jour` où l'on écrit à l'appareil `dev` de `to` :
+/// base64url(HMAC-SHA256(clé, "talka-boite:<to>/<dev>:<jour>")[0..16]).
+pub fn boite(key: &[u8; 32], to: &str, dev: &str, day: u64) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("toute longueur");
+    mac.update(format!("talka-boite:{to}/{dev}:{day}").as_bytes());
+    b64url(&mac.finalize().into_bytes()[..16])
+}
+
+pub fn b64url(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn unb64url(text: &str) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text.trim_end_matches('='))
+        .ok()
+}
+
+/// Le préfixe d'un lien de liaison (QR code).
+pub const LINK_PREFIX: &str = "talka-lien:";
+
+/// Ce que montre le nouvel appareil (§7.12) : son `dev`, l'identifiant de
+/// liaison et sa clé publique éphémère.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkOffer {
+    pub dev: String,
+    pub lid: [u8; 16],
+    pub lk: Vec<u8>,
+}
+
+/// Le côté secret de la liaison, gardé par le nouvel appareil le temps
+/// qu'elle se fasse.
+pub struct LinkSecret {
+    pub offer: LinkOffer,
+    key: SecretKey,
+}
+
+impl LinkOffer {
+    /// `talka-lien:<base64url(0x01 ‖ dev ‖ lid ‖ lk)>`.
+    pub fn text(&self) -> String {
+        let dev: Vec<u8> = (0..8)
+            .filter_map(|i| u8::from_str_radix(&self.dev[i * 2..i * 2 + 2], 16).ok())
+            .collect();
+        let bytes = [[1u8].as_slice(), &dev, &self.lid, &self.lk].concat();
+        format!("{LINK_PREFIX}{}", b64url(&bytes))
+    }
+
+    /// Lit un lien de liaison (collé, ou lu dans un QR code).
+    pub fn parse(text: &str) -> Option<LinkOffer> {
+        let rest = text.trim().strip_prefix(LINK_PREFIX)?;
+        let bytes = unb64url(rest)?;
+        if bytes.len() != 1 + 8 + 16 + 65 || bytes[0] != 1 {
+            return None;
+        }
+        PublicKey::from_sec1_bytes(&bytes[25..]).ok()?;
+        Some(LinkOffer {
+            dev: bytes[1..9].iter().map(|b| format!("{b:02x}")).collect(),
+            lid: bytes[9..25].try_into().ok()?,
+            lk: bytes[25..].to_vec(),
+        })
+    }
+
+    /// La boîte de liaison, où le nouvel appareil attend.
+    pub fn boite(&self) -> String {
+        b64url(&Sha256::digest([b"talka-lien:".as_slice(), &self.lid].concat())[..16])
+    }
+}
+
+impl LinkSecret {
+    pub fn new() -> LinkSecret {
+        let key = SecretKey::random(&mut OsRng);
+        let mut lid = [0u8; 16];
+        OsRng.fill_bytes(&mut lid);
+        LinkSecret {
+            offer: LinkOffer {
+                dev: new_dev(),
+                lid,
+                lk: raw(&key.public_key()),
+            },
+            key,
+        }
+    }
+
+    /// La clé de liaison, à partir de la clé éphémère de l'appareil du compte.
+    pub fn key(&self, ek: &[u8]) -> Option<[u8; 32]> {
+        let public = PublicKey::from_sec1_bytes(ek).ok()?;
+        let shared = p256::ecdh::diffie_hellman(self.key.to_nonzero_scalar(), public.as_affine());
+        link_key(
+            shared.raw_secret_bytes(),
+            &self.offer.lid,
+            ek,
+            &self.offer.lk,
+        )
+    }
+}
+
+impl Default for LinkSecret {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn link_key(shared: &[u8], lid: &[u8], ek: &[u8], lk: &[u8]) -> Option<[u8; 32]> {
+    let hk = Hkdf::<Sha256>::new(Some(lid), shared);
+    let mut key = [0u8; 32];
+    hk.expand(&[b"talka-lien-v1:".as_slice(), ek, lk].concat(), &mut key)
+        .ok()?;
+    Some(key)
+}
+
+/// L'appareil du compte répond à une offre : (sa clé éphémère publique, la
+/// clé de liaison).
+pub fn link_answer(offer: &LinkOffer) -> Option<(Vec<u8>, [u8; 32])> {
+    let public = PublicKey::from_sec1_bytes(&offer.lk).ok()?;
+    let eph = SecretKey::random(&mut OsRng);
+    let ek = raw(&eph.public_key());
+    let shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
+    let key = link_key(shared.raw_secret_bytes(), &offer.lid, &ek, &offer.lk)?;
+    Some((ek, key))
+}
+
+/// Le code de vérification d'une liaison, le même sur les deux appareils.
+pub fn link_verification(ek: &[u8], lk: &[u8]) -> String {
+    let d = Sha256::digest([b"talka-lien-verif:".as_slice(), ek, lk].concat());
+    let n = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) % 1_000_000;
+    format!("{:03} {:03}", n / 1000, n % 1000)
+}
+
+/// La taille d'un morceau de liaison (en clair).
+pub const LINK_CHUNK: usize = 2 * 1024 * 1024;
+
+/// Chiffre ce que la liaison transporte, en morceaux :
+/// `{"e","i","n","c"}` (JSON), à déposer dans la boîte de liaison.
+pub fn link_seal(key: &[u8; 32], lid: &[u8; 16], ek: &[u8], plain: &[u8]) -> Option<Vec<String>> {
+    let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+    let chunks: Vec<&[u8]> = if plain.is_empty() {
+        vec![plain]
+    } else {
+        plain.chunks(LINK_CHUNK).collect()
+    };
+    let n = chunks.len();
+    let lid64 = b64url(lid);
+    chunks
+        .iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let iv = random_bytes(12);
+            let ad = format!("talka-lien:{lid64}:{i}/{n}");
+            let ct = cipher
+                .encrypt(
+                    Nonce::from_slice(&iv),
+                    Payload {
+                        msg: chunk,
+                        aad: ad.as_bytes(),
+                    },
+                )
+                .ok()?;
+            Some(
+                serde_json::json!({ "e": b64(ek), "i": i, "n": n, "c": b64(&[iv, ct].concat()) })
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Ouvre un morceau de liaison : (indice, nombre, clair).
+pub fn link_open(
+    key: &[u8; 32],
+    lid: &[u8; 16],
+    chunk: &serde_json::Value,
+) -> Option<(usize, usize, Vec<u8>)> {
+    let i = chunk["i"].as_u64()? as usize;
+    let n = chunk["n"].as_u64()? as usize;
+    if n == 0 || i >= n || n > 64 {
+        return None;
+    }
+    let bytes = unb64(chunk["c"].as_str()?)?;
+    if bytes.len() < 12 + 16 {
+        return None;
+    }
+    let ad = format!("talka-lien:{}:{i}/{n}", b64url(lid));
+    let pt = Aes256Gcm::new_from_slice(key)
+        .ok()?
+        .decrypt(
+            Nonce::from_slice(&bytes[..12]),
+            Payload {
+                msg: &bytes[12..],
+                aad: ad.as_bytes(),
+            },
+        )
+        .ok()?;
+    Some((i, n, pt))
 }
 
 // ----- L'aperçu des notifications -------------------------------------------

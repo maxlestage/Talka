@@ -93,6 +93,26 @@ thread_local! {
     static BUNDLES: RefCell<HashMap<String, (Option<KeyBundle>, f64)>> = RefCell::new(HashMap::new());
     /// La dernière session réparée, contact par contact.
     static REPAIRS: RefCell<HashMap<String, f64>> = RefCell::new(HashMap::new());
+    /// Cet appareil (v4) et les appareils de notre compte.
+    static DEV: RefCell<String> = const { RefCell::new(String::new()) };
+    static DEVICES: RefCell<Devices> = RefCell::new(Devices::default());
+    /// Nos boîtes tournantes suivies : boîte → le contact qui y écrit ; et le
+    /// jour pour lequel elles ont été calculées.
+    static BOXES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static BOX_DAY: Cell<u64> = const { Cell::new(0) };
+    /// Une liaison en cours sur ce nouvel appareil (v4) : le secret, et les
+    /// morceaux reçus.
+    static LINKING: RefCell<Option<Linking>> = const { RefCell::new(None) };
+}
+
+/// Une liaison attendue (§7.12) : ce que le nouvel appareil a montré, et ce
+/// qu'il a reçu.
+struct Linking {
+    secret: crypto::LinkSecret,
+    key: Option<[u8; 32]>,
+    ek: Vec<u8>,
+    chunks: Vec<Option<Vec<u8>>>,
+    done: Option<dom::Sender<Result<String, String>>>,
 }
 
 fn with<T>(f: impl FnOnce(&mut St) -> T) -> T {
@@ -107,6 +127,29 @@ pub fn me() -> Identity {
 
 pub fn my_code() -> String {
     with(|s| s.me.as_ref().map(|m| m.code.clone()).unwrap_or_default())
+}
+
+/// Cet appareil (v4).
+pub fn my_dev() -> String {
+    DEV.with(|d| d.borrow().clone())
+}
+
+/// Les appareils de notre compte (v4).
+pub fn devices() -> Devices {
+    DEVICES.with(|d| d.borrow().clone())
+}
+
+/// Nos autres appareils.
+fn siblings() -> Vec<String> {
+    let me = my_dev();
+    DEVICES.with(|d| {
+        d.borrow()
+            .list
+            .iter()
+            .filter(|x| x.dev != me)
+            .map(|x| x.dev.clone())
+            .collect()
+    })
 }
 
 pub fn profile() -> Profile {
@@ -254,7 +297,8 @@ pub async fn start() {
         s.chats = chats.into_iter().map(|c| (c.id.clone(), c)).collect();
     });
     start_v3().await;
-    net::start(identity, hidden);
+    ensure_device().await;
+    net::start(identity, hidden, &my_dev());
     sweep().await;
     dom::interval(60_000, || {
         spawn(sweep());
@@ -269,6 +313,8 @@ pub fn on_net(state: State) {
     if state == State::Online {
         watch_contacts();
         publish_v3();
+        spawn(announce_devices());
+        spawn(refresh_boxes());
         spawn(flush());
         spawn(refresh_missing_keys());
         if net::sealed_supported() {
@@ -340,6 +386,11 @@ pub fn mute_label(c: &Chat) -> String {
 
 async fn sweep() {
     let t = now();
+    // Un nouveau jour : de nouvelles boîtes tournantes à lire (v4).
+    let today = crypto::day(net::server_now());
+    if BOX_DAY.with(|d| d.replace(today)) != today {
+        refresh_boxes().await;
+    }
     // Les sourdines pour un temps qui arrivent à leur terme.
     for chat in chats() {
         if chat.muted && chat.mute_until > 0.0 && chat.mute_until <= t {
@@ -455,16 +506,23 @@ async fn load_v3(code: &str) {
 /// Publie le paquet de clés v3, signé par la clé du code (à chaque
 /// connexion : le relais ne garde rien sur disque).
 fn publish_v3() {
+    // Celui des anciens clients, puis celui de cet appareil (v4).
     if let Some((bundle, sig)) = with_v3(|e| e.published(&me())).flatten() {
-        net::publish_bundle(&bundle, &sig);
+        net::publish_bundle(&bundle, &sig, "");
+    }
+    let dev = my_dev();
+    if let Some((bundle, sig)) = with_v3(|e| e.published_device(&me(), &dev)).flatten() {
+        net::publish_bundle(&bundle, &sig, &dev);
     }
 }
 
-/// Le paquet v3 d'un contact, vérifié (lié à son code) ; gardé une heure en
-/// mémoire (dix minutes s'il n'en a pas).
-async fn bundle_for(peer: &Contact) -> Option<KeyBundle> {
+/// Le paquet v3 d'un contact (de son appareil `dev` en v4), vérifié (lié à
+/// son code, et à l'appareil) ; gardé une heure en mémoire (dix minutes
+/// s'il n'en a pas).
+async fn bundle_for(peer: &Contact, dev: &str) -> Option<KeyBundle> {
     let t = now();
-    if let Some((bundle, at)) = BUNDLES.with(|b| b.borrow().get(&peer.code).cloned()) {
+    let addr = address(&peer.code, dev);
+    if let Some((bundle, at)) = BUNDLES.with(|b| b.borrow().get(&addr).cloned()) {
         let ttl = if bundle.is_some() {
             3_600_000.0
         } else {
@@ -476,24 +534,34 @@ async fn bundle_for(peer: &Contact) -> Option<KeyBundle> {
     }
     // Pas de réponse (réseau, ancien relais) : rien n'est retenu.
     let found = net::fetch_bundle(&peer.code).await?;
-    let bundle = (!found["none"].as_bool().unwrap_or(false))
-        .then(|| {
-            v3::verify_bundle(
-                &peer.code,
-                &peer.sign,
-                &peer.dh,
-                found["bundle"].as_str()?,
-                found["sig"].as_str()?,
-            )
-        })
-        .flatten();
-    if bundle.is_none() && found["none"] != true {
+    // Celui des anciens clients.
+    let legacy = found["bundle"]
+        .as_str()
+        .zip(found["sig"].as_str())
+        .and_then(|(b, s)| v3::verify_bundle(&peer.code, &peer.sign, &peer.dh, b, s));
+    // Et ceux de ses appareils (v4) : chacun gardé à son adresse.
+    let mut found_dev = None;
+    for d in found["devices"].as_array().into_iter().flatten() {
+        let (Some(id), Some(b), Some(sig)) =
+            (d["dev"].as_str(), d["bundle"].as_str(), d["sig"].as_str())
+        else {
+            continue;
+        };
+        let bundle = v3::verify_device_bundle(&peer.code, &peer.sign, &peer.dh, id, b, sig);
+        if bundle.is_none() {
+            dom::warn("v4 : paquet d'appareil refusé (signature ou format)");
+            continue;
+        }
+        if id == dev {
+            found_dev = bundle.clone();
+        }
+        BUNDLES.with(|m| m.borrow_mut().insert(address(&peer.code, id), (bundle, t)));
+    }
+    let bundle = if dev.is_empty() { legacy } else { found_dev };
+    if bundle.is_none() && dev.is_empty() && found["none"] != true {
         dom::warn("v3 : paquet de clés refusé (signature ou format)");
     }
-    BUNDLES.with(|b| {
-        b.borrow_mut()
-            .insert(peer.code.clone(), (bundle.clone(), t))
-    });
+    BUNDLES.with(|b| b.borrow_mut().insert(addr, (bundle.clone(), t)));
     bundle
 }
 
@@ -504,7 +572,7 @@ pub async fn protection(code: &str) -> Protection {
         return p;
     }
     if let Some(peer) = keys_for(code).await
-        && let Some(bundle) = bundle_for(&peer).await
+        && let Some(bundle) = bundle_for(&peer, "").await
     {
         return Protection::Ratchet {
             pq: bundle.pq.is_some(),
@@ -517,18 +585,35 @@ pub async fn protection(code: &str) -> Protection {
 /// on oublie nos sessions avec ce contact et on lui envoie notre profil, qui
 /// ouvre une session neuve ; il la prend, et ses messages suivants se
 /// lisent. Au plus une fois toutes les cinq minutes par contact.
-fn repair_v3(code: &str) {
+fn repair_v3(code: &str, dev: &str) {
+    let addr = address(code, dev);
     let t = now();
-    let recent = REPAIRS.with(|r| r.borrow().get(code).is_some_and(|at| t - at < 300_000.0));
+    let recent = REPAIRS.with(|r| r.borrow().get(&addr).is_some_and(|at| t - at < 300_000.0));
     if recent {
         return;
     }
-    REPAIRS.with(|r| r.borrow_mut().insert(code.to_owned(), t));
-    with_v3(|e| e.forget(code));
-    let code = code.to_owned();
+    REPAIRS.with(|r| r.borrow_mut().insert(addr.clone(), t));
+    with_v3(|e| e.forget(&addr));
+    let (code, dev) = (code.to_owned(), dev.to_owned());
     spawn(async move {
         save_v3().await;
-        enqueue(&code, Wire::new(profile_body(&code)), None, None, false).await;
+        // Notre profil (ou, pour un de nos appareils, la liste des
+        // appareils), à cet appareil seulement : il ouvre la session neuve.
+        let body = if code == my_code() {
+            Body::Sync {
+                op: "devices".into(),
+                c: String::new(),
+                w: None,
+                d: serde_json::to_value(devices()).unwrap_or_default(),
+            }
+        } else {
+            profile_body(&code)
+        };
+        if dev.is_empty() {
+            enqueue(&code, Wire::new(body), None, None, false).await;
+        } else {
+            enqueue_to(&code, Some(&dev), Wire::new(body)).await;
+        }
     });
 }
 
@@ -557,12 +642,14 @@ pub async fn save_profile(f: impl FnOnce(&mut Profile)) {
     });
     store::write("kv", "profile", &p).await;
     emit(Ev::Profile);
-    for c in contacts() {
-        if c.saved && !c.blocked {
-            enqueue(&c.code, Wire::new(profile_body(&c.code)), None, None, false).await;
-        }
-    }
-    spawn(flush());
+    sync(
+        "profile",
+        "",
+        None,
+        serde_json::to_value(&p).unwrap_or_default(),
+    )
+    .await;
+    announce_profile().await;
 }
 
 /// Notre profil pour `code`, avec son jeton de remise personnel : pour un
@@ -573,12 +660,433 @@ fn profile_body(code: &str) -> Body {
         Some(c) if !c.blocked => me().jeton_for(code, c.jeton_epoch),
         _ => String::new(),
     };
+    let devices = devices();
     Body::Profile {
         profile: profile(),
         jeton,
         nk: with(|s| s.nk.clone()),
         pj: true,
+        devs: devices.announced(),
+        dv: devices.v,
+        bx: true,
     }
+}
+
+// ----- Plusieurs appareils (v4, docs/SECURITE.md §7.11) ------------------------
+
+/// Le nom de cet appareil, tel que le montre la liste des appareils.
+fn device_name() -> String {
+    let ua = dom::window().navigator().user_agent().unwrap_or_default();
+    let browser = if ua.contains("Edg/") {
+        "Edge"
+    } else if ua.contains("Firefox/") {
+        "Firefox"
+    } else if ua.contains("Chrome/") {
+        "Chrome"
+    } else if ua.contains("Safari/") {
+        "Safari"
+    } else {
+        "Navigateur"
+    };
+    let os = if ua.contains("iPhone") {
+        "iPhone"
+    } else if ua.contains("iPad") {
+        "iPad"
+    } else if ua.contains("Android") {
+        "Android"
+    } else if ua.contains("Mac OS X") {
+        "Mac"
+    } else if ua.contains("Windows") {
+        "Windows"
+    } else if ua.contains("Linux") {
+        "Linux"
+    } else {
+        ""
+    };
+    if os.is_empty() {
+        browser.to_owned()
+    } else {
+        format!("{browser} sur {os}")
+    }
+}
+
+/// Cet appareil : son identifiant (tiré une fois, jamais sauvegardé), et sa
+/// place dans la liste des appareils du compte.
+async fn ensure_device() {
+    let mut dev: String = store::read("kv", "dev").await.unwrap_or_default();
+    if !crypto::is_dev(&dev) {
+        dev = crypto::new_dev();
+        store::write("kv", "dev", &dev).await;
+    }
+    DEV.with(|d| *d.borrow_mut() = dev.clone());
+    let mut list: Devices = store::read("kv", "appareils").await.unwrap_or_default();
+    if !list.has(&dev) {
+        list.list.push(Device {
+            dev: dev.clone(),
+            name: device_name(),
+            at: now(),
+            nk: with(|s| s.nk.clone()),
+        });
+        // Au-delà de six, les plus anciens cèdent leur place.
+        while list.list.len() > MAX_DEVICES {
+            list.list.remove(0);
+        }
+        list.v += 1;
+        store::write("kv", "appareils", &list).await;
+    }
+    DEVICES.with(|d| *d.borrow_mut() = list);
+}
+
+/// La liste des appareils a changé : gardée, donnée à nos autres appareils
+/// et annoncée aux contacts (dans le profil).
+async fn devices_changed(list: Devices, tell_siblings: bool) {
+    DEVICES.with(|d| *d.borrow_mut() = list.clone());
+    store::write("kv", "appareils", &list).await;
+    if tell_siblings {
+        sync(
+            "devices",
+            "",
+            None,
+            serde_json::to_value(&list).unwrap_or_default(),
+        )
+        .await;
+    }
+    announce_profile().await;
+    emit(Ev::Profile);
+}
+
+/// La liste des appareils a changé depuis la dernière annonce (un appareil
+/// ajouté au démarrage, une liaison faite hors ligne) : annoncée.
+async fn announce_devices() {
+    let list = devices();
+    let told: u64 = store::read("kv", "appareils_annonces").await.unwrap_or(0);
+    if list.v > told {
+        sync(
+            "devices",
+            "",
+            None,
+            serde_json::to_value(&list).unwrap_or_default(),
+        )
+        .await;
+        announce_profile().await;
+        store::write("kv", "appareils_annonces", &list.v).await;
+    }
+}
+
+/// Notre profil à tous nos contacts (et aux correspondants non bloqués).
+async fn announce_profile() {
+    for c in contacts() {
+        if c.saved && !c.blocked {
+            enqueue(&c.code, Wire::new(profile_body(&c.code)), None, None, false).await;
+        }
+    }
+    spawn(flush());
+}
+
+/// Renomme cet appareil (ou un autre du compte).
+pub async fn rename_device(dev: &str, name: &str) {
+    let mut list = devices();
+    let Some(d) = list.list.iter_mut().find(|d| d.dev == dev) else {
+        return;
+    };
+    d.name = name.trim().chars().take(40).collect();
+    list.v += 1;
+    devices_changed(list, true).await;
+}
+
+/// Retire un appareil du compte : il reçoit l'ordre de tout effacer, le
+/// relais l'oublie, et les contacts ne lui écrivent plus.
+pub async fn unlink_device(dev: &str) {
+    if dev == my_dev() {
+        return;
+    }
+    // Lui d'abord (tant qu'il est encore dans la liste).
+    let w = Wire::new(Body::Sync {
+        op: "unlink".into(),
+        c: String::new(),
+        w: None,
+        d: serde_json::json!({ "dev": dev }),
+    });
+    enqueue_to(&my_code(), Some(dev), w).await;
+    flush().await;
+    net::unlink(dev);
+    let mut list = devices();
+    list.list.retain(|d| d.dev != dev);
+    list.v += 1;
+    devices_changed(list, true).await;
+}
+
+// ----- Les boîtes tournantes (v4, §7.13) --------------------------------------
+
+/// Les boîtes où nos contacts nous écrivent (à cet appareil) : pour chacun,
+/// chaque jour depuis la dernière écoute (un de marge, trente au plus)
+/// jusqu'à demain. La connexion anonyme de lecture les suit.
+pub async fn refresh_boxes() {
+    if with(|s| s.me.is_none()) {
+        return;
+    }
+    let me = me();
+    let dev = my_dev();
+    let today = crypto::day(net::server_now());
+    let last: u64 = store::read("kv", "boites_jour").await.unwrap_or(today);
+    let from = last.saturating_sub(1).max(today.saturating_sub(30));
+    let mut map = HashMap::new();
+    for c in contacts() {
+        if c.blocked || c.dh.is_empty() {
+            continue;
+        }
+        let Some(key) = crypto::boites_key(&me, &c.code, &c.dh) else {
+            continue;
+        };
+        for day in from..=today + 1 {
+            map.insert(crypto::boite(&key, &me.code, &dev, day), c.code.clone());
+        }
+    }
+    let list: Vec<String> = map.keys().cloned().collect();
+    BOXES.with(|b| *b.borrow_mut() = map);
+    net::listen_boxes(list, crate::push::subscription());
+    if net::state() == State::Online {
+        store::write("kv", "boites_jour", &today).await;
+    }
+}
+
+// ----- La liaison d'un appareil (v4, §7.12) -----------------------------------
+
+/// Ce qu'un nouvel appareil ne doit pas recevoir : ce qui est propre à cet
+/// appareil-ci.
+fn device_only(key: &str) -> bool {
+    matches!(
+        key,
+        "dev" | "nk" | "pin" | "appareils" | "boites_jour" | "brocolis_sealed"
+    ) || key == v3::DEVICE_KEY
+        || key.starts_with(v3::SESSION_PREFIX)
+}
+
+/// Lie un nouvel appareil (son code de liaison, lu dans son QR code) :
+/// il reçoit notre compte, chiffré pour lui seul. Renvoie le code de
+/// vérification à comparer avec celui qu'il affiche.
+pub async fn link_device(text: &str) -> Result<String, String> {
+    let offer = crypto::LinkOffer::parse(text)
+        .ok_or("Ce n'est pas un code de liaison Talka.".to_owned())?;
+    let mut list = devices();
+    if list.has(&offer.dev) {
+        return Err("Cet appareil est déjà lié.".into());
+    }
+    if list.list.len() >= MAX_DEVICES {
+        return Err("Six appareils au plus : retirez-en un d'abord.".into());
+    }
+    if !net::sealed_supported() {
+        return Err("Pas de connexion au relais : réessayez.".into());
+    }
+    let (ek, key) = crypto::link_answer(&offer).ok_or("Code de liaison illisible.".to_owned())?;
+    list.list.push(Device {
+        dev: offer.dev.clone(),
+        name: "Nouvel appareil".into(),
+        at: now(),
+        nk: String::new(),
+    });
+    list.v += 1;
+    let payload = serde_json::json!({
+        "talka": "lien",
+        "v": 1,
+        "code": my_code(),
+        "devices": list,
+        "data": link_dump().await,
+    })
+    .to_string();
+    let chunks = crypto::link_seal(&key, &offer.lid, &ek, payload.as_bytes())
+        .ok_or("Chiffrement impossible.".to_owned())?;
+    let boite = offer.boite();
+    for (i, chunk) in chunks.iter().enumerate() {
+        let id = format!("lien-{}-{i}", crypto::random_id(8));
+        if let Ack::Err(e) =
+            net::send_boite(&id, &boite, chunk, false, false, None, Some(3600)).await
+        {
+            return Err(format!("La liaison n'a pas pu partir ({e}) : réessayez."));
+        }
+    }
+    devices_changed(list, true).await;
+    Ok(crypto::link_verification(&ek, &offer.lk))
+}
+
+/// Notre compte, pour un nouvel appareil : comme la sauvegarde, sans ce qui
+/// est propre à cet appareil, ni les pièces jointes de plus de 512 Kio, ni
+/// plus de 32 Mio en tout (les messages les plus anciens d'abord).
+async fn link_dump() -> Value {
+    let mut dump = store::dump().await;
+    if let Some(kv) = dump.get_mut("kv").and_then(Value::as_array_mut) {
+        kv.retain(|r| {
+            r.get(0)
+                .and_then(Value::as_str)
+                .is_none_or(|k| !device_only(k))
+        });
+        // Les clés Brocolis en clair (scellées par le code de cet appareil,
+        // elles ne s'ouvriraient pas là-bas).
+        if let Some(row) = brocolis_for_backup() {
+            kv.retain(|r| r.get(0).and_then(Value::as_str) != Some("brocolis"));
+            kv.push(row);
+        }
+    }
+    if let Some(out) = dump.get_mut("outbox") {
+        *out = Value::Array(Vec::new());
+    }
+    if let Some(rows) = dump.get_mut("messages").and_then(Value::as_array_mut) {
+        // Les plus récents d'abord.
+        rows.sort_by(|a, b| {
+            b.get(3)
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                .total_cmp(&a.get(3).and_then(Value::as_f64).unwrap_or(0.0))
+        });
+        let mut total = 0usize;
+        rows.retain_mut(|r| {
+            let Some(json) = r.get(1).and_then(Value::as_str) else {
+                return false;
+            };
+            let json = match serde_json::from_str::<Message>(json) {
+                Ok(mut m) if m.data.len() > 512 * 1024 => {
+                    m.data.clear();
+                    serde_json::to_string(&m).unwrap_or_default()
+                }
+                _ => json.to_owned(),
+            };
+            total += json.len();
+            r[1] = Value::String(json);
+            total <= 32 * 1024 * 1024
+        });
+    }
+    dump
+}
+
+/// Ce nouvel appareil attend d'être lié : le code à montrer (QR code), et
+/// l'attente de ce que l'autre appareil envoie (le code de vérification).
+pub fn start_linking() -> (String, dom::Deferred<Result<String, String>>) {
+    let secret = crypto::LinkSecret::new();
+    let text = secret.offer.text();
+    let boite = secret.offer.boite();
+    let d = dom::Deferred::new();
+    LINKING.with(|l| {
+        *l.borrow_mut() = Some(Linking {
+            secret,
+            key: None,
+            ek: Vec::new(),
+            chunks: Vec::new(),
+            done: Some(d.sender()),
+        })
+    });
+    net::listen_boxes(vec![boite], None);
+    (text, d)
+}
+
+/// La liaison abandonnée.
+pub fn cancel_linking() {
+    LINKING.with(|l| *l.borrow_mut() = None);
+    net::listen_boxes(Vec::new(), None);
+}
+
+/// Un morceau de la liaison arrive.
+async fn link_chunk(env: &Value) {
+    let Ok(chunk) = serde_json::from_str::<Value>(env["body"].as_str().unwrap_or("")) else {
+        return;
+    };
+    let Some(ek) = chunk["e"].as_str().and_then(crypto::unb64) else {
+        return;
+    };
+    let complete = LINKING.with(|l| {
+        let mut l = l.borrow_mut();
+        let link = l.as_mut()?;
+        if link.key.is_none() {
+            link.key = link.secret.key(&ek);
+            link.ek = ek.clone();
+        }
+        if link.ek != ek {
+            return None;
+        }
+        let key = link.key?;
+        let (i, n, plain) = crypto::link_open(&key, &link.secret.offer.lid, &chunk)?;
+        if link.chunks.len() != n {
+            link.chunks = vec![None; n];
+        }
+        link.chunks[i] = Some(plain);
+        link.chunks.iter().all(Option::is_some).then(|| {
+            link.chunks
+                .iter()
+                .flatten()
+                .flatten()
+                .copied()
+                .collect::<Vec<u8>>()
+        })
+    });
+    let Some(bytes) = complete else { return };
+    let result = import_link(&bytes).await;
+    let done = LINKING.with(|l| {
+        let mut l = l.borrow_mut();
+        let link = l.take()?;
+        let verif = crypto::link_verification(&link.ek, &link.secret.offer.lk);
+        Some((link.done?, verif, link.secret.offer.dev))
+    });
+    if let Some((done, verif, _)) = done {
+        done.send(Some(result.map(|_| verif)));
+    }
+    net::listen_boxes(Vec::new(), None);
+}
+
+/// Range le compte reçu par la liaison : tout, sauf ce qui est propre à
+/// l'autre appareil ; cet appareil garde son identifiant.
+async fn import_link(bytes: &[u8]) -> Result<(), String> {
+    let bad = "La liaison n'a pas abouti : réessayez.".to_owned();
+    let payload: Value = serde_json::from_slice(bytes).map_err(|_| bad.clone())?;
+    if payload["talka"] != "lien" || payload["v"] != 1 {
+        return Err(bad);
+    }
+    let devices: Devices =
+        serde_json::from_value(payload["devices"].clone()).map_err(|_| bad.clone())?;
+    let dev = LINKING
+        .with(|l| l.borrow().as_ref().map(|l| l.secret.offer.dev.clone()))
+        .ok_or(bad.clone())?;
+    if !devices.has(&dev) {
+        return Err(bad);
+    }
+    let mut data = payload["data"].clone();
+    // L'identité doit y être, et valable.
+    let identity = data["kv"]
+        .as_array()
+        .and_then(|kv| {
+            kv.iter()
+                .find(|r| r.get(0).and_then(Value::as_str) == Some("identity"))
+        })
+        .and_then(|r| r.get(1).and_then(Value::as_str))
+        .and_then(|j| serde_json::from_str::<Identity>(j).ok())
+        .filter(|i| i.is_valid() && Some(i.code.as_str()) == payload["code"].as_str())
+        .ok_or(bad.clone())?;
+    if let Some(kv) = data.get_mut("kv").and_then(Value::as_array_mut) {
+        kv.retain(|r| {
+            r.get(0)
+                .and_then(Value::as_str)
+                .is_none_or(|k| !device_only(k))
+        });
+        kv.push(serde_json::json!([
+            "dev",
+            serde_json::to_string(&dev).unwrap_or_default()
+        ]));
+        kv.push(serde_json::json!([
+            "appareils",
+            serde_json::to_string(&devices).unwrap_or_default()
+        ]));
+    }
+    store::restore(&data).await;
+    let _ = identity;
+    Ok(())
+}
+
+/// Le relais dit que cet appareil a été retiré du compte : tout est effacé.
+pub fn on_unlinked() {
+    spawn(async {
+        dom::toast("Cet appareil a été retiré de votre compte Talka.");
+        wipe_everything().await;
+        dom::sleep(1500).await;
+        let _ = dom::window().location().reload();
+    });
 }
 
 /// La clé de notification de ce navigateur (son service worker la tire) :
@@ -590,12 +1098,16 @@ pub async fn set_nk(nk: String) {
     }
     with(|s| s.nk = nk.clone());
     store::write("kv", "nk", &nk).await;
-    for c in contacts() {
-        if c.saved && !c.blocked {
-            enqueue(&c.code, Wire::new(profile_body(&c.code)), None, None, false).await;
-        }
+    // Elle est propre à cet appareil : dans la liste des appareils (v4).
+    let mut list = devices();
+    let dev = my_dev();
+    if let Some(d) = list.list.iter_mut().find(|d| d.dev == dev) {
+        d.nk = nk;
+        list.v += 1;
+        devices_changed(list, true).await;
+    } else {
+        announce_profile().await;
     }
-    spawn(flush());
 }
 
 /// L'aperçu d'une notification pour le destinataire (voir
@@ -655,8 +1167,13 @@ async fn send_revoked() {
 // l'écriture voit déjà la nouvelle valeur.
 async fn save_contact(c: Contact) {
     let code = c.code.clone();
-    with(|s| s.contacts.insert(code.clone(), c.clone()));
+    let before = with(|s| s.contacts.insert(code.clone(), c.clone()));
     store::write("contacts", &code, &c).await;
+    // Un correspondant dont on connaît les clés (ou qu'on débloque) : ses
+    // boîtes tournantes sont à lire (v4).
+    if before.is_none_or(|b| b.dh != c.dh || b.blocked != c.blocked) && !c.dh.is_empty() {
+        spawn(refresh_boxes());
+    }
     emit(Ev::Contacts(code));
 }
 
@@ -768,15 +1285,37 @@ pub async fn add_contact(code: &str, name: &str) -> Result<bool, String> {
     }
     enqueue(code, Wire::new(profile_body(code)), None, None, false).await;
     spawn(flush());
+    if let Some(c) = contact(code) {
+        sync_contact(&c).await;
+    }
     Ok(reachable)
 }
 
 pub async fn update_contact(code: &str, f: impl FnOnce(&mut Contact)) {
     if let Some(mut c) = contact(code) {
+        let before = (c.name.clone(), c.saved, c.blocked);
         f(&mut c);
-        save_contact(c).await;
+        let changed = before != (c.name.clone(), c.saved, c.blocked);
+        save_contact(c.clone()).await;
         emit(Ev::Chats);
+        if changed {
+            sync_contact(&c).await;
+        }
     }
+}
+
+/// Un contact ajouté, renommé, bloqué : pareil sur nos autres appareils (v4).
+async fn sync_contact(c: &Contact) {
+    sync(
+        "contact",
+        "",
+        None,
+        serde_json::json!({
+            "code": c.code, "name": c.name, "saved": c.saved, "blocked": c.blocked,
+            "sign": c.sign, "dh": c.dh,
+        }),
+    )
+    .await;
 }
 
 pub async fn set_blocked(code: &str, blocked: bool) {
@@ -794,11 +1333,15 @@ pub async fn set_blocked(code: &str, blocked: bool) {
         send_revoked().await;
     }
     let unblocked = !blocked && c.blocked;
+    let changed = c.blocked != blocked;
     c.blocked = blocked;
-    save_contact(c).await;
+    save_contact(c.clone()).await;
     emit(Ev::Chats);
     if unblocked && net::sealed_supported() {
         spawn(share_jeton());
+    }
+    if changed {
+        sync_contact(&c).await;
     }
 }
 
@@ -827,8 +1370,57 @@ pub async fn ensure_direct_chat(code: &str) -> Chat {
 
 pub async fn update_chat(id: &str, f: impl FnOnce(&mut Chat)) {
     if let Some(mut c) = chat(id) {
+        let before = ChatState::of(&c);
         f(&mut c);
+        let after = ChatState::of(&c);
         save_chat(c).await;
+        // Archivée, épinglée, en sourdine… : pareil sur nos autres appareils.
+        if before != after {
+            sync(
+                "chat",
+                id,
+                None,
+                serde_json::to_value(after).unwrap_or_default(),
+            )
+            .await;
+        }
+    }
+}
+
+/// Ce qui, d'une discussion, est le même sur tous nos appareils (v4).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct ChatState {
+    marked_unread: bool,
+    pinned: bool,
+    archived: bool,
+    muted: bool,
+    mute_until: f64,
+    wallpaper: String,
+    pin_msg: String,
+}
+
+impl ChatState {
+    fn of(c: &Chat) -> ChatState {
+        ChatState {
+            marked_unread: c.marked_unread,
+            pinned: c.pinned,
+            archived: c.archived,
+            muted: c.muted,
+            mute_until: c.mute_until,
+            wallpaper: c.wallpaper.clone(),
+            pin_msg: c.pin_msg.clone(),
+        }
+    }
+
+    fn apply(self, c: &mut Chat) {
+        c.marked_unread = self.marked_unread;
+        c.pinned = self.pinned;
+        c.archived = self.archived;
+        c.muted = self.muted;
+        c.mute_until = self.mute_until;
+        c.wallpaper = self.wallpaper.chars().take(200).collect();
+        c.pin_msg = self.pin_msg;
     }
 }
 
@@ -1322,6 +1914,11 @@ async fn bury_all(chat: &str) {
 }
 
 pub async fn delete_chat(id: &str) {
+    drop_chat(id).await;
+    sync("chat", id, None, serde_json::json!({ "deleted": true })).await;
+}
+
+async fn drop_chat(id: &str) {
     bury_all(id).await;
     store::delete_messages_of(id).await;
     store::remove("chats", id).await;
@@ -1330,14 +1927,19 @@ pub async fn delete_chat(id: &str) {
 }
 
 pub async fn clear_chat(id: &str) {
+    empty_chat(id).await;
+    sync("chat", id, None, serde_json::json!({ "cleared": true })).await;
+}
+
+async fn empty_chat(id: &str) {
     bury_all(id).await;
     store::delete_messages_of(id).await;
-    update_chat(id, |c| {
+    if let Some(mut c) = chat(id) {
         c.last = None;
         c.unread = 0;
         c.mentioned = false;
-    })
-    .await;
+        save_chat(c).await;
+    }
     emit(Ev::Messages(id.to_owned()));
 }
 
@@ -1516,28 +2118,118 @@ async fn enqueue(to: &str, wire: Wire, chat: Option<&str>, msg_id: Option<&str>,
         chat: chat.unwrap_or_default().to_owned(),
         msg_id: msg_id.unwrap_or_default().to_owned(),
         seq: now() * 1000.0 + (seq % 1000) as f64,
-        boot: String::new(),
+        ..Default::default()
     };
     if live {
-        let _ = send_now(&item, true).await;
+        let mut item = item;
+        let _ = send_now(&mut item, true).await;
         return;
     }
     store::write("outbox", &item.id, &item).await;
     spawn(flush());
 }
 
-async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
-    let peer = keys_for(&item.to).await.ok_or("unknown")?;
-    load_v3(&peer.code).await;
+/// Comme `enqueue`, pour un seul appareil du destinataire (v4) : les autres
+/// sont marqués comme déjà servis.
+async fn enqueue_to(to: &str, dev: Option<&str>, wire: Wire) {
+    let Ok(payload) = serde_json::to_string(&wire) else {
+        return;
+    };
+    let sent = match dev {
+        Some(dev) => targets(to).into_iter().filter(|d| d != dev).collect(),
+        None => Vec::new(),
+    };
+    let item = OutItem {
+        id: format!("{}:{to}", crypto::random_id(10)),
+        to: to.to_owned(),
+        payload,
+        seq: now() * 1000.0,
+        sent,
+        ..Default::default()
+    };
+    store::write("outbox", &item.id, &item).await;
+    spawn(flush());
+}
+
+/// Les appareils où écrire à `code` : chacun des siens (v4, sa dernière
+/// liste annoncée), ou le code seul (vide, avant la v4). Pour nous-mêmes :
+/// nos autres appareils.
+fn targets(code: &str) -> Vec<String> {
+    if code == my_code() {
+        return siblings();
+    }
+    match contact(code) {
+        Some(c) if !c.devs.is_empty() => c.devs.iter().map(|d| d.d.clone()).collect(),
+        _ => vec![String::new()],
+    }
+}
+
+/// L'adresse d'une session v3 : `<code>/<dev>` (v4), ou le code.
+fn address(code: &str, dev: &str) -> String {
+    if dev.is_empty() {
+        code.to_owned()
+    } else {
+        format!("{code}/{dev}")
+    }
+}
+
+/// Envoie un élément de la boîte d'envoi : une copie par appareil du
+/// destinataire (v4), chacune chiffrée par sa propre session. Les appareils
+/// déjà servis (`item.sent`) ne la reçoivent pas deux fois.
+async fn send_now(item: &mut OutItem, live: bool) -> Result<(), String> {
+    let mine = item.to == my_code();
+    let peer = if mine {
+        let me = me();
+        Contact {
+            code: me.code.clone(),
+            sign: me.sign.clone(),
+            dh: me.dh.clone(),
+            pj: true,
+            ..Default::default()
+        }
+    } else {
+        keys_for(&item.to).await.ok_or("unknown")?
+    };
+    let mut failure: Option<String> = None;
+    for dev in targets(&item.to) {
+        if item.sent.contains(&dev) {
+            continue;
+        }
+        match send_one(item, &peer, &dev, mine, live).await {
+            Ok(()) => item.sent.push(dev),
+            // Le relais ne connaît plus cet appareil (retiré) : on n'insiste
+            // pas.
+            Err(e) if e == "dev" => item.sent.push(dev),
+            Err(e) => {
+                failure.get_or_insert(e);
+            }
+        }
+    }
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Une copie, pour un appareil (`dev` vide : le code, avant la v4).
+async fn send_one(
+    item: &OutItem,
+    peer: &Contact,
+    dev: &str,
+    mine: bool,
+    live: bool,
+) -> Result<(), String> {
+    let addr = address(&peer.code, dev);
+    load_v3(&addr).await;
     // « écrit… » et les signaux d'appel ne sont remis qu'à un destinataire
     // en ligne : hors ligne, le relais les jette, et chacun laisserait chez
     // lui une clé sautée dans la session. Ils gardent alors l'ancien format.
-    let ratchet = !live || presence(&peer.code).is_some_and(|(online, _)| online);
-    // Sans session, le paquet du contact en ouvre une (s'il en a publié un).
-    let bundle = if !ratchet || with_v3(|e| e.has_session(&peer.code)).unwrap_or(true) {
+    let ratchet = !live || mine || presence(&peer.code).is_some_and(|(online, _)| online);
+    // Sans session, le paquet de l'appareil en ouvre une (s'il en a publié un).
+    let bundle = if !ratchet || with_v3(|e| e.has_session(&addr)).unwrap_or(true) {
         None
     } else {
-        bundle_for(&peer).await
+        bundle_for(peer, dev).await
     };
     // Une pièce jointe trop grosse pour un jeton v3, vers un contact dont la
     // version le sait : chiffrée à part, sa clé dans le message v3.
@@ -1551,7 +2243,18 @@ async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
     // Chiffré au moment de partir : un nouvel essai chiffre à nouveau (un
     // autre numéro de message) ; le destinataire range par identifiant.
     let v3 = ratchet
-        .then(|| with_v3(|e| e.seal(&me(), &peer.code, &peer.dh, bundle.as_ref(), &payload)))
+        .then(|| {
+            with_v3(|e| {
+                e.seal_to(
+                    &me(),
+                    &addr,
+                    &peer.code,
+                    &peer.dh,
+                    bundle.as_ref(),
+                    &payload,
+                )
+            })
+        })
         .flatten();
     let sealed = match v3 {
         Some(sealed) => sealed,
@@ -1574,31 +2277,70 @@ async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
         Some(blob) => format!("{}|{}", sealed.body, crypto::b64(&blob)),
         None => sealed.body,
     };
+    // Un identifiant par copie (le relais répond copie par copie).
+    let id = if dev.is_empty() {
+        item.id.clone()
+    } else {
+        format!("{}#{dev}", item.id)
+    };
+    // Nos propres appareils : le relais sait déjà qui nous sommes.
+    if mine {
+        return match net::send(&id, &peer.code, dev, &body, live, false, None).await {
+            Ack::Ok => Ok(()),
+            Ack::Err(e) => Err(e),
+        };
+    }
     // Les messages écrits (pas les accusés, réactions, profils) réveillent
     // un destinataire hors ligne.
     let wake = !live && !item.msg_id.is_empty();
-    // Et, s'il a donné sa clé de notification, avec un aperçu chiffré pour
-    // elle : le relais le transmet sans pouvoir le lire.
-    let apercu = (wake && !peer.nk.is_empty())
+    // Et, s'il a donné sa clé de notification (celle de cet appareil en
+    // v4), avec un aperçu chiffré pour elle : le relais le transmet sans
+    // pouvoir le lire.
+    let nk = if dev.is_empty() {
+        peer.nk.clone()
+    } else {
+        peer.devs
+            .iter()
+            .find(|d| d.d == dev)
+            .map(|d| d.nk.clone())
+            .unwrap_or_default()
+    };
+    let apercu = (wake && !nk.is_empty())
         .then(|| serde_json::from_str::<Wire>(&item.payload).ok())
         .flatten()
         .and_then(|w| apercu_of(&my_code(), &profile().name, &w))
-        .and_then(|a| crypto::seal_apercu(&me(), &peer.nk, &a));
+        .and_then(|a| crypto::seal_apercu(&me(), &nk, &a));
+    // Une boîte tournante (v4) : le relais ne sait ni qui écrit, ni à qui.
+    if peer.bx && !dev.is_empty() && net::sealed_supported() {
+        let key = crypto::boites_key(&me(), &peer.code, &peer.dh).ok_or("crypto")?;
+        let boite = crypto::boite(&key, &peer.code, dev, crypto::day(net::server_now()));
+        let outer = crypto::seal_sender_from(&me().code, &my_dev(), &peer.code, &peer.dh, &body)
+            .ok_or("crypto")?;
+        return match net::send_boite(&id, &boite, &outer, live, wake, apercu.as_deref(), None).await
+        {
+            Ack::Ok => Ok(()),
+            Ack::Err(e) => Err(e),
+        };
+    }
     // L'expéditeur scellé : le relais ne sait pas qui écrit (une connexion
     // anonyme, et le jeton de remise du destinataire).
     if !peer.jeton.is_empty() && net::sealed_supported() {
-        let outer = crypto::seal_sender(&me().code, &peer.code, &peer.dh, &body).ok_or("crypto")?;
-        match net::send_sealed(&item.id, &peer, &outer, live, wake, apercu.as_deref()).await {
+        let outer = crypto::seal_sender_from(&me().code, &my_dev(), &peer.code, &peer.dh, &body)
+            .ok_or("crypto")?;
+        match net::send_sealed(&id, peer, dev, &outer, live, wake, apercu.as_deref()).await {
             Ack::Ok => return Ok(()),
             // Son jeton ne vaut plus : on l'oublie, et cet envoi part comme avant.
             Ack::Err(e) if e == "jeton" => {
-                update_contact(&peer.code, |c| c.jeton.clear()).await;
+                if let Some(mut c) = contact(&peer.code) {
+                    c.jeton.clear();
+                    save_contact(c).await;
+                }
             }
             // Pas de repli silencieux : l'envoi réessaiera, toujours scellé.
             Ack::Err(e) => return Err(e),
         }
     }
-    match net::send(&item.id, &item.to, &body, live, wake, apercu.as_deref()).await {
+    match net::send(&id, &item.to, dev, &body, live, wake, apercu.as_deref()).await {
         Ack::Ok => Ok(()),
         Ack::Err(e) => Err(e),
     }
@@ -1635,8 +2377,18 @@ pub async fn flush() {
                 if item.boot == boot || boot.is_empty() {
                     continue;
                 }
+                // Le relais a redémarré : ce qui n'a pas été reçu repart
+                // (seulement vers les appareils qui ne l'ont pas).
+                let got = item.got.clone();
+                item.sent.retain(|d| got.contains(d));
             }
-            match send_now(&item, false).await {
+            let before = item.sent.len();
+            let result = send_now(&mut item, false).await;
+            // Les appareils déjà servis sont retenus, même si un autre attend.
+            if result.is_err() && item.sent.len() != before {
+                store::write("outbox", &item.id, &item).await;
+            }
+            match result {
                 Ok(()) => {
                     if !item.msg_id.is_empty() && !boot.is_empty() {
                         item.boot = boot.clone();
@@ -1677,12 +2429,20 @@ pub async fn flush() {
 /// de ce destinataire ? Au-delà de 30 jours (la durée des boîtes aux
 /// lettres), on n'insiste plus.
 async fn still_unconfirmed(item: &OutItem) -> bool {
+    // v4 : chaque appareil du destinataire doit l'avoir reçu.
+    let devs: Vec<String> = targets(&item.to)
+        .into_iter()
+        .filter(|d| !d.is_empty())
+        .collect();
     get_message(&item.chat, &item.msg_id)
         .await
         .is_some_and(|m| {
-            !m.deleted
-                && !m.delivered_to.iter().any(|c| c == &item.to)
-                && now() - m.at < 30.0 * 24.0 * 3600.0 * 1000.0
+            let missing = if devs.is_empty() {
+                !m.delivered_to.iter().any(|c| c == &item.to)
+            } else {
+                devs.iter().any(|d| !item.got.contains(d))
+            };
+            !m.deleted && missing && now() - m.at < 30.0 * 24.0 * 3600.0 * 1000.0
         })
 }
 
@@ -1791,6 +2551,8 @@ pub async fn send_message(chat_id: &str, mut content: Content) -> Option<Message
     for code in &to {
         enqueue(code, wire.clone(), Some(chat_id), Some(&id), false).await;
     }
+    // Nos autres appareils l'affichent aussi (v4).
+    sync("wire", chat_id, Some(wire), Value::Null).await;
     if chat(chat_id).is_some_and(|c| !c.draft.is_empty()) {
         update_chat(chat_id, |c| c.draft.clear()).await;
     }
@@ -1804,6 +2566,11 @@ async fn broadcast(c: &Chat, body: Body, live: bool) {
         if !blocked(&code) {
             enqueue(&code, wire.clone(), None, None, live).await;
         }
+    }
+    // Ce qui change la discussion (réaction, modification, suppression,
+    // minuterie, groupe) : refait sur nos autres appareils (v4).
+    if !live && !matches!(wire.body, Body::Typing { .. } | Body::Group { .. }) {
+        sync("wire", &c.id, Some(wire), Value::Null).await;
     }
 }
 
@@ -1881,6 +2648,13 @@ pub async fn delete_message(chat_id: &str, msg_id: &str, for_everyone: bool) {
     } else {
         store::remove("messages", &m.key()).await;
         bury(chat_id, [(m.id.clone(), m.at)]).await;
+        sync(
+            "forget",
+            chat_id,
+            None,
+            serde_json::json!({ "ids": [m.id] }),
+        )
+        .await;
     }
     refresh_last(chat_id).await;
     emit(Ev::Messages(chat_id.to_owned()));
@@ -1891,6 +2665,13 @@ pub async fn toggle_star(chat_id: &str, msg_id: &str) {
         m.starred = !m.starred;
         store::write_message(&m).await;
         emit(Ev::Messages(chat_id.to_owned()));
+        sync(
+            "star",
+            chat_id,
+            None,
+            serde_json::json!({ "id": msg_id, "on": m.starred }),
+        )
+        .await;
     }
 }
 
@@ -2034,7 +2815,19 @@ pub async fn create_group(name: &str, members: Vec<String>, avatar: String) -> C
         false,
     )
     .await;
+    sync_group(&c, &format!("Vous avez créé le groupe « {} ».", c.name)).await;
     c
+}
+
+/// Un groupe changé ici : nos autres appareils le changent aussi (v4).
+async fn sync_group(c: &Chat, note: &str) {
+    sync(
+        "group",
+        &c.id,
+        None,
+        serde_json::json!({ "grp": group_info(c), "left": c.left, "note": note }),
+    )
+    .await;
 }
 
 pub async fn update_group(chat_id: &str, f: impl FnOnce(&mut Chat), note: &str) {
@@ -2055,6 +2848,7 @@ pub async fn update_group(chat_id: &str, f: impl FnOnce(&mut Chat), note: &str) 
         false,
     )
     .await;
+    sync_group(&next, note).await;
     // Les membres retirés l'apprennent aussi.
     let me = my_code();
     for code in before
@@ -2091,8 +2885,9 @@ pub async fn leave_group(chat_id: &str) {
         w.grp = Some(group_info(&c));
         enqueue(&code, w, None, None, false).await;
     }
-    save_chat(c).await;
+    save_chat(c.clone()).await;
     system_message(chat_id, "Vous avez quitté le groupe.", now()).await;
+    sync_group(&c, "Vous avez quitté le groupe.").await;
 }
 
 // ----- Réception -------------------------------------------------------------
@@ -2112,6 +2907,7 @@ fn queue_receipt(to: &str, chat_id: &str, ids: &[String], st: &str) {
                 let mut w = Wire::new(Body::Receipt {
                     st,
                     ids: ids.into_iter().collect(),
+                    dev: my_dev(),
                 });
                 if is_group(&chat) {
                     w.g = Some(chat.trim_start_matches("g:").to_owned());
@@ -2153,6 +2949,7 @@ pub async fn mark_read(chat_id: &str) {
                 .push(m.id.clone());
         }
     }
+    let fresh = !by_sender.is_empty();
     if settings().read_receipts {
         for (code, ids) in by_sender {
             queue_receipt(&code, chat_id, &ids, "read");
@@ -2166,13 +2963,42 @@ pub async fn mark_read(chat_id: &str) {
         })
         .await;
     }
+    // Lu ici : lu sur nos autres appareils (sans nouvel accusé).
+    if fresh {
+        sync(
+            "read",
+            chat_id,
+            None,
+            serde_json::json!({ "at": net::server_now() }),
+        )
+        .await;
+    }
+}
+
+/// Lu sur un autre de nos appareils : jusqu'à `at`, sans accusé.
+async fn read_here(chat_id: &str, at: f64) {
+    let Some(c) = chat(chat_id) else { return };
+    let me = my_code();
+    for mut m in store::messages_of(chat_id, 300).await {
+        if m.from != me && m.from != "system" && !m.read_by_me && m.at <= at + 60_000.0 {
+            m.read_by_me = true;
+            store::write_message(&m).await;
+        }
+    }
+    if c.unread > 0 || c.mentioned {
+        let mut c = c;
+        c.unread = 0;
+        c.mentioned = false;
+        save_chat(c).await;
+    }
+    emit(Ev::Messages(chat_id.to_owned()));
 }
 
 /// Une enveloppe arrive du relais.
 pub fn on_envelope(env: Value) {
     spawn(async move {
         let n = env["n"].as_u64();
-        receive(&env).await;
+        receive(&env, None).await;
         if let Some(n) = n {
             // Le relais oublie le message une fois rangé pour de bon (avec
             // l'état de session qui l'a ouvert).
@@ -2182,30 +3008,79 @@ pub fn on_envelope(env: Value) {
     });
 }
 
-async fn receive(env: &Value) {
+/// Une enveloppe arrive d'une boîte tournante (v4) : ou d'une liaison en
+/// cours.
+pub fn on_box_envelope(env: Value) {
+    spawn(async move {
+        let n = env["n"].as_u64();
+        let boite = env["boite"].as_str().unwrap_or("").to_owned();
+        if LINKING.with(|l| l.borrow().is_some()) {
+            link_chunk(&env).await;
+        } else if let Some(contact) = BOXES.with(|b| b.borrow().get(&boite).cloned()) {
+            receive(&env, Some(&contact)).await;
+        }
+        if let Some(n) = n {
+            store::committed().await;
+            net::box_got(&[n]);
+        }
+    });
+}
+
+/// `boite` : le contact dont c'est la boîte tournante (l'enveloppe doit
+/// venir de lui).
+async fn receive(env: &Value, boite: Option<&str>) {
     // Scellé : l'expéditeur est dans l'enveloppe, que nous seuls ouvrons ;
     // l'enveloppe intérieure le prouve ensuite (sa clé de paire).
     let unsealed = if env["sealed"].as_bool() == Some(true) {
-        let Some(opened) = crypto::open_sealed(&me(), env["body"].as_str().unwrap_or("")) else {
+        let Some(opened) = crypto::open_sealed_from(&me(), env["body"].as_str().unwrap_or(""))
+        else {
             return;
         };
         Some(opened)
     } else {
         None
     };
-    let from = match &unsealed {
-        Some((from, _)) => from.clone(),
-        None => env["from"].as_str().unwrap_or("").to_owned(),
+    let (from, fd) = match &unsealed {
+        Some((from, fd, _)) => (from.clone(), fd.clone()),
+        None => (
+            env["from"].as_str().unwrap_or("").to_owned(),
+            env["fd"]
+                .as_str()
+                .filter(|d| crypto::is_dev(d))
+                .unwrap_or("")
+                .to_owned(),
+        ),
     };
-    if from.is_empty() || blocked(&from) {
+    if from.is_empty() || blocked(&from) || boite.is_some_and(|b| b != from) {
         return;
     }
-    let Some(peer) = fetch_keys(&from).await else {
+    // De nous-mêmes : seulement d'un autre de nos appareils.
+    let mine = from == my_code();
+    if mine && (fd.is_empty() || fd == my_dev() || !devices().has(&fd)) {
         return;
+    }
+    let peer = if mine {
+        let me = me();
+        Contact {
+            code: me.code.clone(),
+            sign: me.sign.clone(),
+            dh: me.dh.clone(),
+            pj: true,
+            v3: true,
+            ..Default::default()
+        }
+    } else {
+        let Some(peer) = fetch_keys(&from).await else {
+            return;
+        };
+        peer
     };
+    let addr = address(&from, &fd);
+    load_v3(&addr).await;
+    // Une session ouverte avant de connaître ses appareils (à son code).
     load_v3(&from).await;
     let full = match &unsealed {
-        Some((_, body)) => body.as_str(),
+        Some((_, _, body)) => body.as_str(),
         None => env["body"].as_str().unwrap_or(""),
     };
     // Une pièce jointe chiffrée à part : `<enveloppe>|<pièce>`.
@@ -2216,11 +3091,12 @@ async fn receive(env: &Value) {
     // Le message, et l'état de session qui l'a ouvert : une seule
     // transaction IndexedDB.
     let _batch = store::batch();
-    let opened = with_v3(|e| e.open(&me(), &peer.code, &peer.dh, body, v3::secs(now())))
-        .unwrap_or_else(|| match crypto::open(&me(), &peer.code, &peer.dh, body) {
-            Some(plain) => Opened::Legacy(plain),
-            None => Opened::Failed(Failure::Envelope),
-        });
+    let opened =
+        with_v3(|e| e.open_from(&me(), &addr, &peer.code, &peer.dh, body, v3::secs(now())))
+            .unwrap_or_else(|| match crypto::open(&me(), &peer.code, &peer.dh, body) {
+                Some(plain) => Opened::Legacy(plain),
+                None => Opened::Failed(Failure::Envelope),
+            });
     save_v3().await;
     let legacy = matches!(opened, Opened::Legacy(_));
     let plain = match opened {
@@ -2229,13 +3105,25 @@ async fn receive(env: &Value) {
         Opened::Replay => return,
         Opened::Failed(Failure::Envelope) => return, // pas pour nous, ou abîmé
         Opened::Failed(Failure::V3(e)) => {
-            dom::warn(&format!("v3 : message de {from} illisible ({e})"));
+            dom::warn(&format!("v3 : message de {addr} illisible ({e})"));
             if v3::needs_repair(&e) {
-                repair_v3(&from);
+                repair_v3(&from, &fd);
             }
             return;
         }
     };
+    // De nos appareils : seulement de la synchronisation, en v3.
+    if mine {
+        if legacy {
+            return;
+        }
+        if let Ok(wire) = serde_json::from_str::<Wire>(&join_attachment(&plain, blob.as_deref()))
+            && let Body::Sync { op, c, w, d } = wire.body
+        {
+            handle_sync(&fd, &op, &c, w.map(|w| *w), d).await;
+        }
+        return;
+    }
     // Prouvé : ses clés sont gardées (s'il est nouveau), et son passage en v3.
     let known = contact(&from);
     if known
@@ -2355,6 +3243,9 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             jeton,
             nk,
             pj,
+            devs,
+            dv,
+            bx,
         } => {
             let mut c = contact(from).unwrap_or_else(|| Contact {
                 code: from.to_owned(),
@@ -2377,6 +3268,28 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             // Sa version chiffre tout en v3 (une fois su, ça ne se perd pas).
             if *pj && !c.pj {
                 c.pj = true;
+                save_contact(c.clone()).await;
+            }
+            // Ses appareils (v4) : la liste la plus récente, bien formée.
+            if *dv > c.dv
+                && devs.len() <= MAX_DEVICES
+                && devs
+                    .iter()
+                    .all(|d| crypto::is_dev(&d.d) && (d.nk.is_empty() || crypto::valid_nk(&d.nk)))
+            {
+                c.devs = devs.clone();
+                c.dv = *dv;
+                save_contact(c.clone()).await;
+                // Un nouvel appareil : on vérifie son paquet au prochain envoi.
+                BUNDLES.with(|b| {
+                    b.borrow_mut()
+                        .retain(|k, _| !k.starts_with(&format!("{from}/")))
+                });
+                spawn(refresh_boxes());
+            }
+            // Il lit ses boîtes tournantes (v4).
+            if *bx != c.bx {
+                c.bx = *bx;
                 save_contact(c.clone()).await;
             }
             if profile.v >= c.profile_v {
@@ -2634,7 +3547,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 active,
             });
         }
-        Body::Receipt { st, ids } => {
+        Body::Receipt { st, ids, dev } => {
             for id in ids {
                 let Some(mut m) = get_message(&c.id, &id).await else {
                     continue;
@@ -2652,8 +3565,22 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                     add(&mut m.read_by);
                 }
                 store::write_message(&m).await;
-                // Bien arrivé : plus besoin de le garder pour un renvoi.
-                store::remove("outbox", &format!("{id}:{from}")).await;
+                // Bien arrivé : plus besoin de le garder pour un renvoi (v4 :
+                // quand chacun de ses appareils l'a).
+                let key = format!("{id}:{from}");
+                match store::read::<OutItem>("outbox", &key).await {
+                    Some(mut item) if !dev.is_empty() => {
+                        if !item.got.contains(&dev) {
+                            item.got.push(dev.clone());
+                        }
+                        if item.boot.is_empty() || still_unconfirmed(&item).await {
+                            store::write("outbox", &key, &item).await;
+                        } else {
+                            store::remove("outbox", &key).await;
+                        }
+                    }
+                    _ => store::remove("outbox", &key).await,
+                }
             }
             emit(Ev::Messages(c.id.clone()));
         }
@@ -2735,6 +3662,313 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
     }
 }
 
+// ----- La synchronisation entre nos appareils (v4, §7.11) ----------------------
+
+/// Ce que cet appareil a fait, pour nos autres appareils.
+async fn sync(op: &str, c: &str, w: Option<Wire>, d: Value) {
+    if siblings().is_empty() {
+        return;
+    }
+    let wire = Wire::new(Body::Sync {
+        op: op.to_owned(),
+        c: c.to_owned(),
+        w: w.map(Box::new),
+        d,
+    });
+    enqueue(&my_code(), wire, None, None, false).await;
+}
+
+/// Ce qu'un autre de nos appareils (`fd`) a fait : refait ici, sans le
+/// renvoyer à personne.
+async fn handle_sync(fd: &str, op: &str, c: &str, w: Option<Wire>, d: Value) {
+    match op {
+        "wire" => {
+            if let Some(w) = w {
+                apply_own_wire(c, w).await;
+            }
+        }
+        "read" => read_here(c, d["at"].as_f64().unwrap_or(0.0)).await,
+        "contact" => {
+            let Some(code) = d["code"].as_str().and_then(crypto::normalize) else {
+                return;
+            };
+            if code == my_code() {
+                return;
+            }
+            let mut k = contact(&code).unwrap_or_else(|| Contact {
+                code: code.clone(),
+                added_at: now(),
+                ..Default::default()
+            });
+            k.name = d["name"].as_str().unwrap_or("").chars().take(40).collect();
+            k.saved = d["saved"].as_bool().unwrap_or(k.saved);
+            k.blocked = d["blocked"].as_bool().unwrap_or(k.blocked);
+            // Ses clés, seulement si elles vont avec son code.
+            let (sign, dh) = (
+                d["sign"].as_str().unwrap_or(""),
+                d["dh"].as_str().unwrap_or(""),
+            );
+            if k.sign.is_empty() && crypto::verify_keys(&code, sign, dh) {
+                k.sign = sign.to_owned();
+                k.dh = dh.to_owned();
+            }
+            save_contact(k).await;
+            net::watch(&[code]);
+            emit(Ev::Chats);
+        }
+        "chat" => {
+            if d["deleted"] == true {
+                drop_chat(c).await;
+            } else if d["cleared"] == true {
+                empty_chat(c).await;
+            } else if let Ok(state) = serde_json::from_value::<ChatState>(d)
+                && let Some(mut chat) = chat(c)
+            {
+                state.apply(&mut chat);
+                save_chat(chat).await;
+            }
+        }
+        "forget" => {
+            for id in d["ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if let Some(m) = get_message(c, id).await {
+                    store::remove("messages", &m.key()).await;
+                    bury(c, [(m.id.clone(), m.at)]).await;
+                }
+            }
+            refresh_last(c).await;
+            emit(Ev::Messages(c.to_owned()));
+        }
+        "star" => {
+            if let Some(mut m) = get_message(c, d["id"].as_str().unwrap_or("")).await {
+                m.starred = d["on"].as_bool().unwrap_or(false);
+                store::write_message(&m).await;
+                emit(Ev::Messages(c.to_owned()));
+            }
+        }
+        "group" => {
+            let Ok(grp) = serde_json::from_value::<GroupInfo>(d["grp"].clone()) else {
+                return;
+            };
+            apply_own_group(
+                &grp,
+                d["left"].as_bool().unwrap_or(false),
+                d["note"].as_str().unwrap_or(""),
+            )
+            .await;
+        }
+        "profile" => {
+            if let Ok(p) = serde_json::from_value::<Profile>(d)
+                && p.v > profile().v
+            {
+                let p = Profile {
+                    name: p.name.chars().take(40).collect(),
+                    about: p.about.chars().take(140).collect(),
+                    avatar: safe_data("avatar", &p.avatar),
+                    v: p.v,
+                };
+                with(|s| s.profile = p.clone());
+                store::write("kv", "profile", &p).await;
+                emit(Ev::Profile);
+            }
+        }
+        "devices" => {
+            let Ok(list) = serde_json::from_value::<Devices>(d) else {
+                return;
+            };
+            let mut current = devices();
+            // Retirés par un autre appareil, nous ne le sommes que par
+            // `unlink` (une liste en retard ne nous efface pas).
+            if current.merge(list) {
+                if !current.has(&my_dev()) {
+                    return;
+                }
+                devices_changed(current, false).await;
+            }
+        }
+        "status" => {
+            if let Some(id) = d["deleted"].as_str() {
+                store::remove("statuses", &format!("{}|{id}", my_code())).await;
+            } else if let Ok(mut st) = serde_json::from_value::<StatusItem>(d) {
+                st.owner = my_code();
+                st.data = safe_data("image", &st.data);
+                store::write("statuses", &st.key(), &st).await;
+            }
+            emit(Ev::Statuses);
+        }
+        "call" => emit(Ev::CallSignal {
+            from: my_code(),
+            body: Body::Call {
+                op: "elsewhere".into(),
+                call_id: d["id"].as_str().unwrap_or("").to_owned(),
+                video: false,
+                sdp: String::new(),
+                cand: None,
+            },
+            live: true,
+        }),
+        "unlink" if d["dev"].as_str() == Some(&my_dev()) && devices().has(fd) => on_unlinked(),
+        _ => {}
+    }
+}
+
+/// Un groupe créé, changé ou quitté sur un autre de nos appareils.
+async fn apply_own_group(grp: &GroupInfo, left: bool, note: &str) {
+    let id = format!("g:{}", grp.id);
+    let me = my_code();
+    let mut c = chat(&id).unwrap_or_else(|| Chat {
+        id: id.clone(),
+        group: true,
+        created_by: me.clone(),
+        created_at: now(),
+        last_at: now(),
+        ..Default::default()
+    });
+    if grp.v < c.v {
+        return;
+    }
+    c.name = grp.name.chars().take(60).collect();
+    c.avatar = safe_data("avatar", &grp.avatar);
+    c.members = grp.members.clone();
+    c.admins = grp.admins.clone();
+    c.v = grp.v;
+    c.left = left;
+    save_chat(c).await;
+    if !note.is_empty() {
+        system_message(&id, note, now()).await;
+    }
+    net::watch(
+        &grp.members
+            .iter()
+            .filter(|m| **m != me)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+}
+
+/// Ce qu'un autre de nos appareils a envoyé dans la discussion `chat_id`.
+async fn apply_own_wire(chat_id: &str, wire: Wire) {
+    let me = my_code();
+    // La discussion : un groupe dont nous sommes, ou un contact.
+    let c = if chat_id.starts_with("g:") {
+        match chat(chat_id) {
+            Some(c) => c,
+            None => return,
+        }
+    } else {
+        match crypto::normalize(chat_id) {
+            Some(code) if code != me => ensure_direct_chat(&code).await,
+            _ => return,
+        }
+    };
+    match wire.body {
+        Body::Msg {
+            id, at, content, ..
+        } => {
+            if get_message(&c.id, &id).await.is_some() || buried(&c.id, &id).await {
+                return;
+            }
+            let shared_key =
+                content.kind == "brokey" && jetons::key_from_b64(&content.data).is_some();
+            let kind = if ["text", "image", "voice", "file", "contact"]
+                .contains(&content.kind.as_str())
+                || shared_key
+            {
+                content.kind
+            } else {
+                "text".into()
+            };
+            let data = if shared_key {
+                content.data
+            } else {
+                safe_data(&kind, &content.data)
+            };
+            let to = recipients_of(&c);
+            let mut m = Message {
+                chat: c.id.clone(),
+                id,
+                from: me.clone(),
+                at,
+                status: "sent".into(),
+                sent_to: to.clone(),
+                to,
+                kind,
+                text: content.text.chars().take(65_536).collect(),
+                data,
+                name: content.name,
+                mime: content.mime,
+                size: content.size,
+                dur: content.dur,
+                w: content.w,
+                h: content.h,
+                code: content.code,
+                reply: content.reply,
+                fwd: content.fwd,
+                mentions: content.mentions,
+                open_at: content.open_at,
+                read_by_me: true,
+                ..Default::default()
+            };
+            if let Some(ttl) = wire.ttl {
+                m.exp = Some(at + ttl as f64 * 1000.0);
+            }
+            open_message(&mut m);
+            store_message(&m, true).await;
+            emit(Ev::Messages(c.id.clone()));
+        }
+        Body::React { id, emoji } => {
+            if let Some(mut m) = get_message(&c.id, &id).await {
+                if emoji.is_empty() {
+                    m.reactions.remove(&me);
+                } else {
+                    m.reactions.insert(me, emoji.chars().take(8).collect());
+                }
+                store::write_message(&m).await;
+                emit(Ev::Messages(c.id.clone()));
+            }
+        }
+        Body::Edit { id, text } => {
+            if let Some(mut m) = get_message(&c.id, &id).await
+                && m.from == me
+                && !m.deleted
+            {
+                let o = open_brocolis(&c.id, &text);
+                m.bro = o.opened > 0;
+                m.text = o.text;
+                m.edited = true;
+                store::write_message(&m).await;
+                refresh_last(&c.id).await;
+                emit(Ev::Messages(c.id.clone()));
+            }
+        }
+        Body::Delete { id } => {
+            if let Some(mut m) = get_message(&c.id, &id).await
+                && m.from == me
+            {
+                m.deleted = true;
+                m.text.clear();
+                m.data.clear();
+                m.reactions.clear();
+                store::write_message(&m).await;
+                refresh_last(&c.id).await;
+                emit(Ev::Messages(c.id.clone()));
+            }
+        }
+        Body::Timer { secs } => {
+            if let Some(mut chat) = chat(&c.id) {
+                chat.timer = secs;
+                save_chat(chat).await;
+            }
+            system_message(&c.id, &timer_text(&me, secs), now()).await;
+        }
+        _ => {}
+    }
+}
+
 // ----- Statuts ---------------------------------------------------------------
 
 pub async fn post_status(kind: &str, text: &str, bg: &str, data: String) {
@@ -2761,6 +3995,13 @@ pub async fn post_status(kind: &str, text: &str, bg: &str, data: String) {
         data,
         at,
     };
+    sync(
+        "status",
+        "",
+        None,
+        serde_json::to_value(&st).unwrap_or_default(),
+    )
+    .await;
     for c in contacts() {
         if c.saved && !c.blocked {
             enqueue(&c.code, Wire::new(body.clone()), None, None, false).await;
@@ -2771,6 +4012,7 @@ pub async fn post_status(kind: &str, text: &str, bg: &str, data: String) {
 pub async fn delete_status(id: &str) {
     store::remove("statuses", &format!("{}|{id}", my_code())).await;
     emit(Ev::Statuses);
+    sync("status", "", None, serde_json::json!({ "deleted": id })).await;
     for c in contacts() {
         if c.saved && !c.blocked {
             enqueue(
@@ -2817,6 +4059,13 @@ pub async fn mark_status_seen(st: &StatusItem) {
 }
 
 // ----- Appels ----------------------------------------------------------------
+
+/// Un appel entrant pris ou refusé ici : nos autres appareils cessent de
+/// sonner (v4).
+pub fn call_taken(id: &str) {
+    let d = serde_json::json!({ "id": id });
+    spawn(async move { sync("call", "", None, d).await });
+}
 
 pub fn send_call_signal(code: &str, body: Body) {
     let code = code.to_owned();
