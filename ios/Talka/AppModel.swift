@@ -115,6 +115,9 @@ final class AppModel {
         }
         e.onCallSignal = { [weak self] from, body, live in self?.callSignal(from, body, live) }
         e.onTooLarge = { [weak self] in self?.show("Message trop lourd : il n'a pas pu partir.") }
+        e.onKeysMismatch = { [weak self] code in
+            self?.show("Attention : les clés de \(TalkaCode.pretty(code)) ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.")
+        }
         engine = e
         e.start()
         Sounds.prepare()
@@ -277,6 +280,7 @@ final class AppModel {
             return
         }
         guard let code = TalkaCode.find(in: url.absoluteString) else { return }
+        if let fp = TalkaCode.fingerprint(in: url.absoluteString) { engine?.expectFingerprint(code, fp) }
         if engine?.contact(code)?.saved == true {
             openChat(code)
         } else {
@@ -291,8 +295,15 @@ final class AppModel {
         path = [id]
     }
 
+    /// `/c/<empreinte>/<code>` : l'empreinte de nos clés, vérifiée par qui
+    /// l'ouvre ; le code reste à la fin pour les versions qui ne la
+    /// connaissent pas.
     func inviteLink(_ code: String) -> URL {
         let server = serverString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if let me = engine?.me, me.code == code {
+            let fp = TalkaCode.fingerprint(sign: me.sign, dh: me.dh)
+            if let url = URL(string: "\(server)/c/\(fp)/\(code)") { return url }
+        }
         return URL(string: "\(server)/c/\(code)") ?? URL(string: "talka://add/\(code)")!
     }
 

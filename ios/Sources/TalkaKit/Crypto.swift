@@ -61,6 +61,31 @@ public enum TalkaCode {
         let tail = text.split(whereSeparator: { $0 == "/" || $0 == "=" || $0 == "#" }).last.map(String.init) ?? ""
         return normalize(tail)
     }
+
+    /// L'empreinte des clés d'un code (96 bits, base64url, 16 caractères),
+    /// comme `crypto::fingerprint` du navigateur : dans les liens
+    /// d'invitation, elle démasque d'autres clés donnant le même code.
+    public static func fingerprint(sign: String, dh: String) -> String {
+        let h = Data(SHA256.hash(data: Data("talka-empreinte:\(sign):\(dh)".utf8))).prefix(12)
+        return h.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func validFingerprint(_ fp: String) -> Bool {
+        fp.count == 16 && fp.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+    }
+
+    /// L'empreinte d'un lien d'invitation (`/c/<empreinte>/<code>` ou
+    /// `#k=<empreinte>&add=<code>`), s'il en a une.
+    public static func fingerprint(in text: String) -> String? {
+        let parts = text.split(whereSeparator: { "/#&?".contains($0) }).map(String.init)
+        if let i = parts.firstIndex(of: "c"), i + 2 < parts.count, validFingerprint(parts[i + 1]) {
+            return parts[i + 1]
+        }
+        return parts.first { $0.hasPrefix("k=") }.map { String($0.dropFirst(2)) }.flatMap { validFingerprint($0) ? $0 : nil }
+    }
 }
 
 public func b64(_ data: Data) -> String { data.base64EncodedString() }
@@ -167,10 +192,14 @@ public enum TalkaCrypto {
         return TalkaCode.of(sign: s, dh: d) == code
     }
 
-    /// Le numéro de sécurité d'une conversation, le même des deux côtés.
-    public static func safetyNumber(_ a: String, _ b: String) -> String {
-        let (x, y) = a < b ? (a, b) : (b, a)
-        let h = Array(SHA256.hash(data: Data("talka-safety:\(x):\(y)".utf8)))
+    /// Le numéro de sécurité d'une conversation, le même des deux côtés. Il
+    /// porte sur les clés publiques complètes (code, `sign`, `dh` de chacun),
+    /// pas seulement sur les codes (50 bits), comme le navigateur.
+    public static func safetyNumber(_ a: (code: String, sign: String, dh: String),
+                                    _ b: (code: String, sign: String, dh: String)) -> String {
+        let (x, y) = a.code < b.code ? (a, b) : (b, a)
+        let text = "talka-safety-v2:\(x.code):\(x.sign):\(x.dh)|\(y.code):\(y.sign):\(y.dh)"
+        let h = Array(SHA256.hash(data: Data(text.utf8)))
         var groups: [String] = []
         for i in 0..<12 {
             let high = Int(h[i * 2]) << 8

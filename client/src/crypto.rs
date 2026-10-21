@@ -183,10 +183,37 @@ pub fn verify_keys(code: &str, sign: &str, dh: &str) -> bool {
     }
 }
 
-/// Le numéro de sécurité d'une conversation, le même des deux côtés.
-pub fn safety_number(a: &str, b: &str) -> String {
-    let (a, b) = if a < b { (a, b) } else { (b, a) };
-    let h = Sha256::digest(format!("talka-safety:{a}:{b}").as_bytes());
+/// L'empreinte des clés d'un code, mise dans les liens d'invitation (96
+/// bits, base64url, 16 caractères). Le code seul ne compte que 50 bits :
+/// avec l'empreinte, quelqu'un qui trouverait d'autres clés donnant le même
+/// code est démasqué à l'ajout.
+pub fn fingerprint(sign: &str, dh: &str) -> String {
+    let h = Sha256::digest(format!("talka-empreinte:{sign}:{dh}").as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&h[..12])
+}
+
+/// Une empreinte bien formée (16 caractères base64url).
+pub fn valid_fingerprint(fp: &str) -> bool {
+    fp.len() == 16
+        && fp
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Le numéro de sécurité d'une conversation, le même des deux côtés. Il
+/// porte sur les clés publiques complètes (`code`, `sign`, `dh` de chacun),
+/// pas seulement sur les codes : un code ne compte que 50 bits, et
+/// quelqu'un qui trouverait d'autres clés donnant le même code aurait un
+/// autre numéro.
+pub fn safety_number(a: (&str, &str, &str), b: (&str, &str, &str)) -> String {
+    let (a, b) = if a.0 < b.0 { (a, b) } else { (b, a) };
+    let h = Sha256::digest(
+        format!(
+            "talka-safety-v2:{}:{}:{}|{}:{}:{}",
+            a.0, a.1, a.2, b.0, b.1, b.2
+        )
+        .as_bytes(),
+    );
     (0..12)
         .map(|i| {
             format!(
@@ -1056,9 +1083,18 @@ mod tests {
         let sig = a.sign_challenge("abc");
         assert!(verify(&a.sign, b"talka-auth:abc", &sig));
         assert!(!verify(&a.sign, b"talka-auth:abd", &sig));
-        assert_eq!(
-            safety_number(&a.code, &b.code),
-            safety_number(&b.code, &a.code)
+        let fp = fingerprint(&a.sign, &a.dh);
+        assert!(valid_fingerprint(&fp) && fp != fingerprint(&b.sign, &b.dh));
+        assert!(!valid_fingerprint("trop/court") && !valid_fingerprint(&format!("{fp}x")));
+        let (ka, kb) = (
+            (a.code.as_str(), a.sign.as_str(), a.dh.as_str()),
+            (b.code.as_str(), b.sign.as_str(), b.dh.as_str()),
+        );
+        assert_eq!(safety_number(ka, kb), safety_number(kb, ka));
+        // D'autres clés sous le même code : un autre numéro.
+        assert_ne!(
+            safety_number(ka, kb),
+            safety_number(ka, (b.code.as_str(), a.sign.as_str(), b.dh.as_str()))
         );
     }
 

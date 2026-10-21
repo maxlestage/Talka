@@ -203,6 +203,23 @@ pub fn app() -> App {
             .header("location", target)
             .header("cache-control", "no-store")
     });
+    // Avec l'empreinte des clés : `/c/<empreinte>/<code>`.
+    app.get("/c/:fp/:code", |req: Request| async move {
+        let fp = req.param("fp").unwrap_or("");
+        let valid = fp.len() == 16
+            && fp
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        let target = match req.param("code").and_then(code::normalize) {
+            Some(code) if valid => format!("/app#k={fp}&add={code}"),
+            Some(code) => format!("/app#add={code}"),
+            None => "/app".to_owned(),
+        };
+        Response::new()
+            .status(302)
+            .header("location", target)
+            .header("cache-control", "no-store")
+    });
 
     // Les fichiers du navigateur.
     files(&mut app);

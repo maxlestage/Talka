@@ -190,25 +190,43 @@ pub fn asset(path: &str) -> String {
     format!("{}/{path}", meta("talka-base"))
 }
 
-/// Le lien d'invitation : `/c/<code>` sur le serveur, `/app/#add=<code>` sur
-/// GitHub Pages.
+/// Le lien d'invitation : `/c/<empreinte>/<code>` sur le serveur,
+/// `/app/#k=<empreinte>&add=<code>` sur GitHub Pages. L'empreinte de nos
+/// clés (`crypto::fingerprint`) est vérifiée par qui l'ouvre ; le code reste
+/// à la fin, pour les versions qui ne la connaissent pas.
 pub fn invite_link(code: &str) -> String {
     let origin = window().location().origin().unwrap_or_default();
-    if meta("talka-static") == "1" {
-        format!("{origin}{}/app/#add={code}", meta("talka-base"))
+    let me = core::me();
+    let fp = if me.code == code {
+        crate::crypto::fingerprint(&me.sign, &me.dh)
     } else {
-        format!("{origin}/c/{code}")
+        String::new()
+    };
+    match (meta("talka-static") == "1", fp.is_empty()) {
+        (true, false) => format!("{origin}{}/app/#k={fp}&add={code}", meta("talka-base")),
+        (true, true) => format!("{origin}{}/app/#add={code}", meta("talka-base")),
+        (false, false) => format!("{origin}/c/{fp}/{code}"),
+        (false, true) => format!("{origin}/c/{code}"),
     }
 }
 
 fn pending_invite() -> Option<String> {
     let hash = window().location().hash().unwrap_or_default();
-    let code = hash.split("add=").nth(1)?.to_owned();
+    let code = hash.split("add=").nth(1)?.split('&').next()?.to_owned();
+    let fp = hash
+        .split("k=")
+        .nth(1)
+        .and_then(|f| f.split('&').next())
+        .map(str::to_owned);
     if let Ok(h) = window().history() {
         let path = window().location().pathname().unwrap_or_default();
         let _ = h.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&path));
     }
-    normalize(&code)
+    let code = normalize(&code)?;
+    if let Some(fp) = fp {
+        core::expect_fingerprint(&code, &fp);
+    }
+    Some(code)
 }
 
 /// L'étape affichée par l'écran de chargement (tant qu'il est là).
@@ -1854,7 +1872,8 @@ async fn contact_info(code: &str) {
     } else {
         None
     };
-    let safety = safety_number(&core::my_code(), code);
+    let me = core::me();
+    let safety = safety_number((&me.code, &me.sign, &me.dh), (code, &c.sign, &c.dh));
     let protection = match core::protection(code).await {
         crate::v3::Protection::Ratchet { pq: true } => {
             "🔐 Session à double cliquet (post-quantique)"

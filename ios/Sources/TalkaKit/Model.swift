@@ -158,11 +158,14 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
     /// Sa clé de notification (navigateur) : l'aperçu de ses notifications
     /// lui est chiffré pour elle. Vide : un simple réveil.
     public var nk = ""
+    /// L'empreinte de ses clés donnée par son lien d'invitation : les clés
+    /// trouvées pour son code doivent y correspondre.
+    public var fp = ""
 
     public var id: String { code }
 
     enum CodingKeys: String, CodingKey {
-        case code, name, about, avatar, sign, dh, blocked, saved, jeton, nk
+        case code, name, about, avatar, sign, dh, blocked, saved, jeton, nk, fp
         case profileName = "profile_name"
         case addedAt = "added_at"
         case profileV = "profile_v"
@@ -181,7 +184,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         about = c.v(.about, ""); avatar = c.v(.avatar, ""); sign = c.v(.sign, ""); dh = c.v(.dh, "")
         blocked = c.v(.blocked, false); saved = c.v(.saved, false); addedAt = c.v(.addedAt, 0)
         profileV = c.v(.profileV, 0); sentProfileV = c.v(.sentProfileV, 0)
-        jeton = c.v(.jeton, ""); jetonSent = c.v(.jetonSent, false); nk = c.v(.nk, "")
+        jeton = c.v(.jeton, ""); jetonSent = c.v(.jetonSent, false); nk = c.v(.nk, ""); fp = c.v(.fp, "")
     }
 
     /// Comme le navigateur : le jeton n'est écrit que s'il y en a un.
@@ -196,6 +199,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         if !jeton.isEmpty { try c.encode(jeton, forKey: .jeton) }
         if jetonSent { try c.encode(jetonSent, forKey: .jetonSent) }
         if !nk.isEmpty { try c.encode(nk, forKey: .nk) }
+        if !fp.isEmpty { try c.encode(fp, forKey: .fp) }
     }
 }
 
