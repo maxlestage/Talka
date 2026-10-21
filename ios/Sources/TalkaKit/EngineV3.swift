@@ -116,6 +116,6 @@ extension Engine {
         repairs[code] = t
         v3?.forget(code)
         saveV3()
-        enqueue(code, Wire(.profile(profile)))
+        enqueue(code, Wire(profileBody))
     }
 }

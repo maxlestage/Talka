@@ -129,6 +129,17 @@ public struct Identity: Codable, Equatable, Sendable {
         return b64(sig.rawRepresentation)
     }
 
+    /// Le jeton de remise de ce code (`nonce.signature`), comme
+    /// `Identity::jeton` du navigateur : le nonce est tiré de la clé privée
+    /// (toujours le même) ; la signature, elle, change à chaque calcul.
+    public var jeton: String {
+        guard let dh = unb64(dhPriv) else { return "" }
+        let digest = Data(SHA256.hash(data: Data("talka-jeton-nonce:".utf8) + dh))
+        let nonce = b64(digest.prefix(16))
+        let sig = sign(TalkaCrypto.jetonMessage(code, nonce))
+        return sig.isEmpty ? "" : "\(nonce).\(sig)"
+    }
+
     /// Signe un message (ECDSA P-256, SHA-256) : `r ‖ s` en base64, comme
     /// `Identity::sign` du navigateur ; vide si la clé est illisible.
     public func sign(_ message: Data) -> String {
@@ -208,6 +219,71 @@ public enum TalkaCrypto {
               let plain = try? AES.GCM.open(box, using: key, authenticating: Data("\(peerCode)>\(me.code)".utf8))
         else { return nil }
         return String(data: plain, encoding: .utf8)
+    }
+
+    // ----- L'expéditeur scellé (v4) -----
+    //
+    // Comme `client/src/crypto.rs` : une seconde enveloppe autour de
+    // l'enveloppe ordinaire (clé éphémère P-256, ECDH avec la clé de
+    // chiffrement du destinataire, HKDF-SHA256, AES-256-GCM) ; elle porte le
+    // code de l'expéditeur, que l'enveloppe intérieure prouve ensuite. Le
+    // jeton de remise, signé par la clé du code, ouvre la connexion anonyme
+    // du relais vers ce code.
+
+    /// Ce que signe un code pour son jeton de remise.
+    static func jetonMessage(_ code: String, _ nonce: String) -> Data {
+        Data("talka-jeton:\(code):\(nonce)".utf8)
+    }
+
+    /// Le jeton est-il bien signé par la clé du code `to` ?
+    public static func verifyJeton(to: String, sign: String, dh: String, jeton: String) -> Bool {
+        let parts = jeton.split(separator: ".", maxSplits: 1).map(String.init)
+        guard parts.count == 2, parts[0].count <= 64, verifyKeys(code: to, sign: sign, dh: dh) else { return false }
+        return verify(sign: sign, message: jetonMessage(to, parts[0]), signature: parts[1])
+    }
+
+    private struct SealedSender: Codable {
+        var from: String
+        var body: String
+    }
+
+    private static func sealedKey(_ secret: SharedSecret, eph: Data, toDh: Data, to: String) -> SymmetricKey {
+        secret.hkdfDerivedSymmetricKey(using: SHA256.self, salt: eph + toDh,
+                                       sharedInfo: Data("talka-scelle-v1:\(to)".utf8), outputByteCount: 32)
+    }
+
+    /// Scelle `body` (une enveloppe ordinaire de `from` pour `to`) :
+    /// base64(éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag).
+    public static func sealSender(from: String, to: String, toDh: String, body: String) -> String? {
+        guard let toRaw = unb64(toDh),
+              let pub = try? P256.KeyAgreement.PublicKey(x963Representation: toRaw)
+        else { return nil }
+        let eph = P256.KeyAgreement.PrivateKey()
+        let ephRaw = eph.publicKey.x963Representation
+        guard let secret = try? eph.sharedSecretFromKeyAgreement(with: pub),
+              let plain = try? JSONEncoder().encode(SealedSender(from: from, body: body)),
+              let box = try? AES.GCM.seal(plain, using: sealedKey(secret, eph: ephRaw, toDh: toRaw, to: to),
+                                          nonce: AES.GCM.Nonce(), authenticating: Data("talka-scelle:\(to)".utf8)),
+              let combined = box.combined
+        else { return nil }
+        return b64(ephRaw + combined)
+    }
+
+    /// Ouvre une enveloppe scellée pour nous : (code de l'expéditeur,
+    /// enveloppe ordinaire). L'expéditeur n'est prouvé qu'en ouvrant celle-ci.
+    public static func openSealed(_ me: Identity, _ sealed: String) -> (from: String, body: String)? {
+        guard let data = unb64(sealed), data.count >= 65 + 12 + 16,
+              let myDh = unb64(me.dh) else { return nil }
+        let ephRaw = data.prefix(65)
+        guard let eph = try? P256.KeyAgreement.PublicKey(x963Representation: ephRaw),
+              let secret = try? me.dhKey?.sharedSecretFromKeyAgreement(with: eph),
+              let box = try? AES.GCM.SealedBox(combined: data.dropFirst(65)),
+              let plain = try? AES.GCM.open(box, using: sealedKey(secret, eph: Data(ephRaw), toDh: myDh, to: me.code),
+                                            authenticating: Data("talka-scelle:\(me.code)".utf8)),
+              let s = try? JSONDecoder().decode(SealedSender.self, from: plain),
+              TalkaCode.normalize(s.from) == s.from
+        else { return nil }
+        return (s.from, s.body)
     }
 
     // ----- Le code de verrouillage et la sauvegarde -----
