@@ -101,6 +101,30 @@ pub fn bundle_message(bundle: &[u8]) -> Vec<u8> {
     [b"talka-v3-paquet:".as_slice(), bundle].concat()
 }
 
+/// Ce que signe un appareil v4 pour publier son paquet (comme
+/// `talka_web::v3::device_bundle_message`) : lié au code **et** à
+/// l'appareil.
+pub fn device_bundle_message(dev: &str, bundle: &[u8]) -> Vec<u8> {
+    [format!("talka-v4-appareil:{dev}:").as_bytes(), bundle].concat()
+}
+
+/// Un identifiant d'appareil : 16 caractères hexadécimaux (8 octets).
+pub fn valid_dev(dev: &str) -> bool {
+    dev.len() == 16
+        && dev
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+/// Une boîte aux lettres tournante (ou de liaison) : 16 octets en base64url
+/// sans remplissage (22 caractères).
+pub fn valid_boite(addr: &str) -> bool {
+    addr.len() == 22
+        && addr
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +139,21 @@ mod tests {
         assert_eq!(normalize(&pretty), Some(a));
         assert_eq!(normalize("ABCDE-FGHI0"), None); // `0` n'existe pas
         assert_eq!(normalize("ABC"), None);
+    }
+
+    #[test]
+    fn devices_and_boxes() {
+        assert!(valid_dev("0123456789abcdef"));
+        assert!(!valid_dev("0123456789ABCDEF"));
+        assert!(!valid_dev("0123456789abcde"));
+        assert!(!valid_dev("0123456789abcdeg"));
+        assert!(valid_boite("AAAAAAAAAAAAAAAAAAAA-_"));
+        assert!(!valid_boite("AAAAAAAAAAAAAAAAAAAA+/"));
+        assert!(!valid_boite("AAAA"));
+        assert_ne!(
+            device_bundle_message("0123456789abcdef", b"x"),
+            bundle_message(b"x")
+        );
     }
 
     #[test]
