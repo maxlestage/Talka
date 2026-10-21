@@ -1439,6 +1439,20 @@ fn message_menu(m: &Message, at: At) {
     let menu_el = menu(
         vec![
             item("reply", "Répondre", move || start_reply(&m1)),
+            // Dans un groupe, sur le message d'un autre membre : lui répondre
+            // dans votre discussion à deux, sa phrase citée.
+            if core::is_group(&m.chat) && !mine && m.from != "system" && !core::blocked(&m.from) {
+                let m = m.clone();
+                item("person", "Répondre en privé", move || {
+                    let m = m.clone();
+                    spawn(async move {
+                        crate::ui::open_chat(&m.from).await;
+                        start_reply(&m);
+                    })
+                })
+            } else {
+                None
+            },
             if m.text.is_empty() || sealed {
                 None
             } else {
