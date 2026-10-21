@@ -92,6 +92,8 @@ importer sur un autre appareil ou après avoir effacé les données du site.
 La sécurité de Talka et de Brocolis est repensée en trois phases (stockage
 matériel, Argon2id, protocole à double cliquet, post-quantique) : voir
 [`docs/SECURITE.md`](docs/SECURITE.md), la référence commune aux deux dépôts.
+Une faille ? Signalez-la en privé : [`SECURITY.md`](SECURITY.md). Pour un
+audit indépendant, le dossier est prêt : [`docs/AUDIT.md`](docs/AUDIT.md).
 
 Talka parle le format de [Brocolis](https://github.com/maxlestage/messagerie-),
 l'app qui chiffre du texte par-dessus n'importe quelle messagerie. **Réglages →

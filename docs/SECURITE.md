@@ -487,17 +487,26 @@ But : le relais ne sait plus **qui écrit**. Il sait toujours à quel code
 il livre (§4 de la feuille de route v4 : les boîtes aux lettres
 tournantes), qui est connecté, et l'adresse IP des connexions.
 
-**Jeton de remise.** Chaque code a un jeton `nonce.signature` (base64) :
-`nonce` = 16 premiers octets de `SHA-256("talka-jeton-nonce:" ‖ clé privée
-ECDH)` (toujours le même, rien à garder) ; `signature` = ECDSA P-256 (`r ‖ s`)
-de `talka-jeton:<code>:<nonce>` par la clé de signature du code. Il voyage
-dans le profil chiffré (`{"k":"profile",…,"jeton"}`), donné une fois à
-chaque contact enregistré et à qui nous écrit ; il est vérifié avant d'être
-gardé (`Contact.jeton`). Le relais le vérifie à chaque envoi anonyme, avec
-les deux clés publiques du destinataire (dont l'empreinte doit être son
-code) : rien n'est gardé, le jeton survit aux redémarrages. Sans jeton, pas
-d'envoi anonyme vers ce code : un inconnu ne peut pas inonder une boîte sans
-se présenter.
+**Jeton de remise, un par contact.** Chaque contact reçoit son propre jeton
+`nonce.signature` (base64) : `nonce` = 16 premiers octets de
+`SHA-256("talka-jeton-nonce:" ‖ clé privée ECDH ‖ ":<code du contact>:<époque>")`
+(rien à garder) ; `signature` = ECDSA P-256 (`r ‖ s`) de
+`talka-jeton:<code>:<nonce>` par la clé de signature du code. Il voyage dans
+le profil chiffré (`{"k":"profile",…,"jeton"}`), donné seulement à un
+contact **enregistré et pas bloqué** ; il est vérifié avant d'être gardé
+(`Contact.jeton`). Le relais le vérifie à chaque envoi anonyme, avec les
+deux clés publiques du destinataire (dont l'empreinte doit être son code).
+Sans jeton, pas d'envoi anonyme vers ce code : un inconnu ne peut pas
+inonder une boîte sans se présenter.
+
+**Révocation.** Bloquer un contact révoque son jeton : son nonce rejoint la
+liste des jetons révoqués de l'appareil (`{"t":"revoke","nonces":[…]}`,
+1 000 au plus), que le relais garde en mémoire et qui lui est redonnée à
+chaque connexion ; l'époque du contact avance (débloqué, il reçoit un
+nouveau jeton). L'ancien jeton commun à tous (avant cette version) est
+révoqué de la même façon. Un relais qui vient de redémarrer ne connaît pas
+encore les révocations d'un appareil hors ligne : le dépôt passe, mais
+l'appareil ignore de toute façon les messages d'un contact bloqué.
 
 **Enveloppe scellée.** Autour de l'enveloppe ordinaire `E` (§7.2–7.6, la
 clé de paire et ses données associées `expéditeur>destinataire`, v3 compris)
@@ -529,8 +538,48 @@ anonyme indisponible fait réessayer plus tard, jamais repasser en clair.
 
 **Compatibilité.** Les anciennes versions ignorent le champ `jeton` du
 profil : on ne leur écrit jamais scellé, et elles n'en reçoivent jamais.
+Elles vérifient un jeton par contact comme l'ancien (la signature porte sur
+n'importe quel nonce).
 
-### 7.10 Hygiène
+**Plafond par adresse IP.** 100 connexions à la fois par adresse (un /64 en
+IPv6), vue à travers le proxy (dernière entrée de `X-Forwarded-For` sur
+Heroku) ; au-delà, la connexion est fermée (`4005`). Le bouclier limite en
+plus les requêtes HTTP (dont l'ouverture des WebSocket) à 30 par seconde et
+par adresse.
+
+### 7.10 Pièces jointes en v3, et le rejeu
+
+**Pièces jointes.** Un jeton v3 porte 200 Kio au plus. Pour une photo, un
+vocal ou un fichier plus gros, vers un contact dont la version l'annonce
+(`{"k":"profile",…,"pj":true}`) :
+
+```
+k        = 32 octets aléatoires (pour ce message seulement)
+pièce    = iv (12) ‖ AES-256-GCM(k, iv, données, ad = "talka-pj:" ‖ id du message)
+message  = le même, avec data = "talka-pj:" ‖ base64(k), envoyé en v3
+enveloppe = <enveloppe v3 du message> "|" base64(pièce)
+```
+
+La clé voyage dans le message v3 (double cliquet, confidentialité
+persistante) ; la pièce ne s'ouvre qu'avec elle, et seulement pour ce
+message. Une pièce absente ou abîmée laisse les données vides.
+
+**L'ancien format n'est plus accepté d'un contact à jour.** Un contact qui
+annonce `pj` n'envoie plus que du v3 (hors signaux en direct : « écrit… »
+et appels vers un appareil hors ligne ou masqué) : sans session ni paquet,
+son message attend dans la boîte d'envoi que le destinataire republie son
+paquet, plutôt que de partir dans l'ancien format. De lui, l'ancien format
+est refusé. D'un contact passé en v3 (sans `pj`), l'ancien format ne change
+plus d'état (minuterie, modification, suppression, groupe, appel).
+
+**Pierres tombales.** Un message effacé (pour moi, éphémère, trop vieux,
+discussion vidée ou supprimée) laisse son identifiant 31 jours : un rejeu ne
+le fait pas revenir. Un message dans l'ancien format daté de plus de 31
+jours est refusé d'office (le relais ne garde rien plus de 30 jours : c'est
+un rejeu). Une offre d'appel déjà vue (les 200 dernières) ne fait pas
+sonner une seconde fois.
+
+### 7.11 Hygiène
 
 Comparaisons de secrets en temps constant (tags GCM, identifiants dérivés
 d'une clé partagée), secrets effacés (`zeroize`), aucune panique sur une
@@ -561,16 +610,22 @@ Une revue adversariale du relais, du navigateur et de l'iPhone a relevé
 | 16 | Sauvegarde en PBKDF2 | Argon2id |
 | 17 | Jetons Brocolis d'une autre discussion | ouverts seulement par les clés de la discussion (ou liées à aucune) |
 
-Reste à faire, connu :
+Corrigé ensuite (octobre 2026) :
 
-- **#5 (en partie)** : les pièces jointes de plus de 200 Kio partent encore
-  dans l'ancien format (sans confidentialité persistante) ; il faudrait
-  les chiffrer par une clé aléatoire transmise dans le message v3. Un
-  message supprimé « pour moi » pourrait réapparaître si un relais
-  malveillant rejouait sa vieille enveloppe (pas de pierres tombales).
-- **#14** : le jeton de remise est le même pour tous les contacts et ne se
-  révoque pas ; un jeton par contact, renouvelé au blocage, est prévu.
-- Le nombre de connexions par adresse IP n'est pas limité (le relais ne la
-  voit qu'à travers le proxy d'Heroku).
-- Aucun audit indépendant : cette revue est interne.
+| # | Point | Correction |
+|---|---|---|
+| 5 | Pièces jointes de plus de 200 Kio dans l'ancien format | chiffrées par une clé aléatoire transmise dans le message v3 (§7.10) ; l'ancien format refusé d'un contact à jour |
+| 5 | Message effacé qui revient par rejeu | pierres tombales (31 jours), ancien format de plus de 31 jours refusé, offres d'appel déjà vues ignorées |
+| 14 | Jeton de remise unique, non révocable | un jeton par contact, révoqué au blocage (§7.9) |
+| — | Connexions par adresse IP | 100 à la fois par adresse (/64 en IPv6) |
+| 3 | Fichier de 3 Mo scellé refusé par le relais (trop gros) | limite d'un envoi portée à 8 Mio |
+
+Ce qui reste, hors de portée du code :
+
+- **Aucun audit indépendant.** Ces revues sont internes. Le dossier pour
+  des auditeurs extérieurs est prêt (`docs/AUDIT.md`), et la politique de
+  signalement des failles est publique (`SECURITY.md`).
+- Avec un contact qui n'a pas encore cette version, l'ancien format reste
+  accepté (sinon il ne pourrait plus écrire) : les protections ci-dessus
+  s'appliquent dès qu'il l'a.
 

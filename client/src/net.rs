@@ -317,6 +317,12 @@ pub fn push_key() -> String {
 }
 
 /// Donne (ou retire) au relais l'adresse Web Push de ce navigateur.
+/// Les nonces de nos jetons de remise révoqués : le relais refuse ensuite
+/// les dépôts anonymes qui les présentent (la liste remplace la précédente).
+pub fn revoke(nonces: &[String]) -> bool {
+    raw(&json!({ "t": "revoke", "nonces": nonces }))
+}
+
 /// Abonne (ou désabonne) ce navigateur : son adresse, et ses clés Web Push
 /// (`p256dh`, `auth`, base64url) pour que le relais y chiffre les aperçus.
 pub fn push_endpoint(endpoint: &str, p256dh: &str, auth: &str, on: bool) -> bool {

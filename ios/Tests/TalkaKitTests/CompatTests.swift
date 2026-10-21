@@ -108,10 +108,41 @@ final class CompatTests: XCTestCase {
         let profile = try XCTUnwrap(wires.compactMap { JSON.decode(Wire.self, $0) }.first {
             if case .profile = $0.body { return true } else { return false }
         })
-        guard case let .profile(_, _, wireNk) = profile.body else { return XCTFail() }
+        guard case let .profile(_, _, wireNk, wirePj) = profile.body else { return XCTFail() }
         XCTAssertEqual(wireNk, nk)
+        XCTAssertTrue(wirePj, "le navigateur annonce les pièces jointes en v3")
         let store = try XCTUnwrap(v["store"] as? [String: Any])
         XCTAssertEqual(JSON.decode(Contact.self, try XCTUnwrap(store["contact"] as? String))?.nk, nk)
+    }
+
+    /// Un jeton de remise par contact, comme le navigateur ; et la pièce
+    /// jointe chiffrée à part, que l'iPhone sait réunir (et produire).
+    func testJetonPerContactAndAttachments() throws {
+        let a = try identity("a"), b = try identity("b")
+        let jeton = try XCTUnwrap(v["jeton_a_pour_b"] as? String)
+        XCTAssertEqual(jeton.split(separator: ".").first.map(String.init), a.jetonNonce(for: b.code, epoch: 0))
+        XCTAssertEqual(a.jetonNonce(for: b.code, epoch: 1), v["jeton_nonce_a_pour_b_1"] as? String)
+        XCTAssertTrue(TalkaCrypto.verifyJeton(to: a.code, sign: a.sign, dh: a.dh, jeton: jeton))
+        XCTAssertTrue(TalkaCrypto.verifyJeton(to: a.code, sign: a.sign, dh: a.dh, jeton: a.jeton(for: b.code, epoch: 3)))
+        XCTAssertNotEqual(a.jetonNonce(for: b.code, epoch: 0), a.jetonNonce(for: a.code, epoch: 0))
+
+        let pj = try XCTUnwrap(v["pj"] as? [String: Any])
+        let small = try XCTUnwrap(pj["small"] as? String), blob = try XCTUnwrap(unb64(try XCTUnwrap(pj["blob"] as? String)))
+        XCTAssertTrue(small.contains(Attachment.prefix))
+        let joined = try XCTUnwrap(JSON.decode(Wire.self, Attachment.join(small, blob: blob)))
+        guard case let .msg(id, _, _, content) = joined.body else { return XCTFail() }
+        XCTAssertEqual(id, "pj1")
+        XCTAssertEqual(content.data, pj["data"] as? String)
+        var bad = blob
+        bad[40] ^= 1
+        let broken = try XCTUnwrap(JSON.decode(Wire.self, Attachment.join(small, blob: bad)))
+        guard case let .msg(_, _, _, c2) = broken.body else { return XCTFail() }
+        XCTAssertTrue(c2.data.isEmpty)
+        // Et dans l'autre sens.
+        let wire = Wire(.msg(id: "x1", at: 1, pn: "", content: Content(kind: "image", data: "data:image/png;base64," + String(repeating: "Q", count: 300_000))))
+        let split = try XCTUnwrap(Attachment.split(wire.json()))
+        XCTAssertLessThan(split.small.utf8.count, 2_000)
+        XCTAssertEqual(JSON.decode(Wire.self, Attachment.join(split.small, blob: split.blob)), wire)
     }
 
     func testSealBothWays() throws {

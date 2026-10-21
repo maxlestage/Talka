@@ -105,7 +105,15 @@ public final class Engine {
         relay.onState = { [weak self] s in self?.onNet(s) }
         relay.onEnvelope = { [weak self] e in self?.onEnvelope(e) }
         relay.onPresence = { [weak self] code, online, seen in
-            self?.presence[code] = (online, seen)
+            guard let self else { return }
+            let was = self.presence[code]?.online == true
+            self.presence[code] = (online, seen)
+            // Il revient : il a republié son paquet v3 ; ce qui l'attendait
+            // (un contact qui refuse l'ancien format) part maintenant.
+            if online, !was, let cached = self.bundleCache[code], cached.bundle == nil {
+                self.bundleCache[code] = nil
+                Task { await self.flush() }
+            }
         }
         startV3()
     }
@@ -117,6 +125,8 @@ public final class Engine {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
                 self?.sweep()
+                // Ce qui attend un paquet v3 (ou le réseau) est réessayé.
+                await self?.flush()
             }
         }
     }
@@ -138,17 +148,41 @@ public final class Engine {
         }
     }
 
-    /// Notre profil, avec notre jeton de remise.
-    var profileBody: Body { .profile(profile, jeton: me.jeton) }
+    /// Notre profil pour `code`, avec son jeton de remise personnel :
+    /// seulement pour un contact enregistré et pas bloqué. Comme le navigateur.
+    func profileBody(for code: String) -> Body {
+        let c = contacts[code]
+        let jeton = c.map { $0.saved && !$0.blocked } == true ? me.jeton(for: code, epoch: c?.jetonEpoch ?? 0) : ""
+        return .profile(profile, jeton: jeton, nk: "", pj: true)
+    }
 
-    /// Notre jeton de remise, pour les contacts qui ne l'ont pas encore (une
-    /// fois) : ils pourront nous écrire sans que le relais sache qui écrit.
+    /// Notre jeton de remise, pour les contacts qui n'ont pas encore le leur
+    /// (une fois) : ils pourront nous écrire sans que le relais sache qui
+    /// écrit. Chacun a le sien ; l'ancien jeton commun est révoqué.
     func shareJeton() {
-        for var c in contacts.values where c.saved && !c.blocked && !c.jetonSent {
+        for var c in contacts.values where c.saved && !c.blocked && !c.jetonPerso {
+            c.jetonPerso = true
             c.jetonSent = true
             saveContact(c)
-            enqueue(c.code, Wire(profileBody))
+            enqueue(c.code, Wire(profileBody(for: c.code)))
         }
+        if let nonce = me.jeton.split(separator: ".").first { revokeJeton(String(nonce)) }
+        sendRevoked()
+    }
+
+    /// Les nonces de nos jetons révoqués (contacts bloqués, ancien jeton
+    /// commun), redonnés au relais à chaque connexion. Les 1 000 derniers.
+    func revokeJeton(_ nonce: String) {
+        var list = store.read("kv", "jetons_revoques", as: [String].self) ?? []
+        guard !list.contains(nonce) else { return }
+        list.append(nonce)
+        if list.count > 1_000 { list.removeFirst(list.count - 1_000) }
+        store.write("kv", "jetons_revoques", list)
+    }
+
+    func sendRevoked() {
+        let list = store.read("kv", "jetons_revoques", as: [String].self) ?? []
+        if !list.isEmpty { relay.revoke(list) }
     }
 
     func watchContacts() {
@@ -181,10 +215,13 @@ public final class Engine {
         }
         for chat in chats.values where chat.timer > 0 || chat.hasExp {
             var changed = false
+            var gone: [(String, Double)] = []
             for m in store.messagesOf(chat.id) where (m.exp ?? .infinity) < t {
                 store.removeMessage(chat.id, m.id)
+                gone.append((m.id, m.at))
                 changed = true
             }
+            bury(chat.id, gone)
             if changed { refreshLast(chat.id); bump(chat.id) }
         }
         // Les messages trop vieux (3 mois par défaut), une fois par heure.
@@ -192,10 +229,13 @@ public final class Engine {
             lastPrune = t
             for chat in chats.values {
                 var changed = false
+                var gone: [(String, Double)] = []
                 for m in store.messagesOf(chat.id) where m.tooOld(keepDays: settings.keepDays, now: t) {
                     store.removeMessage(chat.id, m.id)
+                    gone.append((m.id, m.at))
                     changed = true
                 }
+                bury(chat.id, gone)
                 if changed { refreshLast(chat.id); bump(chat.id) }
             }
         }
@@ -226,7 +266,7 @@ public final class Engine {
         profile.v += 1
         store.write("kv", "profile", profile)
         for c in contacts.values where c.saved && !c.blocked {
-            enqueue(c.code, Wire(profileBody))
+            enqueue(c.code, Wire(profileBody(for: c.code)))
         }
         Task { await flush() }
     }
@@ -336,12 +376,15 @@ public final class Engine {
             c.fp = fp
         }
         c.saved = true
+        // Notre profil part avec son jeton personnel.
+        c.jetonPerso = !c.blocked
+        c.jetonSent = !c.blocked
         let n = String(name.trimmingCharacters(in: .whitespaces).prefix(40))
         if !n.isEmpty { c.name = n }
         saveContact(c)
         relay.watch([code])
         let reachable = await keys(for: code) != nil
-        enqueue(code, Wire(profileBody))
+        enqueue(code, Wire(profileBody(for: code)))
         Task { await flush() }
         return reachable
     }
@@ -354,8 +397,18 @@ public final class Engine {
 
     public func setBlocked(_ code: String, _ blocked: Bool) {
         var c = contacts[code] ?? Contact(code: code)
+        // Bloqué : son jeton de remise est révoqué ; débloqué, il en recevra
+        // un nouveau.
+        if blocked, !c.blocked, c.jetonPerso {
+            revokeJeton(me.jetonNonce(for: code, epoch: c.jetonEpoch))
+            c.jetonEpoch += 1
+            c.jetonPerso = false
+            sendRevoked()
+        }
+        let unblocked = !blocked && c.blocked
         c.blocked = blocked
         saveContact(c)
+        if unblocked, relay.sealed { shareJeton() }
     }
 
     // ----- Discussions -----
@@ -603,7 +656,54 @@ public final class Engine {
         }
     }
 
+    // ----- Les pierres tombales -----
+    //
+    // Un message effacé ne revient pas si un relais rejouait sa vieille
+    // enveloppe dans l'ancien format : son identifiant est gardé 31 jours
+    // (le relais ne garde rien plus de 30 jours ; un message plus vieux dans
+    // l'ancien format est refusé d'office). Comme le navigateur.
+
+    public static let tombWindow: Double = 31 * dayMs
+
+    struct Tomb: Codable { var id: String; var at: Double }
+
+    func bury(_ chat: String, _ msgs: [(String, Double)]) {
+        let t = nowMs()
+        let key = "tombes:\(chat)"
+        var list = store.read("kv", key, as: [Tomb].self) ?? []
+        let before = list.count
+        list.removeAll { t - $0.at >= Self.tombWindow }
+        var changed = list.count != before
+        for (id, at) in msgs where t - at < Self.tombWindow && !list.contains(where: { $0.id == id }) {
+            list.append(Tomb(id: id, at: at))
+            changed = true
+        }
+        if list.count > 20_000 { list.removeFirst(list.count - 20_000) }
+        guard changed else { return }
+        if list.isEmpty { store.remove("kv", key) } else { store.write("kv", key, list) }
+    }
+
+    func buried(_ chat: String, _ id: String) -> Bool {
+        (store.read("kv", "tombes:\(chat)", as: [Tomb].self) ?? []).contains { $0.id == id }
+    }
+
+    func buryAll(_ chat: String) {
+        let t = nowMs()
+        bury(chat, store.messagesOf(chat).filter { t - $0.at < Self.tombWindow }.map { ($0.id, $0.at) })
+    }
+
+    /// Une offre d'appel jamais vue (les 200 dernières sont gardées) ?
+    func firstOffer(_ callId: String) -> Bool {
+        var seen = store.read("kv", "appels_vus", as: [String].self) ?? []
+        guard !seen.contains(callId) else { return false }
+        seen.append(callId)
+        if seen.count > 200 { seen.removeFirst(seen.count - 200) }
+        store.write("kv", "appels_vus", seen)
+        return true
+    }
+
     public func deleteChat(_ id: String) {
+        buryAll(id)
         store.deleteMessages(of: id)
         store.remove("chats", id)
         chats[id] = nil
@@ -611,6 +711,7 @@ public final class Engine {
     }
 
     public func clearChat(_ id: String) {
+        buryAll(id)
         store.deleteMessages(of: id)
         updateChat(id) { $0.last = nil; $0.unread = 0 }
         bump(id)
@@ -727,9 +828,21 @@ public final class Engine {
         if ratchet, let v3, !v3.hasSession(peer.code) { bundle = await bundleFor(peer) }
         // Chiffré au moment de partir : un nouvel essai chiffre à nouveau (un
         // autre numéro de message) ; le destinataire range par identifiant.
-        let sealed = (ratchet ? v3?.seal(me, peerCode: peer.code, peerDh: peer.dh, bundle: bundle, plain: item.payload) : nil)
-            ?? TalkaCrypto.seal(me, peerCode: peer.code, peerDh: peer.dh, plain: item.payload).map { V3.Sealed(body: $0, v3: false) }
-        guard let sealed else { return .failed("crypto") }
+        // Une pièce jointe trop grosse pour un jeton v3, vers un contact dont
+        // la version le sait : chiffrée à part, sa clé dans le message v3.
+        var payload = item.payload
+        var blob: Data?
+        if ratchet, peer.pj, payload.utf8.count > Session.maxPlaintext, let split = Attachment.split(payload) {
+            payload = split.small
+            blob = split.blob
+        }
+        let sealed = (ratchet ? v3?.seal(me, peerCode: peer.code, peerDh: peer.dh, bundle: bundle, plain: payload) : nil)
+            ?? TalkaCrypto.seal(me, peerCode: peer.code, peerDh: peer.dh, plain: payload).map { V3.Sealed(body: $0, v3: false) }
+        guard var sealed else { return .failed("crypto") }
+        // Un contact qui refuse l'ancien format : sans session ni paquet, on
+        // attend qu'il en publie un.
+        if ratchet, peer.pj, !sealed.v3, payload.utf8.count <= Session.maxPlaintext { return .failed("v3") }
+        if let blob { sealed.body += "|" + b64(blob) }
         // La session a avancé : rien ne part avant qu'elle soit écrite (une clé
         // de message ne doit jamais servir deux fois).
         if sealed.v3 { saveV3() }
@@ -913,6 +1026,7 @@ public final class Engine {
             broadcast(c, .delete(id: id))
         } else {
             store.removeMessage(chat, id)
+            bury(chat, [(m.id, m.at)])
         }
         refreshLast(chat)
         bump(chat)
@@ -1082,6 +1196,12 @@ public final class Engine {
             (from, body) = (opened.from, opened.body)
         }
         guard !from.isEmpty, !blocked(from), let peer = await fetchKeys(from) else { return }
+        // Une pièce jointe chiffrée à part : `<enveloppe>|<pièce>`.
+        var blob: Data?
+        if let bar = body.firstIndex(of: "|") {
+            blob = unb64(String(body[body.index(after: bar)...]))
+            body = String(body[..<bar])
+        }
         loadV3(from)
         var repair = false
         // Le message, et l'état de session qui l'a ouvert : une seule
@@ -1105,12 +1225,23 @@ public final class Engine {
                     saveContact(c)
                 }
                 let live = env["live"] as? Bool ?? false
-                // L'ancien format n'a pas de protection contre le rejeu : d'un
-                // contact passé en v3, il ne change plus d'état.
-                if let wire = Wire.parse(plain), legacy, !live, known?.v3 == true, wire.body.changesState {
-                    v3Log("ancien format refusé de \(from) (déjà en v3)")
-                } else if let wire = Wire.parse(plain) {
-                    handle(from, wire, ts: env["ts"] as? Double ?? nowMs(), live: env["live"] as? Bool ?? false)
+                // La pièce jointe chiffrée à part (seulement en v3).
+                let full = legacy ? plain : Attachment.join(plain, blob: blob)
+                guard let wire = Wire.parse(full) else { break }
+                // L'ancien format n'a pas de protection contre le rejeu : refusé
+                // d'un contact dont la version chiffre tout en v3 ; d'un contact
+                // passé en v3, il ne change plus d'état ; un message de plus de
+                // 31 jours est refusé (c'est un rejeu). Hors signaux en direct.
+                var refuse = false
+                if legacy, !live {
+                    if known?.pj == true { refuse = true }
+                    else if known?.v3 == true, wire.body.changesState { refuse = true }
+                    if case let .msg(_, at, _, _) = wire.body, nowMs() - at > Self.tombWindow { refuse = true }
+                }
+                if refuse {
+                    v3Log("ancien format refusé de \(from)")
+                } else {
+                    handle(from, wire, ts: env["ts"] as? Double ?? nowMs(), live: live)
                 }
             // Déjà lu (le relais l'a renvoyé), ou pas pour nous.
             case .replay, .failed(.envelope):
@@ -1157,8 +1288,13 @@ public final class Engine {
 
     func handle(_ from: String, _ wire: Wire, ts: Double, live: Bool) {
         switch wire.body {
-        case let .profile(p, jeton, nk):
+        case let .profile(p, jeton, nk, pj):
             var c = contacts[from] ?? Contact(code: from)
+            // Sa version chiffre tout en v3 (une fois su, ça ne se perd pas).
+            if pj, !c.pj {
+                c.pj = true
+                saveContact(c)
+            }
             // Sa clé de notification (une clé P-256 publique, ou rien).
             if nk != c.nk, nk.isEmpty || TalkaCrypto.validNk(nk) {
                 c.nk = nk
@@ -1194,7 +1330,9 @@ public final class Engine {
                 typing[chat]?.remove(from)
             }
             return
-        case .call:
+        case let .call(op, callId, _, _, _):
+            // Une offre d'appel déjà vue (un rejeu) ne fait pas sonner.
+            if op == "offer", !firstOffer(callId) { return }
             onCallSignal?(from, wire.body, live)
             return
         case let .status(id, kind, text, bg, data, at):
@@ -1245,7 +1383,8 @@ public final class Engine {
 
         switch wire.body {
         case let .msg(id, at, pn, content):
-            guard store.message(c.id, id) == nil else { return } // déjà reçu
+            // Déjà reçu, ou effacé ici depuis (un rejeu ne le fait pas revenir).
+            guard store.message(c.id, id) == nil, !buried(c.id, id) else { return }
             let kinds = ["text", "image", "voice", "file", "contact", "brokey"]
             var safe = content
             // Une clé Brocolis partagée n'en est une que si elle est valide.
@@ -1279,11 +1418,12 @@ public final class Engine {
             queueReceipt(from, c.id, [id], "delivered")
             if active, settings.readReceipts { queueReceipt(from, c.id, [id], "read") }
             // Votre profil, pour qui ne l'a pas encore.
-            if var sender = contacts[from], sender.sentProfileV < profile.v || (!sender.jetonSent && relay.sealed) {
+            if var sender = contacts[from], !sender.blocked,
+               sender.sentProfileV < profile.v || (!sender.jetonPerso && sender.saved && relay.sealed) {
                 sender.sentProfileV = profile.v
-                sender.jetonSent = relay.sealed
+                if sender.saved, relay.sealed { sender.jetonSent = true; sender.jetonPerso = true }
                 saveContact(sender)
-                enqueue(from, Wire(profileBody))
+                enqueue(from, Wire(profileBody(for: from)))
             }
             typing[c.id]?.remove(from)
             onIncoming?(chats[c.id] ?? c, m, active)
