@@ -836,14 +836,16 @@ fn who(code: &str) -> String {
 
 fn quote(r: &Reply) -> El {
     let id = r.id.clone();
+    // Un message cité que nous n'avons pas : sans auteur.
+    let author = if r.from.is_empty() {
+        "Message cité".to_owned()
+    } else {
+        who(&r.from)
+    };
     h("button.quote")
         .attr("type", "button")
         .style("border-color", color_of(&r.from))
-        .child(
-            h("strong")
-                .style("color", color_of(&r.from))
-                .text(who(&r.from)),
-        )
+        .child(h("strong").style("color", color_of(&r.from)).text(author))
         .child(h("span").text(if r.text.is_empty() {
             "Message".into()
         } else {

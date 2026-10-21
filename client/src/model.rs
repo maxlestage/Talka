@@ -369,6 +369,23 @@ pub struct Content {
     pub open_at: f64,
 }
 
+/// Une donnée reçue (photo, vocal, fichier, avatar) : seulement une adresse
+/// `data:` du bon type, jamais une adresse distante (elle trahirait votre
+/// adresse IP et l'heure à laquelle vous lisez) ni une page HTML déguisée.
+pub fn safe_data(kind: &str, data: &str) -> String {
+    let ok = match kind {
+        "image" | "avatar" => ["png", "jpeg", "jpg", "webp", "gif"]
+            .iter()
+            .any(|t| data.starts_with(&format!("data:image/{t};base64,"))),
+        "voice" => data.starts_with("data:audio/") || data.starts_with("data:video/"),
+        // Un fichier : n'importe quel type, mais seulement `data:` ; il se
+        // télécharge comme des octets, jamais ouvert dans l'onglet.
+        "file" => data.starts_with("data:"),
+        _ => false,
+    };
+    if ok { data.to_owned() } else { String::new() }
+}
+
 /// Un groupe ne change que par ses admins ; un membre peut seulement le
 /// quitter (et, s'il était le dernier admin, le premier membre restant le
 /// devient). Une version ne saute pas de plus de `GROUP_V_STEP` : personne
@@ -864,5 +881,27 @@ mod tests {
         gone.members = vec!["A".into()];
         gone.admins = vec!["A".into()];
         assert!(solo.accepts("B", &gone));
+    }
+
+    /// Ni adresse distante, ni page déguisée.
+    #[test]
+    fn received_data_is_only_inline() {
+        let png = "data:image/png;base64,iVBORw0KGgo=";
+        assert_eq!(safe_data("image", png), png);
+        assert_eq!(safe_data("avatar", png), png);
+        assert_eq!(safe_data("image", "https://espion.example/x.png?id=1"), "");
+        assert_eq!(safe_data("image", "data:image/svg+xml;base64,PHN2Zz4="), "");
+        assert_eq!(safe_data("image", "data:text/html;base64,PGgxPg=="), "");
+        assert_eq!(
+            safe_data("voice", "data:audio/webm;base64,AAAA"),
+            "data:audio/webm;base64,AAAA"
+        );
+        assert_eq!(safe_data("voice", "https://x.example/a.webm"), "");
+        assert_eq!(
+            safe_data("file", "data:text/html;base64,PGgxPg=="),
+            "data:text/html;base64,PGgxPg=="
+        );
+        assert_eq!(safe_data("file", "https://hameçon.example/facture"), "");
+        assert_eq!(safe_data("contact", "data:x"), "");
     }
 }

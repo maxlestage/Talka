@@ -129,7 +129,9 @@ pub fn policy(csp: &str, site: &Site, host: Option<&str>) -> String {
     )
     .replace(
         "img-src 'self' data: https:",
-        "img-src 'self' data: blob: https:; media-src 'self' data: blob:; worker-src 'self'",
+        // Aucune image distante : un avatar ou une photo pointant ailleurs
+        // trahirait l'adresse IP de qui la regarde.
+        "img-src 'self' data: blob:; media-src 'self' data: blob:; worker-src 'self'",
     )
 }
 
