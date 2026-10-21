@@ -676,6 +676,18 @@ continuer d'écrire au nom du compte et se réannoncer ; le seul remède sûr
 est alors un nouveau code (comme pour un téléphone volé chez Signal avant
 la déconnexion de ses appareils).
 
+**Compatibilité.** Un appareil v4 publie aussi un paquet sans `dev` (pour
+les anciens clients, qui l'utilisent comme avant) et lit l'ancien format et
+les envois sans `dev`. Une session ouverte avant de connaître les appareils
+d'un contact (à son code) passe à l'adresse de l'appareil dès qu'un message
+dit lequel c'est. Le temps que tous aient la mise à jour, un ancien client
+qui écrit à un compte à plusieurs appareils n'est lu que par l'un d'eux ;
+les autres le signalent et réparent la session.
+
+**Robustesse.** Un message envoyé reste dans la boîte d'envoi tant qu'un
+appareil du destinataire (ou un autre de nos appareils, `sync`/`got`) ne
+l'a pas reçu, et repart vers lui seul si le relais redémarre.
+
 ### 7.12 La liaison par QR code (v4)
 
 1. Le **nouvel appareil** N tire `dev`, un identifiant de liaison `lid`

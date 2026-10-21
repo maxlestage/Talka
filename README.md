@@ -167,6 +167,14 @@ en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
   notifications au choix (nom et message, nom seulement, rien)
 - 📱 iPhone, iPad (liste et discussion côte à côte) et navigateur ;
   l'application web installée sur l'écran d'accueil occupe tout l'écran
+- 🔗 **v4 : plusieurs appareils à la fois** (six au plus), liés par un QR
+  code avec un code de vérification ; chacun a ses propres clés et reçoit sa
+  copie de chaque message ; messages envoyés, lectures, contacts, groupes,
+  discussions archivées, profil et actus restent synchronisés ; retirer un
+  appareil l'efface (`docs/SECURITE.md` §7.11, §7.12)
+- 📮 **v4 : boîtes aux lettres tournantes** : entre contacts, le relais ne
+  voit ni qui écrit, ni à qui, seulement une boîte anonyme qui change chaque
+  jour, liée au relais officiel (§7.13)
 - 🌙 thème clair, sombre ou automatique, fonds d'écran, taille du texte ;
   🔔 notifications et sons (synthétisés, aucun fichier) ; badge d'application
 - 📲 PWA installable (manifeste et service worker de Paquets)
