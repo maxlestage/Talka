@@ -4,6 +4,11 @@
 
 import Foundation
 import XCTest
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 @testable import TalkaKit
 
 final class StoreTests: XCTestCase {
@@ -32,6 +37,50 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(s.allMessages().map(\.id), ["m9"])
         s.remove("kv", "profile")
         XCTAssertNil(s.read("kv", "profile", as: Profile.self))
+    }
+
+    /// Les octets de la base sur le disque (avec son journal).
+    func disk(_ dir: URL) -> Data {
+        ["", "-wal"].reduce(Data()) { $0 + ((try? Data(contentsOf: dir.appendingPathComponent("talka.sqlite" + $1))) ?? Data()) }
+    }
+
+    /// Chiffrée au repos : rien de lisible sur le disque, tout en clair pour
+    /// Talka ; les lignes d'avant sont reprises ; sans la clé, rien ne se lit
+    /// et rien ne s'écrase.
+    func testEncryptedAtRest() {
+        let dir = tempDir()
+        do {
+            // Une base d'avant, en clair.
+            let old = Store(directory: dir)
+            old.write("contacts", "WGSEAJNSZJ", Contact(code: "WGSEAJNSZJ"))
+            old.writeMessage(message("WGSEAJNSZJ", "m1", at: 1, "Le code du portail est 4521"))
+        }
+        XCTAssertNotNil(disk(dir).range(of: Data("portail".utf8)))
+        let key = SymmetricKey(size: .bits256)
+        do {
+            let s = Store(directory: dir, key: key)
+            XCTAssertEqual(s.messagesOf("WGSEAJNSZJ").map(\.text), ["Le code du portail est 4521"])
+            s.writeMessage(message("WGSEAJNSZJ", "m2", at: 2, "Rendez-vous à la gare"))
+            s.write("kv", "profile", Profile(name: "Léa Secrète"))
+            s.save()
+        }
+        let bytes = disk(dir)
+        for word in ["portail", "gare", "Secrète", "WGSEAJNSZJ\"}"] {
+            XCTAssertNil(bytes.range(of: Data(word.utf8)), "« \(word) » en clair sur le disque")
+        }
+        let again = Store(directory: dir, key: key)
+        XCTAssertEqual(again.messagesOf("WGSEAJNSZJ").map(\.text), ["Le code du portail est 4521", "Rendez-vous à la gare"])
+        XCTAssertEqual(again.read("kv", "profile", as: Profile.self)?.name, "Léa Secrète")
+        XCTAssertEqual(again.allMessages().count, 2)
+        XCTAssertEqual((again.dump()["messages"] as? [[Any]])?.count, 2, "la sauvegarde garde son format")
+
+        // Une autre clé : rien de lisible.
+        XCTAssertTrue(Store(directory: dir, key: SymmetricKey(size: .bits256)).messagesOf("WGSEAJNSZJ").isEmpty)
+        // Pas de clé (trousseau muet) : lecture seule, rien n'est écrasé.
+        let locked = Store(directory: dir)
+        XCTAssertNil(locked.read("kv", "profile", as: Profile.self))
+        locked.write("kv", "profile", Profile(name: "Autre"))
+        XCTAssertEqual(Store(directory: dir, key: key).read("kv", "profile", as: Profile.self)?.name, "Léa Secrète")
     }
 
     func testEverythingSurvivesAReopen() {
