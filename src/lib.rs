@@ -129,7 +129,9 @@ pub fn policy(csp: &str, site: &Site, host: Option<&str>) -> String {
     )
     .replace(
         "img-src 'self' data: https:",
-        "img-src 'self' data: blob: https:; media-src 'self' data: blob:; worker-src 'self'",
+        // Aucune image distante : un avatar ou une photo pointant ailleurs
+        // trahirait l'adresse IP de qui la regarde.
+        "img-src 'self' data: blob:; media-src 'self' data: blob:; worker-src 'self'",
     )
 }
 
@@ -195,6 +197,23 @@ pub fn app() -> App {
     // Un lien d'invitation : `/c/K7Q2MX9PRT` ouvre l'application sur ce contact.
     app.get("/c/:code", |req: Request| async move {
         let target = match req.param("code").and_then(code::normalize) {
+            Some(code) => format!("/app#add={code}"),
+            None => "/app".to_owned(),
+        };
+        Response::new()
+            .status(302)
+            .header("location", target)
+            .header("cache-control", "no-store")
+    });
+    // Avec l'empreinte des clés : `/c/<empreinte>/<code>`.
+    app.get("/c/:fp/:code", |req: Request| async move {
+        let fp = req.param("fp").unwrap_or("");
+        let valid = fp.len() == 16
+            && fp
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        let target = match req.param("code").and_then(code::normalize) {
+            Some(code) if valid => format!("/app#k={fp}&add={code}"),
             Some(code) => format!("/app#add={code}"),
             None => "/app".to_owned(),
         };

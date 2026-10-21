@@ -212,7 +212,7 @@ fn main() {
         "fingerprint_k1": jetons::fingerprint(&k1),
     });
 
-    let apercu = json!({ "n": "Léa · Les amis", "t": "Salut 👋 *Talka*", "c": "g:g1" }).to_string();
+    let apercu = msg.apercu(&a.code, "Léa", |m| m.text.clone()).unwrap();
     let vectors = json!({
         "brocolis": brocolis,
         "code_of_empty": crypto::code_of(&[], &[]),
@@ -232,10 +232,11 @@ fn main() {
             "nk": nk,
             "nk_priv": crypto::b64(&nk_priv.to_bytes()),
             "plain": apercu,
-            "sealed": crypto::seal_apercu(&nk, &apercu).unwrap(),
+            "sealed": crypto::seal_apercu(&a, &nk, &apercu).unwrap(),
         },
+        "fingerprint_a": crypto::fingerprint(&a.sign, &a.dh),
         "challenge": { "nonce": "abc", "sig": a.sign_challenge("abc") },
-        "safety": crypto::safety_number(&a.code, &b.code),
+        "safety": crypto::safety_number((&a.code, &a.sign, &a.dh), (&b.code, &b.sign, &b.dh)),
         "pin": { "pin": "2580", "hash": pin },
         "backup": { "password": "motdepasse", "file": backup, "plain": backup_data },
         "wires": wire_json,

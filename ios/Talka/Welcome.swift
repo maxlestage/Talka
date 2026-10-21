@@ -141,12 +141,41 @@ struct WelcomeView: View {
 
 // MARK: Le verrou
 
+/// La base protégée par Face ID : rien ne s'ouvre sans le visage (ou le
+/// code de l'iPhone).
+struct VaultLockView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            Logo(size: 70)
+            Text("Talka est verrouillé").font(.title2.bold())
+            Text("Vos messages sont chiffrés sur cet iPhone et ne s'ouvrent qu'avec \(model.biometryName ?? "Face ID") ou le code de l'iPhone.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            Button {
+                Task { await model.unlockVault() }
+            } label: {
+                Label("Déverrouiller", systemImage: model.biometryName == "Touch ID" ? "touchid" : "faceid")
+                    .frame(maxWidth: 260)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.talkaGreen)
+            Spacer()
+        }
+        .padding()
+        .task { await model.unlockVault() }
+    }
+}
+
 struct LockView: View {
     @Environment(AppModel.self) private var model
     @State private var pin = ""
     @State private var wrong = false
-    @State private var fails = 0
-    @State private var until = Date.distantPast
+    // Les essais manqués survivent à un redémarrage de l'app.
+    @State private var fails = UserDefaults.standard.integer(forKey: "talka.essais")
+    @State private var until = Date(timeIntervalSince1970: UserDefaults.standard.double(forKey: "talka.essais.jusqua"))
 
     var body: some View {
         ZStack {
@@ -187,6 +216,8 @@ struct LockView: View {
             if fails >= 5 { until = Date().addingTimeInterval(min(300, 15 * pow(2, Double(fails - 5)))) }
             withAnimation(.default) { wrong = true }
         }
+        UserDefaults.standard.set(fails, forKey: "talka.essais")
+        UserDefaults.standard.set(fails == 0 ? 0 : until.timeIntervalSince1970, forKey: "talka.essais.jusqua")
         pin = ""
     }
 }
@@ -195,17 +226,18 @@ struct PinDots: View {
     let count: Int
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: count > 8 ? 9 : 14) {
             ForEach(0..<max(4, count), id: \.self) { i in
                 Circle()
                     .fill(i < count ? Color.talkaGreen : Color(.systemGray4))
-                    .frame(width: 14, height: 14)
+                    .frame(width: 13, height: 13)
             }
         }
     }
 }
 
-/// Un clavier numérique : 4 à 6 chiffres, puis OK.
+/// Un clavier numérique : 4 à 12 chiffres, puis OK (6 au moins pour un
+/// nouveau code).
 struct PinPad: View {
     @Binding var pin: String
     let onDone: () -> Void
@@ -229,7 +261,7 @@ struct PinPad: View {
                             }
                             .disabled(pin.count < 4)
                         default:
-                            Button { if pin.count < 6 { pin += key } } label: {
+                            Button { if pin.count < TalkaCrypto.pinMax { pin += key } } label: {
                                 Text(key).font(.title.weight(.medium))
                                     .frame(width: 72, height: 72)
                                     .background(Color(.secondarySystemBackground), in: .circle)

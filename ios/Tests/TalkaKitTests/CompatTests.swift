@@ -4,6 +4,11 @@
 
 import Foundation
 import XCTest
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 @testable import TalkaKit
 
 final class CompatTests: XCTestCase {
@@ -80,16 +85,22 @@ final class CompatTests: XCTestCase {
         let ap = try XCTUnwrap(v["apercu"] as? [String: Any])
         let nk = try XCTUnwrap(ap["nk"] as? String), plain = try XCTUnwrap(ap["plain"] as? String)
         let priv = try XCTUnwrap(unb64(try XCTUnwrap(ap["nk_priv"] as? String)))
+        let a = try identity("a"), b = try identity("b")
+        let contacts = { (code: String) in code == a.code ? a.dh : nil }
         XCTAssertTrue(TalkaCrypto.validNk(nk))
         XCTAssertFalse(TalkaCrypto.validNk("abc"))
-        XCTAssertEqual(TalkaCrypto.openApercu(nkPriv: priv, sealed: try XCTUnwrap(ap["sealed"] as? String)), plain)
-        let mine = try XCTUnwrap(TalkaCrypto.sealApercu(nk: nk, plain: "{\"t\":\"🙂\"}"))
-        XCTAssertEqual(TalkaCrypto.openApercu(nkPriv: priv, sealed: mine), "{\"t\":\"🙂\"}")
-        XCTAssertNil(TalkaCrypto.openApercu(nkPriv: Data(repeating: 7, count: 32), sealed: mine))
+        let opened = try XCTUnwrap(TalkaCrypto.openApercu(nkPriv: priv, sealed: try XCTUnwrap(ap["sealed"] as? String), dhOf: contacts))
+        XCTAssertEqual(opened.from, a.code)
+        XCTAssertEqual(opened.plain, plain)
+        let mine = try XCTUnwrap(TalkaCrypto.sealApercu(b, nk: nk, plain: "{\"t\":\"🙂\"}"))
+        XCTAssertEqual(TalkaCrypto.openApercu(nkPriv: priv, sealed: mine, dhOf: { $0 == b.code ? b.dh : nil })?.plain, "{\"t\":\"🙂\"}")
+        // Un inconnu, ou B qui se ferait passer pour A : rien.
+        XCTAssertNil(TalkaCrypto.openApercu(nkPriv: priv, sealed: mine, dhOf: contacts))
+        XCTAssertNil(TalkaCrypto.openApercu(nkPriv: priv, sealed: mine, dhOf: { _ in a.dh }))
+        XCTAssertNil(TalkaCrypto.openApercu(nkPriv: Data(repeating: 7, count: 32), sealed: mine, dhOf: { _ in b.dh }))
 
         let wires = try XCTUnwrap(v["wires"] as? [String])
         let msg = try XCTUnwrap(JSON.decode(Wire.self, wires[0]))
-        let a = try identity("a")
         let ours = try XCTUnwrap(Engine.apercu(me: a.code, name: "Léa", wire: msg))
         let parse = { (s: String) in try JSONSerialization.jsonObject(with: Data(s.utf8)) as? [String: String] }
         XCTAssertEqual(try parse(ours), try parse(plain))
@@ -123,8 +134,18 @@ final class CompatTests: XCTestCase {
 
     func testSafetyNumber() throws {
         let a = try identity("a"), b = try identity("b")
-        XCTAssertEqual(TalkaCrypto.safetyNumber(a.code, b.code), v["safety"] as? String)
-        XCTAssertEqual(TalkaCrypto.safetyNumber(b.code, a.code), v["safety"] as? String)
+        let ka = (code: a.code, sign: a.sign, dh: a.dh), kb = (code: b.code, sign: b.sign, dh: b.dh)
+        XCTAssertEqual(TalkaCrypto.safetyNumber(ka, kb), v["safety"] as? String)
+        XCTAssertEqual(TalkaCrypto.safetyNumber(kb, ka), v["safety"] as? String)
+        XCTAssertNotEqual(TalkaCrypto.safetyNumber(ka, (code: b.code, sign: a.sign, dh: b.dh)), v["safety"] as? String)
+        // L'empreinte des liens d'invitation, comme le navigateur.
+        let fp = TalkaCode.fingerprint(sign: a.sign, dh: a.dh)
+        XCTAssertEqual(fp, v["fingerprint_a"] as? String)
+        XCTAssertEqual(TalkaCode.fingerprint(in: "https://talka.example/c/\(fp)/\(a.code)"), fp)
+        XCTAssertEqual(TalkaCode.find(in: "https://talka.example/c/\(fp)/\(a.code)"), a.code)
+        XCTAssertEqual(TalkaCode.fingerprint(in: "https://x.github.io/Talka/app/#k=\(fp)&add=\(a.code)"), fp)
+        XCTAssertEqual(TalkaCode.find(in: "https://x.github.io/Talka/app/#k=\(fp)&add=\(a.code)"), a.code)
+        XCTAssertNil(TalkaCode.fingerprint(in: "https://talka.example/c/\(a.code)"))
     }
 
     func testPinAndBackup() throws {
@@ -139,6 +160,25 @@ final class CompatTests: XCTestCase {
         XCTAssertThrowsError(try TalkaCrypto.decryptBackup(password: "autre", file: file))
         let mine = try XCTUnwrap(TalkaCrypto.encryptBackup(password: "secret123", plain: "{\"x\":1}"))
         XCTAssertEqual(try TalkaCrypto.decryptBackup(password: "secret123", file: mine), "{\"x\":1}")
+        XCTAssertEqual(mine.talka, 3)
+
+        // Argon2id, comme le navigateur ; les codes et sauvegardes d'avant
+        // (PBKDF2) s'ouvrent toujours, et les codes se rehachent.
+        XCTAssertEqual(hash.v, 2)
+        XCTAssertFalse(hash.isOld)
+        let ours = TalkaCrypto.hashPin("739154")
+        XCTAssertTrue(TalkaCrypto.checkPin("739154", ours) && !TalkaCrypto.checkPin("739155", ours))
+        let salt = Data(repeating: 3, count: 16)
+        let old = PinHash(salt: b64(salt), hash: b64(TalkaCrypto.pbkdf2("2580", salt: salt, rounds: TalkaCrypto.pinRounds)))
+        XCTAssertTrue(old.isOld && TalkaCrypto.checkPin("2580", old) && !TalkaCrypto.checkPin("2581", old))
+        var greedy = ours
+        greedy.m = .max
+        XCTAssertFalse(TalkaCrypto.checkPin("739154", greedy))
+        let oldKey = SymmetricKey(data: TalkaCrypto.pbkdf2("motdepasse", salt: salt, rounds: TalkaCrypto.backupRounds))
+        let nonce = AES.GCM.Nonce()
+        let box = try AES.GCM.seal(Data("{}".utf8), using: oldKey, nonce: nonce)
+        let oldFile = Backup(talka: 2, salt: b64(salt), iv: b64(Data(nonce)), data: b64(box.ciphertext + box.tag))
+        XCTAssertEqual(try TalkaCrypto.decryptBackup(password: "motdepasse", file: oldFile), "{}")
     }
 
     func testWires() throws {

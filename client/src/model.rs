@@ -84,6 +84,15 @@ pub struct Contact {
     /// Bonjour ») lui est chiffré pour elle. Vide : un simple réveil.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub nk: String,
+    /// L'empreinte de ses clés donnée par son lien d'invitation : les clés
+    /// trouvées pour son code doivent y correspondre.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fp: String,
+    /// Il nous a déjà écrit en v3 (double cliquet) : l'ancien format, que le
+    /// relais pourrait rejouer, ne change plus rien chez nous (minuterie,
+    /// modifications, suppressions, groupe, appels).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub v3: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -365,6 +374,72 @@ pub struct Content {
     pub open_at: f64,
 }
 
+impl Body {
+    /// Ce qui change un état déjà là (et qu'un rejeu suffirait à défaire) :
+    /// refusé dans l'ancien format d'un contact passé en v3.
+    pub fn changes_state(&self) -> bool {
+        matches!(
+            self,
+            Body::Timer { .. }
+                | Body::Edit { .. }
+                | Body::Delete { .. }
+                | Body::Group { .. }
+                | Body::Call { .. }
+                | Body::StatusDelete { .. }
+        )
+    }
+}
+
+/// Une donnée reçue (photo, vocal, fichier, avatar) : seulement une adresse
+/// `data:` du bon type, jamais une adresse distante (elle trahirait votre
+/// adresse IP et l'heure à laquelle vous lisez) ni une page HTML déguisée.
+pub fn safe_data(kind: &str, data: &str) -> String {
+    let ok = match kind {
+        "image" | "avatar" => ["png", "jpeg", "jpg", "webp", "gif"]
+            .iter()
+            .any(|t| data.starts_with(&format!("data:image/{t};base64,"))),
+        "voice" => data.starts_with("data:audio/") || data.starts_with("data:video/"),
+        // Un fichier : n'importe quel type, mais seulement `data:` ; il se
+        // télécharge comme des octets, jamais ouvert dans l'onglet.
+        "file" => data.starts_with("data:"),
+        _ => false,
+    };
+    if ok { data.to_owned() } else { String::new() }
+}
+
+/// Un groupe ne change que par ses admins ; un membre peut seulement le
+/// quitter (et, s'il était le dernier admin, le premier membre restant le
+/// devient). Une version ne saute pas de plus de `GROUP_V_STEP` : personne
+/// ne la bloque en l'envoyant au bout des nombres.
+pub const GROUP_V_STEP: u64 = 1_000;
+
+impl Chat {
+    /// `from` peut-il appliquer cette description du groupe ?
+    pub fn accepts(&self, from: &str, grp: &GroupInfo) -> bool {
+        if !self.group || grp.v <= self.v || grp.v > self.v.saturating_add(GROUP_V_STEP) {
+            return false;
+        }
+        if !self.members.iter().any(|m| m == from) {
+            return false;
+        }
+        if self.admins.iter().any(|a| a == from) {
+            return true;
+        }
+        // Un simple membre : seulement son départ.
+        let members: Vec<&String> = self.members.iter().filter(|m| *m != from).collect();
+        let mut admins: Vec<&String> = self.admins.iter().filter(|a| *a != from).collect();
+        if admins.is_empty()
+            && let Some(first) = members.first()
+        {
+            admins = vec![*first];
+        }
+        grp.members.iter().collect::<Vec<_>>() == members
+            && grp.admins.iter().collect::<Vec<_>>() == admins
+            && grp.name == self.name
+            && grp.avatar == self.avatar
+    }
+}
+
 /// Ce qui voyage, chiffré, d'un appareil à l'autre.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "kebab-case")]
@@ -483,9 +558,10 @@ impl Wire {
     }
 
     /// L'aperçu de sa notification chez le destinataire, en JSON : qui écrit
-    /// (`n`, son nom choisi, et le groupe), quoi (`t`, `preview` du message,
-    /// comme la liste des discussions) et la discussion vue de chez lui
-    /// (`c`). Seulement pour un message écrit ; il partira chiffré pour la
+    /// (`n`, son nom choisi ; le service worker lui préfère le nom que le
+    /// destinataire lui a donné), le groupe (`g`), quoi (`t`, `preview` du
+    /// message, comme la liste des discussions) et la discussion vue de chez
+    /// lui (`c`). Seulement pour un message écrit ; il partira chiffré pour la
     /// clé de notification du destinataire.
     pub fn apercu(
         &self,
@@ -509,16 +585,21 @@ impl Wire {
         } else {
             name.trim().chars().take(40).collect()
         };
-        let (n, c) = match (&self.grp, self.group_id()) {
-            (Some(g), Some(id)) if !g.name.is_empty() => (
-                format!("{name} · {}", g.name.chars().take(40).collect::<String>()),
-                format!("g:{id}"),
-            ),
-            (_, Some(id)) => (name, format!("g:{id}")),
-            _ => (name, me.to_owned()),
+        let c = match self.group_id() {
+            Some(id) => format!("g:{id}"),
+            None => me.to_owned(),
         };
+        let g: String = self
+            .grp
+            .as_ref()
+            .map(|g| g.name.chars().take(40).collect())
+            .unwrap_or_default();
         let t: String = preview(&m).chars().take(120).collect();
-        Some(serde_json::json!({ "n": n, "t": t, "c": c }).to_string())
+        let mut out = serde_json::json!({ "n": name, "t": t, "c": c });
+        if !g.is_empty() {
+            out["g"] = g.into();
+        }
+        Some(out.to_string())
     }
 }
 
@@ -745,12 +826,13 @@ mod tests {
         });
         let g = apercu("X", "Léa", &group);
         assert_eq!(
-            (g["n"].as_str(), g["c"].as_str()),
-            (Some("Léa · Les amis"), Some("g:g1"))
+            (g["n"].as_str(), g["g"].as_str(), g["c"].as_str()),
+            (Some("Léa"), Some("Les amis"), Some("g:g1"))
         );
         group.grp = None;
         group.g = Some("g1".into());
-        assert_eq!(apercu("X", "Léa", &group)["n"], "Léa");
+        let g = apercu("X", "Léa", &group);
+        assert_eq!((g["c"].as_str(), g.get("g")), (Some("g:g1"), None));
 
         let long = apercu("X", "Léa", &msg("text", &"a".repeat(500)));
         assert_eq!(long["t"].as_str().unwrap().chars().count(), 120);
@@ -759,5 +841,88 @@ mod tests {
                 .apercu("X", "Léa", preview)
                 .is_none()
         );
+    }
+
+    fn group(members: &[&str], admins: &[&str]) -> Chat {
+        Chat {
+            id: "g:g1".into(),
+            group: true,
+            name: "Les amis".into(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+            admins: admins.iter().map(|m| m.to_string()).collect(),
+            v: 5,
+            ..Default::default()
+        }
+    }
+
+    fn info(c: &Chat, v: u64) -> GroupInfo {
+        GroupInfo {
+            id: "g1".into(),
+            name: c.name.clone(),
+            members: c.members.clone(),
+            admins: c.admins.clone(),
+            avatar: c.avatar.clone(),
+            v,
+        }
+    }
+
+    /// Un membre (ou un ancien membre) ne prend pas un groupe en main.
+    #[test]
+    fn only_admins_change_a_group() {
+        let c = group(&["A", "B", "C"], &["A"]);
+        // L'admin : oui.
+        let mut by_admin = info(&c, 6);
+        by_admin.members.push("D".into());
+        assert!(c.accepts("A", &by_admin));
+        // Un membre qui se fait admin, ou exclut les autres : non.
+        let mut coup = info(&c, 6);
+        coup.admins = vec!["B".into()];
+        assert!(!c.accepts("B", &coup));
+        let mut purge = info(&c, 6);
+        purge.members = vec!["B".into()];
+        assert!(!c.accepts("B", &purge));
+        // Un ancien membre, ou un inconnu : non.
+        assert!(!c.accepts("Z", &by_admin));
+        // Une version au bout des nombres, ou pas plus récente : non.
+        assert!(!c.accepts("A", &info(&c, u64::MAX)));
+        assert!(!c.accepts("A", &info(&c, 5)));
+        // Un membre qui part : oui (et seulement ça).
+        let mut leave = info(&c, 6);
+        leave.members = vec!["A".into(), "C".into()];
+        assert!(c.accepts("B", &leave));
+        leave.name = "À moi".into();
+        assert!(!c.accepts("B", &leave));
+        // Le dernier admin part : le premier membre restant le devient.
+        let mut last = info(&c, 6);
+        last.members = vec!["B".into(), "C".into()];
+        last.admins = vec!["B".into()];
+        assert!(c.accepts("A", &last));
+        let solo = group(&["A", "B"], &["B"]);
+        let mut gone = info(&solo, 6);
+        gone.members = vec!["A".into()];
+        gone.admins = vec!["A".into()];
+        assert!(solo.accepts("B", &gone));
+    }
+
+    /// Ni adresse distante, ni page déguisée.
+    #[test]
+    fn received_data_is_only_inline() {
+        let png = "data:image/png;base64,iVBORw0KGgo=";
+        assert_eq!(safe_data("image", png), png);
+        assert_eq!(safe_data("avatar", png), png);
+        assert_eq!(safe_data("image", "https://espion.example/x.png?id=1"), "");
+        assert_eq!(safe_data("image", "data:image/svg+xml;base64,PHN2Zz4="), "");
+        assert_eq!(safe_data("image", "data:text/html;base64,PGgxPg=="), "");
+        assert_eq!(
+            safe_data("voice", "data:audio/webm;base64,AAAA"),
+            "data:audio/webm;base64,AAAA"
+        );
+        assert_eq!(safe_data("voice", "https://x.example/a.webm"), "");
+        assert_eq!(
+            safe_data("file", "data:text/html;base64,PGgxPg=="),
+            "data:text/html;base64,PGgxPg=="
+        );
+        assert_eq!(safe_data("file", "https://hameçon.example/facture"), "");
+        assert_eq!(safe_data("contact", "data:x"), "");
     }
 }

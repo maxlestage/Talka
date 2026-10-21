@@ -2925,14 +2925,14 @@ body.locked .lock-screen {
 
 .pin-dots {
   display: flex;
-  gap: 14px;
+  gap: 10px;
   height: 16px;
   margin: 8px 0 16px;
 }
 
 .pin-dots span {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   border: 2px solid #fff;
   border-radius: 50%;
 }
@@ -3345,4 +3345,26 @@ body.locked .lock-screen {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* L'ouverture par passkey. */
+.passkey-unlock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 340px;
+  text-align: center;
+}
+
+.passkey-unlock .btn {
+  min-width: 220px;
+  background: #fff;
+  color: #005c4b;
+}
+
+.passkey-unlock .link {
+  color: #ffffffcc;
+  text-decoration: underline;
+  background: none;
 }

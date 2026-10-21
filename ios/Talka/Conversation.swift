@@ -787,7 +787,7 @@ struct MessageRow: View {
                     HStack(spacing: 6) {
                         RoundedRectangle(cornerRadius: 2).fill(Avatar.color(r.from)).frame(width: 4)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(e.displayName(r.from)).font(.caption.bold()).foregroundStyle(Avatar.color(r.from))
+                            Text(r.from.isEmpty ? "Message cité" : e.displayName(r.from)).font(.caption.bold()).foregroundStyle(Avatar.color(r.from))
                             Text(Brocolis.masked(r.text)).font(.caption).lineLimit(2).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 0)

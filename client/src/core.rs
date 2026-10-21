@@ -589,6 +589,17 @@ async fn save_contact(c: Contact) {
 
 /// Les clés d'un code, vérifiées : le code doit être leur empreinte.
 async fn keys_for(code: &str) -> Option<Contact> {
+    let c = fetch_keys(code).await?;
+    if contact(code).is_none_or(|k| k.sign.is_empty()) {
+        save_contact(c.clone()).await;
+    }
+    Some(c)
+}
+
+/// Les clés d'un code (gardées, ou demandées au relais et vérifiées), sans
+/// rien enregistrer : un message scellé n'ajoute son expéditeur qu'une fois
+/// prouvé (l'enveloppe intérieure ouverte).
+async fn fetch_keys(code: &str) -> Option<Contact> {
     if let Some(c) = contact(code).filter(|c| !c.sign.is_empty() && !c.dh.is_empty()) {
         return Some(c);
     }
@@ -606,9 +617,17 @@ async fn keys_for(code: &str) -> Option<Contact> {
         added_at: now(),
         ..Default::default()
     });
+    // Le lien d'invitation donnait l'empreinte de ses clés : ce ne sont pas
+    // elles. Quelqu'un d'autre se présente sous ce code ; on n'en veut pas.
+    if !c.fp.is_empty() && crypto::fingerprint(&sign, &dh) != c.fp {
+        dom::toast(format!(
+            "Attention : les clés de {} ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.",
+            crypto::pretty(code)
+        ));
+        return None;
+    }
     c.sign = sign;
     c.dh = dh;
-    save_contact(c.clone()).await;
     Some(c)
 }
 
@@ -617,6 +636,19 @@ async fn refresh_missing_keys() {
         if c.sign.is_empty() && keys_for(&c.code).await.is_some() {
             spawn(flush());
         }
+    }
+}
+
+thread_local! {
+    /// Les empreintes des liens d'invitation ouverts, par code.
+    static FINGERPRINTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+/// Un lien d'invitation donne l'empreinte des clés de ce code : elle sera
+/// vérifiée quand il sera ajouté.
+pub fn expect_fingerprint(code: &str, fp: &str) {
+    if crypto::valid_fingerprint(fp) {
+        FINGERPRINTS.with(|f| f.borrow_mut().insert(code.to_owned(), fp.to_owned()));
     }
 }
 
@@ -630,6 +662,12 @@ pub async fn add_contact(code: &str, name: &str) -> Result<bool, String> {
         added_at: now(),
         ..Default::default()
     });
+    if let Some(fp) = FINGERPRINTS.with(|f| f.borrow_mut().remove(code)) {
+        if !c.sign.is_empty() && crypto::fingerprint(&c.sign, &c.dh) != fp {
+            return Err("Les clés de ce code ne correspondent pas au lien d'invitation : quelqu'un se fait peut-être passer pour lui.".into());
+        }
+        c.fp = fp;
+    }
     c.saved = true;
     let name: String = name.trim().chars().take(40).collect();
     if !name.is_empty() {
@@ -768,16 +806,34 @@ fn seal_content(c: &Chat, content: &mut Content) -> bool {
     bro
 }
 
-/// Ouvre les jetons de `text` avec toutes vos clés.
-pub fn open_brocolis(text: &str) -> jetons::Opened {
-    jetons::open(text, &raw_keys(&brocolis_keys()))
+/// Ouvre les jetons de `text` reçus dans la discussion `chat_id` : avec les
+/// clés liées à cette discussion, et celles liées à aucune. Pas avec la clé
+/// partagée avec quelqu'un d'autre : un contact qui renverrait un jeton
+/// capturé ailleurs ne le ferait pas ouvrir (ni recopier en clair dans une
+/// réponse).
+pub fn open_brocolis(chat_id: &str, text: &str) -> jetons::Opened {
+    let keys = with(|s| {
+        let used: HashSet<&String> = s.chats.values().flat_map(|c| c.brocolis.iter()).collect();
+        let here: HashSet<&String> = s
+            .chats
+            .get(chat_id)
+            .map(|c| c.brocolis.iter().collect())
+            .unwrap_or_default();
+        s.brocolis
+            .iter()
+            .filter(|k| here.contains(&k.id) || !used.contains(&k.id))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    jetons::open(text, &raw_keys(&keys))
 }
 
 /// Ouvre les jetons d'un message et de sa citation ; `true` si l'un l'a été.
 fn open_message(m: &mut Message) -> bool {
     let mut changed = false;
+    let chat_id = m.chat.clone();
     if jetons::has_token(&m.text) {
-        let o = open_brocolis(&m.text);
+        let o = open_brocolis(&chat_id, &m.text);
         if o.opened > 0 {
             m.text = o.text;
             m.bro = true;
@@ -787,7 +843,7 @@ fn open_message(m: &mut Message) -> bool {
     if let Some(r) = m.reply.as_mut()
         && jetons::has_token(&r.text)
     {
-        let o = open_brocolis(&r.text);
+        let o = open_brocolis(&chat_id, &r.text);
         if o.opened > 0 {
             r.text = o.text;
             changed = true;
@@ -1334,7 +1390,7 @@ async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
         .then(|| serde_json::from_str::<Wire>(&item.payload).ok())
         .flatten()
         .and_then(|w| apercu_of(&my_code(), &profile().name, &w))
-        .and_then(|a| crypto::seal_apercu(&peer.nk, &a));
+        .and_then(|a| crypto::seal_apercu(&me(), &peer.nk, &a));
     // L'expéditeur scellé : le relais ne sait pas qui écrit (une connexion
     // anonyme, et le jeton de remise du destinataire).
     if !peer.jeton.is_empty() && net::sealed_supported() {
@@ -1946,7 +2002,7 @@ async fn receive(env: &Value) {
     if from.is_empty() || blocked(&from) {
         return;
     }
-    let Some(peer) = keys_for(&from).await else {
+    let Some(peer) = fetch_keys(&from).await else {
         return;
     };
     load_v3(&from).await;
@@ -1963,6 +2019,7 @@ async fn receive(env: &Value) {
             None => Opened::Failed(Failure::Envelope),
         });
     save_v3().await;
+    let legacy = matches!(opened, Opened::Legacy(_));
     let plain = match opened {
         Opened::Legacy(plain) | Opened::V3(plain) => plain,
         // Déjà lu : le relais l'a renvoyé.
@@ -1976,26 +2033,53 @@ async fn receive(env: &Value) {
             return;
         }
     };
+    // Prouvé : ses clés sont gardées (s'il est nouveau), et son passage en v3.
+    let known = contact(&from);
+    if known
+        .as_ref()
+        .is_none_or(|c| c.sign.is_empty() || (!legacy && !c.v3))
+    {
+        let mut c = known.clone().unwrap_or_else(|| peer.clone());
+        c.sign = peer.sign.clone();
+        c.dh = peer.dh.clone();
+        c.v3 |= !legacy;
+        save_contact(c).await;
+    }
     let Ok(wire) = serde_json::from_str::<Wire>(&plain) else {
         return;
     };
+    let live = env["live"].as_bool().unwrap_or(false);
+    // L'ancien format n'a pas de protection contre le rejeu : d'un contact
+    // passé en v3, il ne change plus d'état (un relais qui rejouerait une
+    // vieille minuterie, modification ou offre d'appel n'y gagne rien).
+    if legacy && !live && known.is_some_and(|c| c.v3) && wire.body.changes_state() {
+        dom::warn(&format!("ancien format refusé de {from} (déjà en v3)"));
+        return;
+    }
     let ts = env["ts"].as_f64().unwrap_or_else(now);
-    handle(&from, wire, ts, env["live"].as_bool().unwrap_or(false)).await;
+    handle(&from, wire, ts, live).await;
 }
 
-async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> Option<Chat> {
+/// La discussion d'un groupe, créée ou mise à jour par `grp` ; `true` si
+/// cette description a été appliquée (un groupe ne change que par ses
+/// admins, voir `Chat::accepts`).
+async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool) {
     let id = format!("g:{}", grp.id);
     let me = my_code();
     match chat(&id) {
         None => {
-            if !grp.members.contains(&me) {
-                return None;
+            // Un nouveau groupe : créé par un de ses admins, qui nous y met.
+            if !grp.members.contains(&me)
+                || !grp.admins.iter().any(|a| a == from)
+                || !grp.members.iter().any(|m| m == from)
+            {
+                return (None, false);
             }
             let c = Chat {
                 id: id.clone(),
                 group: true,
                 name: grp.name.clone(),
-                avatar: grp.avatar.clone(),
+                avatar: safe_data("avatar", &grp.avatar),
                 members: grp.members.clone(),
                 admins: grp.admins.clone(),
                 created_by: from.to_owned(),
@@ -2022,12 +2106,12 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> Option<Chat> {
                     .cloned()
                     .collect::<Vec<_>>(),
             );
-            Some(c)
+            (Some(c), true)
         }
-        Some(mut c) if grp.v > c.v => {
+        Some(mut c) if c.accepts(from, grp) => {
             let was_in = c.members.contains(&me);
             c.name = grp.name.clone();
-            c.avatar = grp.avatar.clone();
+            c.avatar = safe_data("avatar", &grp.avatar);
             c.members = grp.members.clone();
             c.admins = grp.admins.clone();
             c.v = grp.v;
@@ -2037,9 +2121,9 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> Option<Chat> {
                 c.left = true;
             }
             save_chat(c.clone()).await;
-            Some(c)
+            (Some(c), true)
         }
-        other => other,
+        other => (other, false),
     }
 }
 
@@ -2069,7 +2153,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 c.profile_name = profile.name.chars().take(40).collect();
                 c.about = profile.about.chars().take(140).collect();
                 c.avatar = if profile.avatar.len() <= 60_000 {
-                    profile.avatar.clone()
+                    safe_data("avatar", &profile.avatar)
                 } else {
                     String::new()
                 };
@@ -2132,7 +2216,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 kind: kind.clone(),
                 text: text.chars().take(700).collect(),
                 bg: bg.clone(),
-                data: data.clone(),
+                data: safe_data("image", data),
                 at: *at,
                 ..Default::default()
             };
@@ -2158,7 +2242,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
     }
 
     // Le reste appartient à une discussion.
-    let c = match (&wire.grp, &wire.g) {
+    let (c, applied) = match (&wire.grp, &wire.g) {
         (Some(grp), _) => {
             // L'annonce « vous a ajouté » se range juste avant le premier message.
             let at = match &wire.body {
@@ -2167,11 +2251,16 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             };
             group_chat(from, grp, at).await
         }
-        (None, Some(g)) => chat(&format!("g:{g}")),
-        (None, None) => Some(ensure_direct_chat(from).await),
+        (None, Some(g)) => (chat(&format!("g:{g}")), false),
+        // Un message de groupe hors d'un groupe : ignoré.
+        (None, None) if matches!(wire.body, Body::Group { .. }) => return,
+        (None, None) => (Some(ensure_direct_chat(from).await), false),
     };
     let Some(mut c) = c else { return };
-    if c.group && !c.members.iter().any(|x| x == from) && !matches!(wire.body, Body::Group { .. }) {
+    // Dans un groupe, seuls ses membres parlent ; qui vient de le quitter
+    // (sa description appliquée à l'instant) l'annonce encore.
+    let leaving = applied && matches!(&wire.body, Body::Group { op, .. } if op == "leave");
+    if c.group && !c.members.iter().any(|x| x == from) && !leaving {
         return;
     }
 
@@ -2197,6 +2286,13 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 "text".into()
             };
             let at = at.min(ts + 60_000.0);
+            // Une clé Brocolis partagée garde sa clé ; le reste, seulement des
+            // données `data:` du bon type.
+            let data = if shared_key {
+                content.data
+            } else {
+                safe_data(&kind, &content.data)
+            };
             let mut m = Message {
                 chat: c.id.clone(),
                 id: id.clone(),
@@ -2204,7 +2300,9 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 at,
                 kind,
                 text: content.text.chars().take(65_536).collect(),
-                data: content.data,
+                // Une clé Brocolis partagée garde sa clé ; le reste, seulement
+                // des données `data:` du bon type.
+                data,
                 name: content.name,
                 mime: content.mime,
                 size: content.size,
@@ -2224,6 +2322,20 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             };
             if let Some(ttl) = wire.ttl {
                 m.exp = Some(at + ttl as f64 * 1000.0);
+            }
+            // La citation : celle de notre copie du message cité, jamais ce
+            // que l'expéditeur prétend (« Vous : je te dois 500 € »).
+            if let Some(r) = m.reply.as_mut() {
+                match get_message(&c.id, &r.id).await {
+                    Some(orig) => {
+                        r.from = orig.from.clone();
+                        r.text = readable(&orig).chars().take(140).collect();
+                    }
+                    None => {
+                        r.from = String::new();
+                        r.text = r.text.chars().take(140).collect();
+                    }
+                }
             }
             open_message(&mut m);
             if let Some(mut sender) = contact(from)
@@ -2318,7 +2430,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 return;
             }
             let text: String = text.chars().take(65_536).collect();
-            let o = open_brocolis(&text);
+            let o = open_brocolis(&c.id, &text);
             m.bro = o.opened > 0;
             m.text = o.text;
             m.edited = true;
@@ -2353,12 +2465,14 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                     ts,
                 )
                 .await;
-            } else if op != "create" && !note.is_empty() {
-                let note = match note.strip_prefix("Vous avez") {
-                    Some(rest) => format!("{} a{rest}", display_name(from)),
-                    None => note,
-                };
-                system_message(&c.id, &note, ts).await;
+            } else if op != "create" && applied && c.group {
+                // Seulement les annonces que Talka écrit (« Vous avez ajouté
+                // Bob »), d'un admin dont la mise à jour vient d'être
+                // appliquée : pas de faux message système.
+                if let Some(rest) = note.strip_prefix("Vous avez ") {
+                    let rest: String = rest.chars().take(200).collect();
+                    system_message(&c.id, &format!("{} a {rest}", display_name(from)), ts).await;
+                }
             }
             emit(Ev::Chats);
         }
@@ -2514,6 +2628,12 @@ pub async fn import_backup(password: &str, file: &str) -> Result<(), String> {
     // doit plus réveiller ce navigateur (la nouvelle se réabonne).
     crate::push::forget().await;
     store::restore(&data["data"]).await;
+    // Le code de la sauvegarde n'est peut-être pas celui de cet appareil : la
+    // clé de l'appareil n'est plus protégée par l'ancien ; le code restauré
+    // la protégera au prochain déverrouillage (une passkey, elle, reste).
+    if store::lock().await == store::Lock::Code {
+        store::protect(store::NewLock::None).await;
+    }
     Ok(())
 }
 
