@@ -67,6 +67,8 @@ public final class Engine {
     @ObservationIgnored var receipts: [String: Set<String>] = [:]
     @ObservationIgnored var receiptTask: Task<Void, Never>?
     @ObservationIgnored var sweeper: Task<Void, Never>?
+    /// Le dernier effacement des messages trop vieux (0 : au prochain passage).
+    @ObservationIgnored var lastPrune: Double = 0
     /// L'appareil v3 et les sessions (chargées contact par contact).
     @ObservationIgnored var v3: V3Engine?
     /// Les paquets v3 demandés au relais : (paquet vérifié ou aucun, heure).
@@ -185,6 +187,18 @@ public final class Engine {
             }
             if changed { refreshLast(chat.id); bump(chat.id) }
         }
+        // Les messages trop vieux (3 mois par défaut), une fois par heure.
+        if settings.keepDays > 0, t - lastPrune >= 3_600_000 {
+            lastPrune = t
+            for chat in chats.values {
+                var changed = false
+                for m in store.messagesOf(chat.id) where m.tooOld(keepDays: settings.keepDays, now: t) {
+                    store.removeMessage(chat.id, m.id)
+                    changed = true
+                }
+                if changed { refreshLast(chat.id); bump(chat.id) }
+            }
+        }
         for s in store.all("statuses", as: StatusItem.self) where s.at + dayMs < t {
             store.remove("statuses", s.key)
         }
@@ -197,9 +211,14 @@ public final class Engine {
     }
 
     public func saveSettings(_ f: (inout Settings) -> Void) {
+        let keep = settings.keepDays
         f(&settings)
         store.write("kv", "settings", settings)
         relay.hidden = settings.hideOnline
+        if settings.keepDays != keep {
+            lastPrune = 0
+            sweep()
+        }
     }
 
     public func saveProfile(_ f: (inout Profile) -> Void) {
