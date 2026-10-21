@@ -174,6 +174,7 @@ impl Browser {
                             avatar: String::new(),
                             v: 2,
                         },
+                        jeton: String::new(),
                     });
                     let bundle = self.bundle.clone();
                     assert!(self.send_wire(phone, &profile, bundle.as_ref()).await);

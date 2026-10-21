@@ -40,6 +40,38 @@ final class CompatTests: XCTestCase {
         XCTAssertNil(TalkaCrypto.open(a, peerCode: b.code, peerDh: b.dh, body: v["sealed_a_to_b"] as! String))
     }
 
+    /// L'expéditeur scellé : ce que le navigateur a scellé s'ouvre ici, et
+    /// réciproquement ; son jeton de remise se vérifie.
+    func testSealedSenderWithTheBrowser() throws {
+        let a = try identity("a"), b = try identity("b"), scelle = try XCTUnwrap(v["scelle"] as? [String: Any])
+        let opened = try XCTUnwrap(TalkaCrypto.openSealed(b, try XCTUnwrap(scelle["a_to_b"] as? String)))
+        XCTAssertEqual(opened.from, a.code)
+        XCTAssertEqual(opened.body, v["sealed_a_to_b"] as? String)
+        XCTAssertEqual(TalkaCrypto.open(b, peerCode: opened.from, peerDh: a.dh, body: opened.body), v["plain"] as? String)
+        XCTAssertNil(TalkaCrypto.openSealed(a, scelle["a_to_b"] as! String))
+
+        let jeton = try XCTUnwrap(scelle["jeton_a"] as? String)
+        XCTAssertTrue(TalkaCrypto.verifyJeton(to: a.code, sign: a.sign, dh: a.dh, jeton: jeton))
+        XCTAssertFalse(TalkaCrypto.verifyJeton(to: b.code, sign: b.sign, dh: b.dh, jeton: jeton))
+        // Le même nonce que le navigateur (la signature, elle, varie).
+        XCTAssertEqual(a.jeton.split(separator: ".").first, jeton.split(separator: ".").first)
+        XCTAssertTrue(TalkaCrypto.verifyJeton(to: a.code, sign: a.sign, dh: a.dh, jeton: a.jeton))
+
+        // Dans l'autre sens, et quelqu'un qui se fait passer pour A.
+        let inner = try XCTUnwrap(TalkaCrypto.seal(b, peerCode: a.code, peerDh: a.dh, plain: "{}"))
+        let sealed = try XCTUnwrap(TalkaCrypto.sealSender(from: b.code, to: a.code, toDh: a.dh, body: inner))
+        XCTAssertFalse(sealed.contains(b.code))
+        let back = try XCTUnwrap(TalkaCrypto.openSealed(a, sealed))
+        XCTAssertEqual(back.from, b.code)
+        XCTAssertEqual(TalkaCrypto.open(a, peerCode: back.from, peerDh: b.dh, body: back.body), "{}")
+        let c = Identity.create()
+        let forged = try XCTUnwrap(TalkaCrypto.sealSender(
+            from: b.code, to: a.code, toDh: a.dh,
+            body: try XCTUnwrap(TalkaCrypto.seal(c, peerCode: a.code, peerDh: a.dh, plain: "{}"))))
+        let claimed = try XCTUnwrap(TalkaCrypto.openSealed(a, forged))
+        XCTAssertNil(TalkaCrypto.open(a, peerCode: claimed.from, peerDh: b.dh, body: claimed.body))
+    }
+
     func testSealBothWays() throws {
         let a = try identity("a"), b = try identity("b")
         let sealed = try XCTUnwrap(TalkaCrypto.seal(b, peerCode: a.code, peerDh: a.dh, plain: "{\"k\":\"typing\",\"on\":true}"))

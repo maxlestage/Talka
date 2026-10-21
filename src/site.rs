@@ -204,7 +204,7 @@ fn row(what: &str, now: &str, next: &str) -> Element {
         .child(td().class("next").text(next.to_owned()))
 }
 
-/// Une étape de la v4, avec son état (« En cours », « Prévu »).
+/// Une étape de la v4, avec son état (« Disponible », « En cours », « Prévu »).
 fn milestone(n: &str, state: &str, icon: &str, title: &str, text: &str) -> Element {
     article()
         .class("feature milestone reveal")
@@ -214,10 +214,10 @@ fn milestone(n: &str, state: &str, icon: &str, title: &str, text: &str) -> Eleme
                 .child(div().class("feature-icon").text(icon.to_owned()))
                 .child(
                     span()
-                        .class(if state == "En cours" {
-                            "milestone-state now"
-                        } else {
-                            "milestone-state"
+                        .class(match state {
+                            "Disponible" => "milestone-state done",
+                            "En cours" => "milestone-state now",
+                            _ => "milestone-state",
                         })
                         .text(format!("{n} · {state}")),
                 ),
@@ -392,11 +392,12 @@ pub fn home(site: &Site) -> Page {
         .child(
             div()
                 .class("wrap")
-                .child(span().class("kicker").text("En préparation : Talka v4"))
+                .child(span().class("kicker").text("Talka v4, étape par étape"))
                 .child(h2().text("Un relais qui ne sait plus rien."))
                 .child(p().class("lead").text(
                     "Aujourd'hui déjà, le relais ne lit rien et ne connaît ni votre numéro ni votre nom. \
-                     La v4 va plus loin : il ne saura plus qui écrit, ni vraiment à qui. \
+                     La v4 va plus loin : entre contacts, il ne sait déjà plus qui écrit ; \
+                     bientôt, il ne saura plus vraiment à qui. \
                      Elle arrive par étapes, chacune publiée seulement une fois testée.",
                 ))
                 .child(
@@ -405,7 +406,7 @@ pub fn home(site: &Site) -> Page {
                         .child(
                             thead().child(
                                 tr().child(th().text("Ce que voit le relais"))
-                                    .child(th().text("Aujourd'hui (v3)"))
+                                    .child(th().text("Aujourd'hui"))
                                     .child(th().text("Avec la v4")),
                             ),
                         )
@@ -413,7 +414,7 @@ pub fn home(site: &Site) -> Page {
                             tbody()
                                 .child(row("Votre numéro, votre e-mail", "Jamais", "Jamais"))
                                 .child(row("Le contenu des messages", "Chiffré, illisible", "Chiffré, illisible"))
-                                .child(row("Qui écrit", "Le code de l'expéditeur", "Personne : l'auteur n'est prouvé qu'au destinataire"))
+                                .child(row("Qui écrit", "Personne, entre contacts (un premier message à un inconnu montre encore son auteur)", "Personne"))
                                 .child(row("À qui", "Le code du destinataire", "Une boîte aux lettres qui change chaque jour"))
                                 .child(row("Les notifications", "Pas de notification app fermée", "Un simple réveil, sans nom ni texte")),
                         ),
@@ -423,7 +424,7 @@ pub fn home(site: &Site) -> Page {
                         .class("features roadmap")
                         .child(milestone("1", "En cours", "🔔", "Notifications sans fuite", "Recevoir ses messages app fermée, sur l'ordinateur et l'iPhone. La notification ne contient rien : c'est votre appareil qui déchiffre et affiche."))
                         .child(milestone("2", "Prévu", "📱", "Plusieurs appareils", "Le même compte sur l'iPhone et l'ordinateur, liés par un QR code. Chaque appareil a ses propres clés ; chaque message part chiffré pour chacun."))
-                        .child(milestone("3", "Prévu", "🕶️", "Expéditeur scellé", "Le relais ne voit plus qui envoie : un jeton de remise prouve qu'on a le droit d'écrire, sans dire qui l'on est."))
+                        .child(milestone("3", "Disponible", "🕶️", "Expéditeur scellé", "Le relais ne voit plus qui envoie : un jeton de remise, donné seulement à vos contacts, prouve qu'on a le droit d'écrire, sans dire qui l'on est."))
                         .child(milestone("4", "Prévu", "📮", "Boîtes aux lettres tournantes", "Entre contacts, les messages ne sont plus adressés à votre code mais à une boîte pseudonyme renouvelée chaque jour.")),
                 )
                 .child(p().class("muted small").text(

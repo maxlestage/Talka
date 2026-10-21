@@ -265,6 +265,142 @@ pub fn open(me: &Identity, peer_code: &str, peer_dh: &str, body: &str) -> Option
     String::from_utf8(pt).ok()
 }
 
+// ----- L'expéditeur scellé (v4) -----------------------------------------------
+//
+// Le relais ne doit plus savoir qui écrit. L'enveloppe ordinaire (ci-dessus,
+// v3 compris) est mise dans une seconde enveloppe, ouverte seulement par le
+// destinataire : clé éphémère P-256, ECDH avec sa clé de chiffrement,
+// HKDF-SHA256, AES-256-GCM. Elle contient le code de l'expéditeur ; c'est
+// l'enveloppe intérieure qui le prouve (sa clé de paire et ses données
+// associées « expéditeur>destinataire »), comme avant.
+//
+// Pour ne pas ouvrir à n'importe qui un envoi anonyme, le relais exige un
+// jeton de remise : signé par la clé du code destinataire, donné seulement à
+// ses contacts (dans son profil chiffré). Le relais le vérifie sans rien
+// garder (il survit à ses redémarrages).
+
+/// Ce que signe un code pour son jeton de remise.
+pub fn jeton_message(code: &str, nonce: &str) -> Vec<u8> {
+    format!("talka-jeton:{code}:{nonce}").into_bytes()
+}
+
+/// L'ensemble de l'enveloppe scellée (en clair, une fois ouverte).
+#[derive(Serialize, Deserialize)]
+struct SealedSender {
+    from: String,
+    body: String,
+}
+
+fn sealed_key(shared: &[u8], eph: &[u8], to_dh: &[u8], to: &str) -> Option<Aes256Gcm> {
+    let salt = [eph, to_dh].concat();
+    let hk = Hkdf::<Sha256>::new(Some(&salt), shared);
+    let mut key = [0u8; 32];
+    hk.expand(format!("talka-scelle-v1:{to}").as_bytes(), &mut key)
+        .ok()?;
+    Aes256Gcm::new_from_slice(&key).ok()
+}
+
+impl Identity {
+    /// Le jeton de remise de ce code : `nonce.signature` (base64). Le nonce
+    /// est tiré de la clé privée : toujours le même jeton, rien à garder.
+    pub fn jeton(&self) -> String {
+        let Some(dh) = unb64(&self.dh_priv) else {
+            return String::new();
+        };
+        let digest = Sha256::digest([b"talka-jeton-nonce:".as_slice(), &dh].concat());
+        let nonce = b64(&digest[..16]);
+        let sig = self.sign(&jeton_message(&self.code, &nonce));
+        if sig.is_empty() {
+            return String::new();
+        }
+        format!("{nonce}.{sig}")
+    }
+}
+
+/// Le jeton est-il bien signé par la clé du code `to` (dont on donne les deux
+/// clés publiques) ? Ce que vérifie le relais (`talka::code::verify_jeton`).
+pub fn verify_jeton(to: &str, sign: &str, dh: &str, jeton: &str) -> bool {
+    let (Some(s), Some(d)) = (unb64(sign), unb64(dh)) else {
+        return false;
+    };
+    let Some((nonce, sig)) = jeton.split_once('.') else {
+        return false;
+    };
+    if s.len() != 65 || d.len() != 65 || code_of(&s, &d) != to || nonce.len() > 64 {
+        return false;
+    }
+    let (Ok(key), Some(sig)) = (
+        VerifyingKey::from_sec1_bytes(&s),
+        unb64(sig).and_then(|b| Signature::from_slice(&b).ok()),
+    ) else {
+        return false;
+    };
+    key.verify(&jeton_message(to, nonce), &sig).is_ok()
+}
+
+/// Scelle `body` (une enveloppe ordinaire de `from` pour `to`) :
+/// base64(éphémère (65) ‖ iv (12) ‖ chiffré).
+pub fn seal_sender(from: &str, to: &str, to_dh: &str, body: &str) -> Option<String> {
+    let to_dh_raw = unb64(to_dh)?;
+    let public = PublicKey::from_sec1_bytes(&to_dh_raw).ok()?;
+    let eph = SecretKey::random(&mut OsRng);
+    let eph_raw = raw(&eph.public_key());
+    let shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
+    let cipher = sealed_key(shared.raw_secret_bytes(), &eph_raw, &to_dh_raw, to)?;
+    let plain = serde_json::to_string(&SealedSender {
+        from: from.to_owned(),
+        body: body.to_owned(),
+    })
+    .ok()?;
+    let iv = random_bytes(12);
+    let ad = format!("talka-scelle:{to}");
+    let ct = cipher
+        .encrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: plain.as_bytes(),
+                aad: ad.as_bytes(),
+            },
+        )
+        .ok()?;
+    let mut out = eph_raw;
+    out.extend(iv);
+    out.extend(ct);
+    Some(b64(&out))
+}
+
+/// Ouvre une enveloppe scellée pour nous : (code de l'expéditeur, enveloppe
+/// ordinaire). L'expéditeur n'est prouvé qu'en ouvrant ensuite celle-ci.
+pub fn open_sealed(me: &Identity, sealed: &str) -> Option<(String, String)> {
+    let bytes = unb64(sealed)?;
+    if bytes.len() < 65 + 12 + 16 {
+        return None;
+    }
+    let (eph_raw, rest) = bytes.split_at(65);
+    let public = PublicKey::from_sec1_bytes(eph_raw).ok()?;
+    let secret = me.dh_key()?;
+    let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+    let cipher = sealed_key(
+        shared.raw_secret_bytes(),
+        eph_raw,
+        &unb64(&me.dh)?,
+        &me.code,
+    )?;
+    let ad = format!("talka-scelle:{}", me.code);
+    let pt = cipher
+        .decrypt(
+            Nonce::from_slice(&rest[..12]),
+            Payload {
+                msg: &rest[12..],
+                aad: ad.as_bytes(),
+            },
+        )
+        .ok()?;
+    let s: SealedSender = serde_json::from_slice(&pt).ok()?;
+    let from = normalize(&s.from).filter(|c| *c == s.from)?;
+    Some((from, s.body))
+}
+
 // ----- Le code de verrouillage et la sauvegarde ------------------------------
 
 pub const PIN_ROUNDS: u32 = 120_000;
@@ -412,6 +548,66 @@ mod tests {
             Some("[{\"id\":\"k1\"}]")
         );
         assert_eq!(open_keys(&pin_key("0000", &salt), &sealed), None);
+    }
+
+    #[test]
+    fn sealed_sender_hides_the_author_but_cannot_lie_about_it() {
+        let (a, b, c) = (
+            Identity::create(0.0),
+            Identity::create(0.0),
+            Identity::create(0.0),
+        );
+        let inner = seal(&a, &b.code, &b.dh, "{\"t\":\"msg\"}").unwrap();
+        let sealed = seal_sender(&a.code, &b.code, &b.dh, &inner).unwrap();
+        // Rien du code de l'expéditeur ne se voit de l'extérieur.
+        assert!(!sealed.contains(&a.code));
+        assert!(!String::from_utf8_lossy(&unb64(&sealed).unwrap()).contains(&a.code));
+        let (from, body) = open_sealed(&b, &sealed).unwrap();
+        assert_eq!(from, a.code);
+        assert_eq!(
+            open(&b, &from, &a.dh, &body).as_deref(),
+            Some("{\"t\":\"msg\"}")
+        );
+        // Seul le destinataire l'ouvre.
+        assert!(open_sealed(&c, &sealed).is_none());
+        assert!(open_sealed(&a, &sealed).is_none());
+        // Abîmée : refusée.
+        let mut bytes = unb64(&sealed).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        assert!(open_sealed(&b, &b64(&bytes)).is_none());
+        // C se fait passer pour A : l'enveloppe scellée s'ouvre, mais
+        // l'enveloppe intérieure (clé de paire C–B) ne s'ouvre pas au nom de A.
+        let forged_inner = seal(&c, &b.code, &b.dh, "{\"t\":\"msg\"}").unwrap();
+        let forged = seal_sender(&a.code, &b.code, &b.dh, &forged_inner).unwrap();
+        let (claimed, body) = open_sealed(&b, &forged).unwrap();
+        assert_eq!(claimed, a.code);
+        assert!(open(&b, &claimed, &a.dh, &body).is_none());
+        // Deux scellements du même message ne se ressemblent pas.
+        assert_ne!(
+            sealed,
+            seal_sender(&a.code, &b.code, &b.dh, &inner).unwrap()
+        );
+    }
+
+    #[test]
+    fn delivery_token() {
+        let (a, b) = (Identity::create(0.0), Identity::create(0.0));
+        let j = a.jeton();
+        assert_eq!(j, a.jeton(), "toujours le même jeton");
+        assert!(verify_jeton(&a.code, &a.sign, &a.dh, &j));
+        // Pas pour un autre code, ni avec d'autres clés.
+        assert!(!verify_jeton(&b.code, &b.sign, &b.dh, &j));
+        assert!(!verify_jeton(&a.code, &b.sign, &a.dh, &j));
+        assert!(!verify_jeton(&a.code, &a.sign, &a.dh, &b.jeton()));
+        assert!(!verify_jeton(&a.code, &a.sign, &a.dh, "pas-un-jeton"));
+        let (nonce, sig) = j.split_once('.').unwrap();
+        assert!(!verify_jeton(
+            &a.code,
+            &a.sign,
+            &a.dh,
+            &format!("x{nonce}.{sig}")
+        ));
     }
 
     #[test]
