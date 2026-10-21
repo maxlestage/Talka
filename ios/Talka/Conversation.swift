@@ -793,7 +793,15 @@ struct MessageRow: View {
         .padding(.vertical, 6)
         .frame(maxWidth: m.kind == "image" ? 280 : 520, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .background(big ? Color.clear : (mine ? Color.bubbleOut : Color.bubbleIn), in: .rect(cornerRadius: 12))
+        .background {
+            // Translucides : la même couleur, le fond d'écran deviné derrière
+            // (un léger flou garde le texte lisible).
+            if !big {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(.ultraThinMaterial)
+                    .overlay(RoundedRectangle(cornerRadius: 12).fill((mine ? Color.bubbleOut : Color.bubbleIn).opacity(0.78)))
+            }
+        }
         .shadow(color: .black.opacity(big ? 0 : 0.08), radius: 0.5, y: 1)
     }
 
