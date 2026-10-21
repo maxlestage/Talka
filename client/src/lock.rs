@@ -1,6 +1,12 @@
-//! Le code de verrouillage : 4 à 6 chiffres demandés à l'ouverture de Talka
-//! (et au retour, après un délai choisi). Gardé haché (PBKDF2), jamais en
-//! clair. Après 5 essais manqués, il faut attendre de plus en plus longtemps.
+//! Le code de verrouillage : 6 à 12 chiffres (4 ou 5 pour les codes d'avant)
+//! demandés à l'ouverture de Talka (et au retour, après un délai choisi).
+//! Gardé haché (Argon2id), jamais en clair. Après 5 essais manqués, il faut
+//! attendre de plus en plus longtemps.
+//!
+//! Il ne fait pas que cacher l'écran : la clé de l'appareil, qui chiffre
+//! toute la mémoire de Talka, est chiffrée par lui (Argon2id, voir
+//! `store::protect`) : sans le code, les fichiers ne s'ouvrent pas. Une
+//! passkey peut le remplacer pour cette clé (`passkey`).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -8,7 +14,10 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use web_sys::{Element, KeyboardEvent};
 
-use crate::crypto::{PinHash, check_pin, hash_pin};
+use std::future::Future;
+use std::pin::Pin;
+
+use crate::crypto::{PIN_MAX, PinHash, check_pin, hash_pin, pin_is_old};
 use crate::dom::{
     Deferred, document, drop_scope, h, icon, listen, now, replace, scope_into, sleep, toggle_class,
     unique,
@@ -26,6 +35,29 @@ pub async fn set_pin(pin: Option<&str>) {
     }
     // Les clés Brocolis suivent le code : scellées par lui, ou en clair sans.
     crate::core::protect_brocolis(pin).await;
+    // La clé de l'appareil aussi (sauf si une passkey la protège).
+    match (store::lock().await, pin) {
+        (store::Lock::Passkey { .. }, _) => {}
+        (_, Some(p)) => {
+            store::protect(store::NewLock::Code(p)).await;
+        }
+        (store::Lock::Code, None) => {
+            store::protect(store::NewLock::None).await;
+        }
+        (store::Lock::None, None) => {}
+    }
+    store::committed().await;
+}
+
+/// Le bon code vient d'être tapé : un code d'avant est rehaché (Argon2id),
+/// et la clé de l'appareil, si rien ne la protégeait encore, l'est par lui.
+async fn upgrade(pin: &str, stored: &PinHash) {
+    if pin_is_old(stored) {
+        store::write("kv", "pin", &hash_pin(pin)).await;
+    }
+    if store::lock().await == store::Lock::None {
+        store::protect(store::NewLock::Code(pin)).await;
+    }
 }
 
 /// Le code de verrouillage est-il le bon ? (Vrai s'il n'y en a pas.)
@@ -35,7 +67,13 @@ pub async fn check(pin: &str) -> bool {
 
 async fn verify(pin: &str) -> bool {
     match store::read::<PinHash>("kv", "pin").await {
-        Some(stored) => check_pin(pin, &stored),
+        Some(stored) => {
+            let ok = check_pin(pin, &stored);
+            if ok {
+                upgrade(pin, &stored).await;
+            }
+            ok
+        }
         None => true,
     }
 }
@@ -111,7 +149,7 @@ pub fn pin_pad(title: &str, subtitle: &str, on_done: impl Fn(String, Pad) + 'sta
                     return;
                 }
                 d => {
-                    if value.borrow().len() < 6 {
+                    if value.borrow().len() < PIN_MAX {
                         value.borrow_mut().push_str(d);
                     }
                 }
@@ -168,9 +206,27 @@ pub fn pin_pad(title: &str, subtitle: &str, on_done: impl Fn(String, Pad) + 'sta
     pad
 }
 
+type Check = Rc<dyn Fn(String) -> Pin<Box<dyn Future<Output = bool>>>>;
+
 /// L'écran verrouillé : se termine quand le bon code est tapé, et le rend
 /// (il ouvre les clés Brocolis).
 pub async fn lock_screen() -> String {
+    screen(Rc::new(|pin: String| {
+        Box::pin(async move { verify(&pin).await })
+    }))
+    .await
+}
+
+/// Talka s'ouvre et sa mémoire est protégée par le code : il ouvre la clé
+/// de l'appareil (Argon2id, une demi-seconde environ) avant tout le reste.
+pub async fn unlock_screen() -> String {
+    screen(Rc::new(|pin: String| {
+        Box::pin(async move { store::unlock_code(&pin).await })
+    }))
+    .await
+}
+
+async fn screen(check: Check) -> String {
     let host = h("div.lock-screen").el();
     let _ = document().body().expect("body").append_child(&host);
     let d = Deferred::<String>::new();
@@ -182,7 +238,13 @@ pub async fn lock_screen() -> String {
         "Talka est verrouillé",
         "Entrez votre code",
         move |pin, pad| {
-            let (s, fails, until, host) = (s.clone(), fails.clone(), until.clone(), h2.clone());
+            let (s, fails, until, host, check) = (
+                s.clone(),
+                fails.clone(),
+                until.clone(),
+                h2.clone(),
+                check.clone(),
+            );
             crate::dom::spawn(async move {
                 if now() < until.get() {
                     pad.error(&format!(
@@ -191,8 +253,9 @@ pub async fn lock_screen() -> String {
                     ));
                     return;
                 }
-                sleep(10).await;
-                if verify(&pin).await {
+                pad.info("Vérification…");
+                sleep(30).await;
+                if check(pin.clone()).await {
                     pad.destroy();
                     host.remove();
                     s.send(Some(pin));
