@@ -15,7 +15,9 @@
 //
 // Chiffrée au repos, en plus de la protection d'iOS : chaque JSON est gardé
 // chiffré (AES-256-GCM, lié à son magasin et à sa clé) avec la clé de
-// l'appareil, tenue dans le trousseau (`StoreVault`), jamais dans la base.
+// l'appareil, tenue dans le trousseau (`StoreVault`, pour cet iPhone
+// seulement, au besoin derrière Face ID), jamais dans la base ; la base est
+// exclue des sauvegardes de l'iPhone.
 // Talka le déchiffre en mémoire pour l'afficher ; une copie du fichier
 // (sauvegarde non chiffrée de l'iPhone, extraction du disque) n'en montre
 // rien. Les lignes d'avant (du texte en clair) sont réécrites chiffrées une
@@ -46,7 +48,7 @@ public final class Store: @unchecked Sendable {
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
     /// La clé de l'appareil (nil : rien n'est chiffré).
-    let key: SymmetricKey?
+    public let key: SymmetricKey?
     /// Des lignes chiffrées, mais pas de clé pour les lire : on n'écrit plus
     /// rien (surtout pas une nouvelle identité par-dessus l'ancienne).
     var readOnly = false
@@ -56,6 +58,14 @@ public final class Store: @unchecked Sendable {
         dir = directory
         self.key = key
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        #if os(iOS)
+        // Ni iCloud ni la sauvegarde de l'iPhone : la sauvegarde Talka
+        // (chiffrée par votre mot de passe) est faite pour ça.
+        var url = dir
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+        #endif
         openDatabase()
         migrateJSONFiles()
         sealPlainRows()

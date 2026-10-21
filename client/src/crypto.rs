@@ -183,10 +183,37 @@ pub fn verify_keys(code: &str, sign: &str, dh: &str) -> bool {
     }
 }
 
-/// Le numéro de sécurité d'une conversation, le même des deux côtés.
-pub fn safety_number(a: &str, b: &str) -> String {
-    let (a, b) = if a < b { (a, b) } else { (b, a) };
-    let h = Sha256::digest(format!("talka-safety:{a}:{b}").as_bytes());
+/// L'empreinte des clés d'un code, mise dans les liens d'invitation (96
+/// bits, base64url, 16 caractères). Le code seul ne compte que 50 bits :
+/// avec l'empreinte, quelqu'un qui trouverait d'autres clés donnant le même
+/// code est démasqué à l'ajout.
+pub fn fingerprint(sign: &str, dh: &str) -> String {
+    let h = Sha256::digest(format!("talka-empreinte:{sign}:{dh}").as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&h[..12])
+}
+
+/// Une empreinte bien formée (16 caractères base64url).
+pub fn valid_fingerprint(fp: &str) -> bool {
+    fp.len() == 16
+        && fp
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Le numéro de sécurité d'une conversation, le même des deux côtés. Il
+/// porte sur les clés publiques complètes (`code`, `sign`, `dh` de chacun),
+/// pas seulement sur les codes : un code ne compte que 50 bits, et
+/// quelqu'un qui trouverait d'autres clés donnant le même code aurait un
+/// autre numéro.
+pub fn safety_number(a: (&str, &str, &str), b: (&str, &str, &str)) -> String {
+    let (a, b) = if a.0 < b.0 { (a, b) } else { (b, a) };
+    let h = Sha256::digest(
+        format!(
+            "talka-safety-v2:{}:{}:{}|{}:{}:{}",
+            a.0, a.1, a.2, b.0, b.1, b.2
+        )
+        .as_bytes(),
+    );
     (0..12)
         .map(|i| {
             format!(
@@ -406,17 +433,32 @@ pub fn open_sealed(me: &Identity, sealed: &str) -> Option<(String, String)> {
 // Ce que la notification affiche (« Léa : Bonjour »), chiffré par
 // l'expéditeur pour la clé de notification du destinataire : une clé P-256
 // tirée et gardée par le service worker du navigateur (non exportable), dont
-// la moitié publique voyage dans le profil chiffré. Même construction que
-// l'enveloppe scellée (éphémère, ECDH, HKDF-SHA256, AES-256-GCM), avec ses
-// propres étiquettes ; le service worker l'ouvre avec WebCrypto.
-// Sans confidentialité persistante : la clé de notification ne change pas.
-// Elle ne sert qu'à cet aperçu, jamais aux messages.
+// la moitié publique voyage dans le profil chiffré. Le service worker l'ouvre
+// avec WebCrypto.
+//
+// Authentifié : la clé mêle un ECDH éphémère et un ECDH avec la clé
+// d'identité (`dh`) de l'expéditeur. Seul qui détient la clé privée d'un
+// contact peut faire afficher un aperçu en son nom ; le service worker ne
+// connaît que vos contacts (leur `dh`, donnés par Talka). Sans
+// confidentialité persistante : la clé de notification ne change pas. Elle
+// ne sert qu'à cet aperçu, jamais aux messages.
+//
+// base64(0x02 ‖ code de l'expéditeur (10) ‖ éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag)
 
-fn apercu_key(shared: &[u8], eph: &[u8], nk: &[u8]) -> Option<Aes256Gcm> {
+const APERCU_V: u8 = 2;
+
+fn apercu_key(
+    eph_shared: &[u8],
+    static_shared: &[u8],
+    eph: &[u8],
+    nk: &[u8],
+    from: &str,
+) -> Option<Aes256Gcm> {
     let salt = [eph, nk].concat();
+    let ikm = [eph_shared, static_shared].concat();
     let mut key = [0u8; 32];
-    Hkdf::<Sha256>::new(Some(&salt), shared)
-        .expand(b"talka-apercu-v1", &mut key)
+    Hkdf::<Sha256>::new(Some(&salt), &ikm)
+        .expand(format!("talka-apercu-v2:{from}").as_bytes(), &mut key)
         .ok()?;
     Aes256Gcm::new_from_slice(&key).ok()
 }
@@ -426,57 +468,82 @@ pub fn valid_nk(nk: &str) -> bool {
     unb64(nk).is_some_and(|b| b.len() == 65 && PublicKey::from_sec1_bytes(&b).is_ok())
 }
 
-/// Chiffre un aperçu (du JSON) pour la clé de notification `nk` (65 octets,
-/// base64) : base64(éphémère (65) ‖ iv (12) ‖ chiffré ‖ tag).
-pub fn seal_apercu(nk: &str, plain: &str) -> Option<String> {
+/// Chiffre un aperçu (du JSON) de `me` pour la clé de notification `nk`.
+pub fn seal_apercu(me: &Identity, nk: &str, plain: &str) -> Option<String> {
     let nk_raw = unb64(nk)?;
     let public = PublicKey::from_sec1_bytes(&nk_raw).ok()?;
+    if me.code.len() != 10 {
+        return None;
+    }
     let eph = SecretKey::random(&mut OsRng);
     let eph_raw = raw(&eph.public_key());
-    let shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
-    let cipher = apercu_key(shared.raw_secret_bytes(), &eph_raw, &nk_raw)?;
+    let eph_shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
+    let static_shared =
+        p256::ecdh::diffie_hellman(me.dh_key()?.to_nonzero_scalar(), public.as_affine());
+    let cipher = apercu_key(
+        eph_shared.raw_secret_bytes(),
+        static_shared.raw_secret_bytes(),
+        &eph_raw,
+        &nk_raw,
+        &me.code,
+    )?;
     let iv = random_bytes(12);
+    let aad = format!("talka-apercu:{}", me.code);
     let ct = cipher
         .encrypt(
             Nonce::from_slice(&iv),
             Payload {
                 msg: plain.as_bytes(),
-                aad: b"talka-apercu",
+                aad: aad.as_bytes(),
             },
         )
         .ok()?;
-    let mut out = eph_raw;
+    let mut out = vec![APERCU_V];
+    out.extend(me.code.as_bytes());
+    out.extend(eph_raw);
     out.extend(iv);
     out.extend(ct);
     Some(b64(&out))
 }
 
 /// Ouvre un aperçu avec la clé privée de notification (32 octets) : ce que
-/// fait le service worker, ici pour les tests et les vecteurs.
-pub fn open_apercu(nk_priv: &[u8], sealed: &str) -> Option<String> {
+/// fait le service worker, ici pour les tests et les vecteurs. `dh_of`
+/// donne la clé `dh` d'un contact connu ; un inconnu, un faussaire ou un
+/// aperçu abîmé : `None`. Renvoie (code de l'expéditeur, aperçu).
+pub fn open_apercu(
+    nk_priv: &[u8],
+    sealed: &str,
+    dh_of: impl Fn(&str) -> Option<String>,
+) -> Option<(String, String)> {
     let bytes = unb64(sealed)?;
-    if bytes.len() < 65 + 12 + 16 {
+    if bytes.len() < 1 + 10 + 65 + 12 + 16 || bytes[0] != APERCU_V {
         return None;
     }
+    let from = std::str::from_utf8(&bytes[1..11]).ok()?.to_owned();
+    let from_dh = PublicKey::from_sec1_bytes(&unb64(&dh_of(&from)?)?).ok()?;
     let secret = SecretKey::from_slice(nk_priv).ok()?;
-    let (eph_raw, rest) = bytes.split_at(65);
-    let public = PublicKey::from_sec1_bytes(eph_raw).ok()?;
-    let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+    let (eph_raw, rest) = bytes[11..].split_at(65);
+    let eph = PublicKey::from_sec1_bytes(eph_raw).ok()?;
+    let eph_shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), eph.as_affine());
+    let static_shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), from_dh.as_affine());
     let cipher = apercu_key(
-        shared.raw_secret_bytes(),
+        eph_shared.raw_secret_bytes(),
+        static_shared.raw_secret_bytes(),
         eph_raw,
         &raw(&secret.public_key()),
+        &from,
     )?;
+    let aad = format!("talka-apercu:{from}");
     let pt = cipher
         .decrypt(
             Nonce::from_slice(&rest[..12]),
             Payload {
                 msg: &rest[12..],
-                aad: b"talka-apercu",
+                aad: aad.as_bytes(),
             },
         )
         .ok()?;
-    String::from_utf8(pt).ok()
+    Some((from, String::from_utf8(pt).ok()?))
 }
 
 // ----- La mémoire de l'appareil, chiffrée au repos ---------------------------
@@ -545,62 +612,185 @@ fn pbkdf2(secret: &str, salt: &[u8], rounds: u32) -> [u8; 32] {
     out
 }
 
-/// Le code de verrouillage, haché : jamais gardé en clair.
+/// Argon2id (RFC 9106) : lent et gourmand en mémoire, pour qu'un code
+/// volé avec les fichiers ne se devine pas à la chaîne (une carte graphique
+/// n'y gagne presque rien). 19 Mio, 2 passes : les réglages minimum de
+/// l'OWASP, environ une demi-seconde dans un navigateur.
+pub const ARGON_M: u32 = 19_456;
+pub const ARGON_T: u32 = 2;
+
+/// 32 octets tirés d'un code par Argon2id.
+pub fn argon2id(secret: &str, salt: &[u8], m: u32, t: u32) -> Option<[u8; 32]> {
+    let params = argon2::Params::new(m, t, 1, Some(32)).ok()?;
+    let mut out = [0u8; 32];
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+        .hash_password_into(secret.as_bytes(), salt, &mut out)
+        .ok()?;
+    Some(out)
+}
+
+/// Le code de verrouillage, haché : jamais gardé en clair. `v` 2 : Argon2id
+/// (`m`, `t`) ; absent : PBKDF2 (les codes d'avant, rehachés au premier
+/// déverrouillage).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PinHash {
     pub salt: String,
     pub hash: String,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub v: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub m: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub t: u32,
 }
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+/// Les nouveaux codes : 6 chiffres au moins (les anciens de 4 ou 5 restent
+/// acceptés au déverrouillage).
+pub const PIN_MIN: usize = 6;
+pub const PIN_MAX: usize = 12;
 
 pub fn hash_pin(pin: &str) -> PinHash {
     let salt = random_bytes(16);
     PinHash {
-        hash: b64(&pbkdf2(pin, &salt, PIN_ROUNDS)),
+        hash: b64(&argon2id(pin, &salt, ARGON_M, ARGON_T).unwrap_or_default()),
         salt: b64(&salt),
+        v: 2,
+        m: ARGON_M,
+        t: ARGON_T,
     }
 }
 
-pub fn check_pin(pin: &str, stored: &PinHash) -> bool {
-    let Some(salt) = unb64(&stored.salt) else {
-        return false;
-    };
-    b64(&pbkdf2(pin, &salt, PIN_ROUNDS)) == stored.hash
+/// Comparaison en temps constant.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Une sauvegarde : un mot de passe → PBKDF2 → AES-256-GCM.
+pub fn check_pin(pin: &str, stored: &PinHash) -> bool {
+    let (Some(salt), Some(hash)) = (unb64(&stored.salt), unb64(&stored.hash)) else {
+        return false;
+    };
+    let got = match stored.v {
+        0 | 1 => pbkdf2(pin, &salt, PIN_ROUNDS),
+        2 if stored.m >= 8 && stored.m <= 1 << 20 && (1..=10).contains(&stored.t) => {
+            match argon2id(pin, &salt, stored.m, stored.t) {
+                Some(h) => h,
+                None => return false,
+            }
+        }
+        _ => return false,
+    };
+    same(&got, &hash)
+}
+
+/// Un code d'avant (PBKDF2) : à rehacher avec Argon2id.
+pub fn pin_is_old(stored: &PinHash) -> bool {
+    stored.v < 2
+}
+
+// ----- La clé de l'appareil, protégée par le code ou une passkey -------------
+//
+// La clé de l'appareil (qui chiffre la mémoire, voir `seal_row`) peut être
+// chiffrée en plus par une clé que seul l'utilisateur apporte : Argon2id du
+// code de verrouillage, ou la sortie PRF d'une passkey. Sans elle, les
+// fichiers de Talka ne s'ouvrent pas, même avec le navigateur.
+
+/// La clé tirée de la sortie PRF d'une passkey (32 octets ou plus).
+pub fn passkey_key(prf: &[u8]) -> Option<[u8; 32]> {
+    let mut key = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(b"talka-passkey"), prf)
+        .expand(b"talka-cle-v1", &mut key)
+        .ok()?;
+    Some(key)
+}
+
+/// Chiffre la clé de l'appareil par la clé de l'utilisateur :
+/// iv (12) ‖ chiffré ‖ tag.
+pub fn lock_device_key(user_key: &[u8], device_key: &[u8]) -> Option<Vec<u8>> {
+    let iv = random_bytes(12);
+    let ct = Aes256Gcm::new_from_slice(user_key)
+        .ok()?
+        .encrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: device_key,
+                aad: b"talka-cle",
+            },
+        )
+        .ok()?;
+    Some([iv, ct].concat())
+}
+
+/// La clé de l'appareil, si c'est la bonne clé de l'utilisateur.
+pub fn unlock_device_key(user_key: &[u8], locked: &[u8]) -> Option<Vec<u8>> {
+    if locked.len() != 12 + 32 + 16 {
+        return None;
+    }
+    Aes256Gcm::new_from_slice(user_key)
+        .ok()?
+        .decrypt(
+            Nonce::from_slice(&locked[..12]),
+            Payload {
+                msg: &locked[12..],
+                aad: b"talka-cle",
+            },
+        )
+        .ok()
+}
+
+/// Une sauvegarde : un mot de passe → Argon2id (`talka` 3 ; PBKDF2 pour
+/// les fichiers d'avant, `talka` 2) → AES-256-GCM. Elle contient la clé
+/// d'identité : Argon2id la rend bien plus chère à attaquer hors ligne.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Backup {
     pub talka: u32,
     pub salt: String,
     pub iv: String,
     pub data: String,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub m: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub t: u32,
 }
+
+/// Argon2id pour la sauvegarde : 46 Mio, 1 passe (une option de l'OWASP).
+pub const BACKUP_M: u32 = 47_104;
+pub const BACKUP_T: u32 = 1;
 
 pub fn encrypt_backup(password: &str, plain: &str) -> Option<Backup> {
     let salt = random_bytes(16);
     let iv = random_bytes(12);
-    let key = pbkdf2(password, &salt, BACKUP_ROUNDS);
+    let key = argon2id(password, &salt, BACKUP_M, BACKUP_T)?;
     let ct = Aes256Gcm::new_from_slice(&key)
         .ok()?
         .encrypt(Nonce::from_slice(&iv), plain.as_bytes())
         .ok()?;
     Some(Backup {
-        talka: 2,
+        talka: 3,
         salt: b64(&salt),
         iv: b64(&iv),
         data: b64(&ct),
+        m: BACKUP_M,
+        t: BACKUP_T,
     })
 }
 
 pub fn decrypt_backup(password: &str, file: &Backup) -> Result<String, &'static str> {
-    if file.talka != 2 {
-        return Err("Ce fichier n'est pas une sauvegarde Talka.");
-    }
     let bad = "Ce fichier n'est pas une sauvegarde Talka.";
     let salt = unb64(&file.salt).ok_or(bad)?;
     let iv = unb64(&file.iv).ok_or(bad)?;
     let data = unb64(&file.data).ok_or(bad)?;
-    let key = pbkdf2(password, &salt, BACKUP_ROUNDS);
+    let key = match file.talka {
+        2 => pbkdf2(password, &salt, BACKUP_ROUNDS),
+        3 if (8..=1 << 21).contains(&file.m) && (1..=10).contains(&file.t) => {
+            argon2id(password, &salt, file.m, file.t).ok_or(bad)?
+        }
+        3 => return Err("Cette sauvegarde demande trop de mémoire pour être ouverte."),
+        _ => return Err(bad),
+    };
     let pt = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| bad)?
         .decrypt(Nonce::from_slice(&iv), data.as_slice())
@@ -725,19 +915,99 @@ mod tests {
 
     #[test]
     fn notification_preview() {
+        let (a, b) = (Identity::create(0.0), Identity::create(0.0));
         let nk = SecretKey::random(&mut OsRng);
         let nk_pub = b64(&raw(&nk.public_key()));
-        let sealed = seal_apercu(&nk_pub, r#"{"n":"Léa","t":"Bonjour 👋"}"#).unwrap();
+        let plain = r#"{"n":"Léa","t":"Bonjour 👋"}"#;
+        let sealed = seal_apercu(&a, &nk_pub, plain).unwrap();
         assert!(!sealed.contains("Bonjour"));
+        let contacts = |code: &str| (code == a.code).then(|| a.dh.clone());
         assert_eq!(
-            open_apercu(&nk.to_bytes(), &sealed).as_deref(),
-            Some(r#"{"n":"Léa","t":"Bonjour 👋"}"#)
+            open_apercu(&nk.to_bytes(), &sealed, contacts),
+            Some((a.code.clone(), plain.to_owned()))
         );
+        // Un inconnu ne fait rien afficher.
+        assert!(open_apercu(&nk.to_bytes(), &sealed, |_| None).is_none());
+        // B se fait passer pour A (il met le code de A) : refusé.
+        let mut forged = Identity::create(0.0);
+        forged.code = a.code.clone();
+        let fake = seal_apercu(&forged, &nk_pub, plain).unwrap();
+        assert!(open_apercu(&nk.to_bytes(), &fake, contacts).is_none());
+        // A sous le nom de B, ou une autre clé de notification : refusé.
+        let swapped = {
+            let mut raw_bytes = unb64(&sealed).unwrap();
+            raw_bytes[1..11].copy_from_slice(b.code.as_bytes());
+            b64(&raw_bytes)
+        };
+        assert!(open_apercu(&nk.to_bytes(), &swapped, |_| Some(b.dh.clone())).is_none());
         let other = SecretKey::random(&mut OsRng);
-        assert!(open_apercu(&other.to_bytes(), &sealed).is_none());
-        assert!(seal_apercu("pas une clé", "x").is_none());
+        assert!(open_apercu(&other.to_bytes(), &sealed, contacts).is_none());
+        assert!(seal_apercu(&a, "pas une clé", "x").is_none());
         assert!(valid_nk(&nk_pub));
         assert!(!valid_nk("pas une clé") && !valid_nk(&b64(&[4; 65])));
+    }
+
+    #[test]
+    fn pin_argon2_and_old_pbkdf2() {
+        let h = hash_pin("246813");
+        assert_eq!((h.v, h.m, h.t), (2, ARGON_M, ARGON_T));
+        assert!(check_pin("246813", &h) && !check_pin("246812", &h));
+        assert!(!pin_is_old(&h));
+        // Un code d'avant (PBKDF2, sans `v`) se vérifie toujours.
+        let salt = random_bytes(16);
+        let old: PinHash = serde_json::from_value(serde_json::json!({
+            "salt": b64(&salt), "hash": b64(&pbkdf2("2580", &salt, PIN_ROUNDS)),
+        }))
+        .unwrap();
+        assert!(check_pin("2580", &old) && !check_pin("2581", &old) && pin_is_old(&old));
+        // Des réglages absurdes (un fichier trafiqué) : refusé, sans calcul.
+        let mut bad = h.clone();
+        bad.m = u32::MAX;
+        assert!(!check_pin("246813", &bad));
+        // Argon2id lui-même est vérifié contre l'implémentation Swift (pure,
+        // vérifiée par les vecteurs de RFC 9106) : `pin` dans vectors.json.
+        let k = argon2id("password", b"somesalt", 32, 2).unwrap();
+        assert_ne!(k, argon2id("password", b"somesalt", 32, 3).unwrap());
+    }
+
+    #[test]
+    fn backup_argon2_and_old_pbkdf2() {
+        let file = encrypt_backup("une longue phrase secrète", "{\"x\":1}").unwrap();
+        assert_eq!((file.talka, file.m, file.t), (3, BACKUP_M, BACKUP_T));
+        assert_eq!(
+            decrypt_backup("une longue phrase secrète", &file).as_deref(),
+            Ok("{\"x\":1}")
+        );
+        assert!(decrypt_backup("une autre phrase", &file).is_err());
+        let mut greedy = file.clone();
+        greedy.m = u32::MAX;
+        assert!(decrypt_backup("une longue phrase secrète", &greedy).is_err());
+        // Une sauvegarde d'avant (PBKDF2) s'ouvre toujours.
+        let (salt, iv) = (random_bytes(16), random_bytes(12));
+        let key = pbkdf2("motdepasse", &salt, BACKUP_ROUNDS);
+        let ct = Aes256Gcm::new_from_slice(&key)
+            .unwrap()
+            .encrypt(Nonce::from_slice(&iv), b"{}".as_slice())
+            .unwrap();
+        let old: Backup = serde_json::from_value(serde_json::json!({
+            "talka": 2, "salt": b64(&salt), "iv": b64(&iv), "data": b64(&ct),
+        }))
+        .unwrap();
+        assert_eq!(decrypt_backup("motdepasse", &old).as_deref(), Ok("{}"));
+    }
+
+    #[test]
+    fn device_key_locked_by_the_user() {
+        let device = random_bytes(32);
+        let code = argon2id("246813", b"0123456789abcdef", 64, 1).unwrap();
+        let locked = lock_device_key(&code, &device).unwrap();
+        assert_eq!(unlock_device_key(&code, &locked), Some(device.clone()));
+        let wrong = argon2id("246812", b"0123456789abcdef", 64, 1).unwrap();
+        assert!(unlock_device_key(&wrong, &locked).is_none());
+        let pk = passkey_key(&[7; 32]).unwrap();
+        let locked = lock_device_key(&pk, &device).unwrap();
+        assert_eq!(unlock_device_key(&pk, &locked), Some(device));
+        assert!(unlock_device_key(&passkey_key(&[8; 32]).unwrap(), &locked).is_none());
     }
 
     #[test]
@@ -813,9 +1083,18 @@ mod tests {
         let sig = a.sign_challenge("abc");
         assert!(verify(&a.sign, b"talka-auth:abc", &sig));
         assert!(!verify(&a.sign, b"talka-auth:abd", &sig));
-        assert_eq!(
-            safety_number(&a.code, &b.code),
-            safety_number(&b.code, &a.code)
+        let fp = fingerprint(&a.sign, &a.dh);
+        assert!(valid_fingerprint(&fp) && fp != fingerprint(&b.sign, &b.dh));
+        assert!(!valid_fingerprint("trop/court") && !valid_fingerprint(&format!("{fp}x")));
+        let (ka, kb) = (
+            (a.code.as_str(), a.sign.as_str(), a.dh.as_str()),
+            (b.code.as_str(), b.sign.as_str(), b.dh.as_str()),
+        );
+        assert_eq!(safety_number(ka, kb), safety_number(kb, ka));
+        // D'autres clés sous le même code : un autre numéro.
+        assert_ne!(
+            safety_number(ka, kb),
+            safety_number(ka, (b.code.as_str(), a.sign.as_str(), b.dh.as_str()))
         );
     }
 

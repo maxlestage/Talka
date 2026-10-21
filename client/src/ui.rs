@@ -190,25 +190,43 @@ pub fn asset(path: &str) -> String {
     format!("{}/{path}", meta("talka-base"))
 }
 
-/// Le lien d'invitation : `/c/<code>` sur le serveur, `/app/#add=<code>` sur
-/// GitHub Pages.
+/// Le lien d'invitation : `/c/<empreinte>/<code>` sur le serveur,
+/// `/app/#k=<empreinte>&add=<code>` sur GitHub Pages. L'empreinte de nos
+/// clés (`crypto::fingerprint`) est vérifiée par qui l'ouvre ; le code reste
+/// à la fin, pour les versions qui ne la connaissent pas.
 pub fn invite_link(code: &str) -> String {
     let origin = window().location().origin().unwrap_or_default();
-    if meta("talka-static") == "1" {
-        format!("{origin}{}/app/#add={code}", meta("talka-base"))
+    let me = core::me();
+    let fp = if me.code == code {
+        crate::crypto::fingerprint(&me.sign, &me.dh)
     } else {
-        format!("{origin}/c/{code}")
+        String::new()
+    };
+    match (meta("talka-static") == "1", fp.is_empty()) {
+        (true, false) => format!("{origin}{}/app/#k={fp}&add={code}", meta("talka-base")),
+        (true, true) => format!("{origin}{}/app/#add={code}", meta("talka-base")),
+        (false, false) => format!("{origin}/c/{fp}/{code}"),
+        (false, true) => format!("{origin}/c/{code}"),
     }
 }
 
 fn pending_invite() -> Option<String> {
     let hash = window().location().hash().unwrap_or_default();
-    let code = hash.split("add=").nth(1)?.to_owned();
+    let code = hash.split("add=").nth(1)?.split('&').next()?.to_owned();
+    let fp = hash
+        .split("k=")
+        .nth(1)
+        .and_then(|f| f.split('&').next())
+        .map(str::to_owned);
     if let Ok(h) = window().history() {
         let path = window().location().pathname().unwrap_or_default();
         let _ = h.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&path));
     }
-    normalize(&code)
+    let code = normalize(&code)?;
+    if let Some(fp) = fp {
+        core::expect_fingerprint(&code, &fp);
+    }
+    Some(code)
 }
 
 /// L'étape affichée par l'écran de chargement (tant qu'il est là).
@@ -221,6 +239,19 @@ fn boot_step(text: &str) {
 /// Démarre l'application : verrouillage, accueil, ou discussions.
 pub async fn boot() {
     crate::tabs::claim().await;
+    // La mémoire protégée par le code ou une passkey : l'ouvrir d'abord.
+    let mut pin = None;
+    match store::lock().await {
+        store::Lock::None => {}
+        store::Lock::Code => {
+            replace(&root(), Child::None);
+            pin = Some(lock::unlock_screen().await);
+        }
+        store::Lock::Passkey { id, salt } => {
+            replace(&root(), Child::None);
+            crate::passkey::unlock_screen(&id, &salt).await;
+        }
+    }
     boot_step("Lecture de vos messages…");
     if store::open().await.is_err() {
         fatal(
@@ -232,8 +263,7 @@ pub async fn boot() {
     sounds::unlock();
     boot_step("Préparation de vos discussions…");
     if core::has_account().await {
-        let mut pin = None;
-        if lock::has_pin().await {
+        if pin.is_none() && lock::has_pin().await {
             replace(&root(), Child::None);
             pin = Some(lock::lock_screen().await);
             with(|u| u.lock = true);
@@ -363,6 +393,7 @@ pub fn event(e: Ev) {
         Ev::Chats | Ev::Profile => queue_side(),
         Ev::Contacts(code) => {
             queue_side();
+            spawn(crate::push::contacts_changed());
             let open = conv::current();
             if open.as_deref() == Some(code.as_str()) || open.as_deref().is_some_and(core::is_group)
             {
@@ -1841,7 +1872,8 @@ async fn contact_info(code: &str) {
     } else {
         None
     };
-    let safety = safety_number(&core::my_code(), code);
+    let me = core::me();
+    let safety = safety_number((&me.code, &me.sign, &me.dh), (code, &c.sign, &c.dh));
     let protection = match core::protection(code).await {
         crate::v3::Protection::Ratchet { pq: true } => {
             "🔐 Session à double cliquet (post-quantique)"
@@ -2974,6 +3006,7 @@ pub async fn open_settings() {
     let s = core::settings();
     let used = store::usage().await;
     let has_pin = lock::has_pin().await;
+    let key_lock = store::lock().await;
     let p = core::profile();
     let name = h("input.field")
         .attr("maxlength", "40")
@@ -3067,7 +3100,7 @@ pub async fn open_settings() {
                     At::El(ab.clone()),
                 );
             });
-            let (m1, m2) = (md.clone(), md.clone());
+            let (m1, m2, m3) = (md.clone(), md.clone(), md.clone());
             let mut privacy = h("div.settings-group")
                 .child(h("h3").text("Confidentialité"))
                 .child(toggle(
@@ -3104,7 +3137,7 @@ pub async fn open_settings() {
                     if has_pin {
                         "Talka demande votre code à l'ouverture"
                     } else {
-                        "Protégez Talka par un code à 4 à 6 chiffres"
+                        "Un code de 6 chiffres ou plus, qui chiffre aussi vos messages sur cet appareil"
                     },
                     false,
                     move || {
@@ -3114,6 +3147,63 @@ pub async fn open_settings() {
                         });
                     },
                 ));
+            let passkey_on = matches!(key_lock, store::Lock::Passkey { .. });
+            if passkey_on || crate::passkey::supported() {
+                let m = m3;
+                privacy = privacy.child(setting(
+                    "key",
+                    if passkey_on {
+                        "Retirer la passkey"
+                    } else {
+                        "Protéger avec une passkey"
+                    },
+                    if passkey_on {
+                        "Vos messages ne s'ouvrent qu'avec votre passkey"
+                    } else {
+                        "Empreinte, visage ou clé de sécurité pour ouvrir vos messages"
+                    },
+                    passkey_on,
+                    move || {
+                        let m = m.clone();
+                        spawn(async move {
+                            if passkey_on {
+                                if confirm_box(
+                                    "Retirer la passkey ?",
+                                    "Vos messages resteront chiffrés sur cet appareil, mais s'ouvriront sans elle (avec votre code de verrouillage, s'il y en a un).",
+                                    "Retirer",
+                                    true,
+                                )
+                                .await
+                                    && store::protect(store::NewLock::None).await
+                                {
+                                    m.close();
+                                    toast("Passkey retirée");
+                                }
+                                return;
+                            }
+                            if !confirm_box(
+                                "Protéger avec une passkey",
+                                "Vos messages, chiffrés sur cet appareil, ne s'ouvriront qu'avec votre passkey (empreinte, visage, Windows Hello ou clé de sécurité). Même quelqu'un qui copierait les fichiers de votre navigateur ne pourrait pas les lire. Si vous perdez la passkey, seule une sauvegarde vous rendra vos messages : faites-en une.",
+                                "Créer la passkey",
+                                false,
+                            )
+                            .await
+                            {
+                                return;
+                            }
+                            let p = core::profile();
+                            match crate::passkey::enable(&core::my_code(), &p.name).await {
+                                Ok(()) => {
+                                    store::committed().await;
+                                    m.close();
+                                    toast("Vos messages sont protégés par votre passkey 🔐");
+                                }
+                                Err(e) => toast(e),
+                            }
+                        })
+                    },
+                ));
+            }
             if has_pin {
                 privacy = privacy
                     .child(select(
@@ -3299,10 +3389,19 @@ pub async fn setup_pin() -> bool {
     let (s1, h1) = (d.sender(), host.clone());
     let pad = lock::pin_pad(
         "Code de verrouillage",
-        "Choisissez un code de 4 à 6 chiffres, puis OK",
+        "Choisissez un code de 6 à 12 chiffres, puis OK",
         move |pin, pad| {
             let prev = first.borrow_mut().take();
             match prev {
+                None if pin.len() < crate::crypto::PIN_MIN => {
+                    pad.error("6 chiffres au moins");
+                }
+                None if pin.chars().all(|c| pin.starts_with(c))
+                    || "01234567890123".contains(&pin)
+                    || "98765432109876".contains(&pin) =>
+                {
+                    pad.error("Trop facile à deviner : choisissez-en un autre");
+                }
                 None => {
                     *first.borrow_mut() = Some(pin);
                     pad.info("Confirmez votre code");
