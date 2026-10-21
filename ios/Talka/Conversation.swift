@@ -1182,7 +1182,7 @@ struct MentionBar: View {
     }
 
     func chip(_ item: MentionCandidate) -> some View {
-        let color: Color = Color.color(item.code)
+        let color: Color = Avatar.color(item.code)
         return Button {
             onPick(item.label)
         } label: {
