@@ -315,12 +315,9 @@ final class AppModel {
     // ----- Sauvegarde -----
 
     /// Le fichier de sauvegarde chiffrée, prêt à partager.
-    func exportBackup(password: String) -> URL? {
-        guard let data = engine?.exportBackup(password: password) else { return nil }
-        let day = ISO8601DateFormatter().string(from: Date()).prefix(10)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("talka-sauvegarde-\(day).talka")
-        try? data.write(to: url, options: .completeFileProtection)
-        return url
+    /// « talka-sauvegarde-2026-10-21.talka »
+    var backupFilename: String {
+        "talka-sauvegarde-\(ISO8601DateFormatter().string(from: Date()).prefix(10)).talka"
     }
 }
 
