@@ -305,7 +305,7 @@ struct ConversationView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(e.displayName(m.from)).font(.caption.bold())
                         // Une capsule encore scellée ne se lit pas non plus dans l'épingle.
-                        Text(m.kind == "text" && !m.sealed(for: e.me.code) ? Brocolis.masked(m.text) : Engine.preview(m))
+                        Text(e.readable(m))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -433,7 +433,7 @@ struct ConversationView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(editing != nil ? "Modifier le message" : e.displayName(m.from))
                                 .font(.caption.bold()).foregroundStyle(Color.talkaGreen)
-                            Text(m.kind == "text" ? Brocolis.masked(m.text) : Engine.preview(m)).font(.caption).lineLimit(2).foregroundStyle(.secondary)
+                            Text(e.readable(m)).font(.caption).lineLimit(2).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button {
