@@ -56,6 +56,17 @@ final class LiveTests: XCTestCase {
         XCTAssertEqual(protection, v3 ? .ratchet(pq: V3.postQuantum) : .legacy)
         XCTAssertEqual(a.v3?.hasSession(b.me.code), v3)
 
+        // L'expéditeur scellé : chacun a reçu le jeton de l'autre ; ensuite,
+        // tout part par la connexion anonyme (le relais ne sait plus qui écrit).
+        if a.relay.sealed {
+            try await wait("jetons") { b.contact(a.me.code)?.jeton.isEmpty == false && a.contact(b.me.code)?.jeton.isEmpty == false }
+            let before = a.relay.sealedSent
+            a.send(b.me.code, Content(text: "Scellé"))
+            try await wait("scellé") { b.messages(a.me.code).contains { $0.text == "Scellé" } }
+            XCTAssertGreaterThan(a.relay.sealedSent, before)
+            XCTAssertEqual(b.messages(a.me.code).last { $0.text == "Scellé" }?.from, a.me.code)
+        }
+
         // ✓✓ puis ✓✓ bleus.
         try await wait("distribué") { a.store.message(b.me.code, sent.id)?.tick == .delivered }
         b.markRead(a.me.code)
