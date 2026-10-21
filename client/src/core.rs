@@ -243,7 +243,11 @@ pub async fn start() {
     start_v3().await;
     net::start(identity, hidden);
     sweep().await;
-    dom::interval(60_000, || spawn(sweep()));
+    dom::interval(60_000, || {
+        spawn(sweep());
+        // Ce qui attend un paquet v3 (ou le réseau) est réessayé.
+        spawn(flush());
+    });
 }
 
 /// Le relais annonce un changement d'état.
@@ -277,7 +281,16 @@ pub fn on_presence(msg: &Value) {
     let code = msg["code"].as_str().unwrap_or("").to_owned();
     let online = msg["online"].as_bool().unwrap_or(false);
     let seen = msg["seen"].as_f64();
-    with(|s| s.presence.insert(code.clone(), (online, seen)));
+    let was = with(|s| s.presence.insert(code.clone(), (online, seen)));
+    // Il revient : il a republié son paquet v3. Ce qui l'attendait faute de
+    // paquet (un contact qui refuse l'ancien format) part maintenant.
+    if online && !was.is_some_and(|(o, _)| o) {
+        let missing = BUNDLES.with(|b| b.borrow().get(&code).is_some_and(|(b, _)| b.is_none()));
+        if missing {
+            BUNDLES.with(|b| b.borrow_mut().remove(&code));
+            spawn(flush());
+        }
+    }
     emit(Ev::Presence(code));
 }
 
@@ -329,12 +342,15 @@ async fn sweep() {
             continue;
         }
         let mut changed = false;
+        let mut gone = Vec::new();
         for m in store::messages_of(&chat.id, usize::MAX).await {
             if m.exp.is_some_and(|e| e < t) {
                 store::remove("messages", &m.key()).await;
+                gone.push((m.id.clone(), m.at));
                 changed = true;
             }
         }
+        bury(&chat.id, gone).await;
         if changed {
             refresh_last(&chat.id).await;
             emit(Ev::Messages(chat.id.clone()));
@@ -347,12 +363,15 @@ async fn sweep() {
         LAST_PRUNE.with(|l| l.set(t));
         for chat in chats() {
             let mut changed = false;
+            let mut gone = Vec::new();
             for m in store::messages_of(&chat.id, usize::MAX).await {
                 if m.too_old(keep, t) {
                     store::remove("messages", &m.key()).await;
+                    gone.push((m.id.clone(), m.at));
                     changed = true;
                 }
             }
+            bury(&chat.id, gone).await;
             if changed {
                 refresh_last(&chat.id).await;
                 emit(Ev::Messages(chat.id.clone()));
@@ -496,7 +515,7 @@ fn repair_v3(code: &str) {
     let code = code.to_owned();
     spawn(async move {
         save_v3().await;
-        enqueue(&code, Wire::new(profile_body()), None, None, false).await;
+        enqueue(&code, Wire::new(profile_body(&code)), None, None, false).await;
     });
 }
 
@@ -527,17 +546,25 @@ pub async fn save_profile(f: impl FnOnce(&mut Profile)) {
     emit(Ev::Profile);
     for c in contacts() {
         if c.saved && !c.blocked {
-            enqueue(&c.code, Wire::new(profile_body()), None, None, false).await;
+            enqueue(&c.code, Wire::new(profile_body(&c.code)), None, None, false).await;
         }
     }
     spawn(flush());
 }
 
-fn profile_body() -> Body {
+/// Notre profil pour `code`, avec son jeton de remise personnel : seulement
+/// pour un contact enregistré et pas bloqué (un inconnu qui nous écrit n'en
+/// reçoit pas).
+fn profile_body(code: &str) -> Body {
+    let jeton = match contact(code) {
+        Some(c) if c.saved && !c.blocked => me().jeton_for(code, c.jeton_epoch),
+        _ => String::new(),
+    };
     Body::Profile {
         profile: profile(),
-        jeton: me().jeton(),
+        jeton,
         nk: with(|s| s.nk.clone()),
+        pj: true,
     }
 }
 
@@ -552,7 +579,7 @@ pub async fn set_nk(nk: String) {
     store::write("kv", "nk", &nk).await;
     for c in contacts() {
         if c.saved && !c.blocked {
-            enqueue(&c.code, Wire::new(profile_body()), None, None, false).await;
+            enqueue(&c.code, Wire::new(profile_body(&c.code)), None, None, false).await;
         }
     }
     spawn(flush());
@@ -564,15 +591,48 @@ pub fn apercu_of(me: &str, name: &str, wire: &Wire) -> Option<String> {
     wire.apercu(me, name, preview)
 }
 
-/// Notre jeton de remise, pour les contacts qui ne l'ont pas encore (une
-/// fois) : ils pourront nous écrire sans que le relais sache qui écrit.
+/// Notre jeton de remise, pour les contacts qui n'ont pas encore le leur
+/// (une fois) : ils pourront nous écrire sans que le relais sache qui
+/// écrit. Chacun a le sien ; l'ancien jeton commun est révoqué.
 async fn share_jeton() {
     for mut c in contacts() {
-        if c.saved && !c.blocked && !c.jeton_sent {
+        if c.saved && !c.blocked && !c.jeton_perso {
+            c.jeton_perso = true;
             c.jeton_sent = true;
             save_contact(c.clone()).await;
-            enqueue(&c.code, Wire::new(profile_body()), None, None, false).await;
+            enqueue(&c.code, Wire::new(profile_body(&c.code)), None, None, false).await;
         }
+    }
+    let common = me().jeton();
+    if let Some((nonce, _)) = common.split_once('.') {
+        revoke_jeton(nonce).await;
+    }
+    send_revoked().await;
+}
+
+/// Les nonces de nos jetons révoqués (contacts bloqués, ancien jeton
+/// commun), redonnés au relais à chaque connexion (il ne les garde qu'en
+/// mémoire). Les 1 000 derniers.
+async fn revoke_jeton(nonce: &str) {
+    let mut list: Vec<String> = store::read("kv", "jetons_revoques")
+        .await
+        .unwrap_or_default();
+    if list.iter().any(|n| n == nonce) {
+        return;
+    }
+    list.push(nonce.to_owned());
+    if list.len() > 1_000 {
+        list.drain(..list.len() - 1_000);
+    }
+    store::write("kv", "jetons_revoques", &list).await;
+}
+
+async fn send_revoked() {
+    let list: Vec<String> = store::read("kv", "jetons_revoques")
+        .await
+        .unwrap_or_default();
+    if !list.is_empty() {
+        net::revoke(&list);
     }
 }
 
@@ -669,6 +729,9 @@ pub async fn add_contact(code: &str, name: &str) -> Result<bool, String> {
         c.fp = fp;
     }
     c.saved = true;
+    // Notre profil part avec son jeton personnel.
+    c.jeton_perso = !c.blocked;
+    c.jeton_sent = !c.blocked;
     let name: String = name.trim().chars().take(40).collect();
     if !name.is_empty() {
         c.name = name;
@@ -676,7 +739,7 @@ pub async fn add_contact(code: &str, name: &str) -> Result<bool, String> {
     save_contact(c).await;
     net::watch(&[code.to_owned()]);
     let reachable = keys_for(code).await.is_some();
-    enqueue(code, Wire::new(profile_body()), None, None, false).await;
+    enqueue(code, Wire::new(profile_body(code)), None, None, false).await;
     spawn(flush());
     Ok(reachable)
 }
@@ -695,9 +758,21 @@ pub async fn set_blocked(code: &str, blocked: bool) {
         added_at: now(),
         ..Default::default()
     });
+    // Bloqué : son jeton de remise est révoqué (il ne peut plus déposer
+    // anonymement) ; débloqué, il en recevra un nouveau.
+    if blocked && !c.blocked && c.jeton_perso {
+        revoke_jeton(&me().jeton_nonce(code, c.jeton_epoch)).await;
+        c.jeton_epoch += 1;
+        c.jeton_perso = false;
+        send_revoked().await;
+    }
+    let unblocked = !blocked && c.blocked;
     c.blocked = blocked;
     save_contact(c).await;
     emit(Ev::Chats);
+    if unblocked && net::sealed_supported() {
+        spawn(share_jeton());
+    }
 }
 
 // ----- Discussions -----------------------------------------------------------
@@ -1148,7 +1223,79 @@ async fn reopen_messages() {
     }
 }
 
+// ----- Les pierres tombales -----------------------------------------------------
+//
+// Un message effacé (pour moi, éphémère, trop vieux, discussion vidée) ne
+// doit pas revenir si un relais rejouait sa vieille enveloppe dans l'ancien
+// format (sans protection contre le rejeu). On garde son identifiant 31 jours
+// (le relais ne garde rien plus de 30 jours ; un message plus vieux dans
+// l'ancien format est refusé d'office).
+
+/// La fenêtre des pierres tombales (et l'âge au-delà duquel un message dans
+/// l'ancien format est refusé).
+pub const TOMB_WINDOW: f64 = 31.0 * DAY;
+
+async fn bury(chat: &str, msgs: impl IntoIterator<Item = (String, f64)>) {
+    let t = now();
+    let key = format!("tombes:{chat}");
+    let mut list: Vec<(String, f64)> = store::read("kv", &key).await.unwrap_or_default();
+    let before = list.len();
+    list.retain(|(_, at)| t - at < TOMB_WINDOW);
+    let mut changed = list.len() != before;
+    for (id, at) in msgs {
+        if t - at < TOMB_WINDOW && !list.iter().any(|(i, _)| *i == id) {
+            list.push((id, at));
+            changed = true;
+        }
+    }
+    if list.len() > 20_000 {
+        list.drain(..list.len() - 20_000);
+    }
+    if !changed {
+        return;
+    }
+    if list.is_empty() {
+        store::remove("kv", &key).await;
+    } else {
+        store::write("kv", &key, &list).await;
+    }
+}
+
+/// Ce message a-t-il été effacé ici (dans les 31 derniers jours) ?
+async fn buried(chat: &str, id: &str) -> bool {
+    store::read::<Vec<(String, f64)>>("kv", &format!("tombes:{chat}"))
+        .await
+        .is_some_and(|l| l.iter().any(|(i, _)| i == id))
+}
+
+/// Une offre d'appel jamais vue (les 200 dernières sont gardées) ?
+async fn first_offer(call_id: &str) -> bool {
+    let mut seen: Vec<String> = store::read("kv", "appels_vus").await.unwrap_or_default();
+    if seen.iter().any(|c| c == call_id) {
+        return false;
+    }
+    seen.push(call_id.to_owned());
+    if seen.len() > 200 {
+        seen.drain(..seen.len() - 200);
+    }
+    store::write("kv", "appels_vus", &seen).await;
+    true
+}
+
+/// Les messages récents d'une discussion qu'on va vider : enterrés.
+async fn bury_all(chat: &str) {
+    let t = now();
+    let recent: Vec<(String, f64)> = store::messages_of(chat, usize::MAX)
+        .await
+        .into_iter()
+        .filter(|m| t - m.at < TOMB_WINDOW)
+        .map(|m| (m.id, m.at))
+        .collect();
+    bury(chat, recent).await;
+}
+
 pub async fn delete_chat(id: &str) {
+    bury_all(id).await;
     store::delete_messages_of(id).await;
     store::remove("chats", id).await;
     with(|s| s.chats.remove(id));
@@ -1156,6 +1303,7 @@ pub async fn delete_chat(id: &str) {
 }
 
 pub async fn clear_chat(id: &str) {
+    bury_all(id).await;
     store::delete_messages_of(id).await;
     update_chat(id, |c| {
         c.last = None;
@@ -1363,24 +1511,41 @@ async fn send_now(item: &OutItem, live: bool) -> Result<(), String> {
     } else {
         bundle_for(&peer).await
     };
+    // Une pièce jointe trop grosse pour un jeton v3, vers un contact dont la
+    // version le sait : chiffrée à part, sa clé dans le message v3.
+    let (payload, blob) = match (ratchet && peer.pj && item.payload.len() > v3::MAX_PLAINTEXT)
+        .then(|| split_attachment(&item.payload))
+        .flatten()
+    {
+        Some((small, blob)) => (small, Some(blob)),
+        None => (item.payload.clone(), None),
+    };
     // Chiffré au moment de partir : un nouvel essai chiffre à nouveau (un
     // autre numéro de message) ; le destinataire range par identifiant.
     let v3 = ratchet
-        .then(|| with_v3(|e| e.seal(&me(), &peer.code, &peer.dh, bundle.as_ref(), &item.payload)))
+        .then(|| with_v3(|e| e.seal(&me(), &peer.code, &peer.dh, bundle.as_ref(), &payload)))
         .flatten();
     let sealed = match v3 {
         Some(sealed) => sealed,
-        None => crypto::seal(&me(), &peer.code, &peer.dh, &item.payload)
+        None => crypto::seal(&me(), &peer.code, &peer.dh, &payload)
             .map(|body| v3::Sealed { body, v3: false }),
     }
     .ok_or("crypto")?;
+    // Un contact dont la version refuse l'ancien format (un relais pourrait
+    // le rejouer) : sans session ni paquet, on attend qu'il en publie un.
+    if ratchet && peer.pj && !sealed.v3 && payload.len() <= v3::MAX_PLAINTEXT {
+        return Err("v3".into());
+    }
     if sealed.v3 {
         // La session a avancé : rien ne part avant qu'elle soit écrite (une
         // clé de message ne doit jamais servir deux fois).
         save_v3().await;
         store::committed().await;
     }
-    let body = sealed.body;
+    let body = match blob {
+        Some(blob) => format!("{}|{}", sealed.body, crypto::b64(&blob)),
+        None => sealed.body,
+    };
     // Les messages écrits (pas les accusés, réactions, profils) réveillent
     // un destinataire hors ligne.
     let wake = !live && !item.msg_id.is_empty();
@@ -1686,6 +1851,7 @@ pub async fn delete_message(chat_id: &str, msg_id: &str, for_everyone: bool) {
         .await;
     } else {
         store::remove("messages", &m.key()).await;
+        bury(chat_id, [(m.id.clone(), m.at)]).await;
     }
     refresh_last(chat_id).await;
     emit(Ev::Messages(chat_id.to_owned()));
@@ -2006,9 +2172,14 @@ async fn receive(env: &Value) {
         return;
     };
     load_v3(&from).await;
-    let body = match &unsealed {
+    let full = match &unsealed {
         Some((_, body)) => body.as_str(),
         None => env["body"].as_str().unwrap_or(""),
+    };
+    // Une pièce jointe chiffrée à part : `<enveloppe>|<pièce>`.
+    let (body, blob) = match full.split_once('|') {
+        Some((body, blob)) => (body, crypto::unb64(blob)),
+        None => (full, None),
     };
     // Le message, et l'état de session qui l'a ouvert : une seule
     // transaction IndexedDB.
@@ -2045,16 +2216,33 @@ async fn receive(env: &Value) {
         c.v3 |= !legacy;
         save_contact(c).await;
     }
+    // La pièce jointe chiffrée à part (seulement en v3).
+    let plain = if legacy {
+        plain
+    } else {
+        join_attachment(&plain, blob.as_deref())
+    };
     let Ok(wire) = serde_json::from_str::<Wire>(&plain) else {
         return;
     };
     let live = env["live"].as_bool().unwrap_or(false);
-    // L'ancien format n'a pas de protection contre le rejeu : d'un contact
-    // passé en v3, il ne change plus d'état (un relais qui rejouerait une
-    // vieille minuterie, modification ou offre d'appel n'y gagne rien).
-    if legacy && !live && known.is_some_and(|c| c.v3) && wire.body.changes_state() {
-        dom::warn(&format!("ancien format refusé de {from} (déjà en v3)"));
-        return;
+    // L'ancien format n'a pas de protection contre le rejeu :
+    // - d'un contact dont la version chiffre tout en v3, il est refusé (hors
+    //   signaux en direct) ;
+    // - d'un contact passé en v3, il ne change plus d'état (minuterie,
+    //   modification, suppression, groupe, appel) ;
+    // - un message de plus de 31 jours est refusé (le relais ne garde rien
+    //   plus de 30 jours : c'est un rejeu).
+    if legacy && !live {
+        let refuse = match &known {
+            Some(c) if c.pj => true,
+            Some(c) if c.v3 => wire.body.changes_state(),
+            _ => false,
+        } || matches!(&wire.body, Body::Msg { at, .. } if now() - at > TOMB_WINDOW);
+        if refuse {
+            dom::warn(&format!("ancien format refusé de {from}"));
+            return;
+        }
     }
     let ts = env["ts"].as_f64().unwrap_or_else(now);
     handle(&from, wire, ts, live).await;
@@ -2130,7 +2318,12 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool
 async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
     let me = my_code();
     match &wire.body {
-        Body::Profile { profile, jeton, nk } => {
+        Body::Profile {
+            profile,
+            jeton,
+            nk,
+            pj,
+        } => {
             let mut c = contact(from).unwrap_or_else(|| Contact {
                 code: from.to_owned(),
                 added_at: now(),
@@ -2147,6 +2340,11 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             // Sa clé de notification (une clé P-256 publique, ou rien).
             if *nk != c.nk && (nk.is_empty() || crypto::valid_nk(nk)) {
                 c.nk = nk.clone();
+                save_contact(c.clone()).await;
+            }
+            // Sa version chiffre tout en v3 (une fois su, ça ne se perd pas).
+            if *pj && !c.pj {
+                c.pj = true;
                 save_contact(c.clone()).await;
             }
             if profile.v >= c.profile_v {
@@ -2191,7 +2389,11 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             emit(Ev::Typing(chat_id));
             return;
         }
-        Body::Call { .. } => {
+        Body::Call { op, call_id, .. } => {
+            // Une offre d'appel déjà vue (un rejeu) ne fait pas sonner.
+            if op == "offer" && !first_offer(call_id).await {
+                return;
+            }
             emit(Ev::CallSignal {
                 from: from.to_owned(),
                 body: wire.body,
@@ -2271,7 +2473,8 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             pn,
             content,
         } => {
-            if get_message(&c.id, &id).await.is_some() {
+            // Déjà reçu, ou effacé ici depuis (un rejeu ne le fait pas revenir).
+            if get_message(&c.id, &id).await.is_some() || buried(&c.id, &id).await {
                 return; // déjà reçu
             }
             // Une clé Brocolis partagée n'en est une que si elle est valide.
@@ -2359,13 +2562,17 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             }
             // Votre profil, pour qui ne l'a pas encore.
             if let Some(mut sender) = contact(from)
+                && !sender.blocked
                 && (sender.sent_profile_v < profile().v
-                    || (!sender.jeton_sent && net::sealed_supported()))
+                    || (!sender.jeton_perso && sender.saved && net::sealed_supported()))
             {
                 sender.sent_profile_v = profile().v;
-                sender.jeton_sent = net::sealed_supported();
+                if sender.saved && net::sealed_supported() {
+                    sender.jeton_sent = true;
+                    sender.jeton_perso = true;
+                }
                 save_contact(sender).await;
-                enqueue(from, Wire::new(profile_body()), None, None, false).await;
+                enqueue(from, Wire::new(profile_body(from)), None, None, false).await;
             }
             let removed = with(|s| s.typing.get_mut(&c.id).and_then(|t| t.remove(from)));
             if let Some(t) = removed {

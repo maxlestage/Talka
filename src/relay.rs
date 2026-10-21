@@ -69,8 +69,9 @@ const MAILBOX_MAX_COUNT: usize = 2_000;
 const MAILBOX_MAX_BYTES: usize = 48 * 1024 * 1024;
 /// Toutes les boîtes ensemble : 256 Mio au plus.
 const TOTAL_MAX_BYTES: usize = 256 * 1024 * 1024;
-/// Un envoi : 6 Mio au plus (une photo, un vocal, un petit fichier).
-pub const MAX_BODY: usize = 6 * 1024 * 1024;
+/// Un envoi : 8 Mio au plus (une photo, un vocal, un fichier de 3 Mo, même
+/// scellé).
+pub const MAX_BODY: usize = 8 * 1024 * 1024;
 /// Au plus 60 envois (et 60 autres demandes) par seconde et par connexion.
 const SENDS_PER_SECOND: u32 = 60;
 /// Et au plus 64 Mio envoyés par minute et par connexion.
@@ -80,6 +81,12 @@ const BYTES_PER_MINUTE: usize = 64 * 1024 * 1024;
 const OUT_QUEUE: usize = 4_096;
 /// Les connexions anonymes ouvertes en même temps, et leur durée sans envoi.
 const MAX_ANON: usize = 20_000;
+/// Les connexions ouvertes depuis une même adresse IP (un /64 en IPv6) :
+/// assez pour un grand réseau derrière une seule adresse, pas pour remplir
+/// le relais à soi seul.
+const MAX_PER_IP: usize = 100;
+/// Les jetons de remise révoqués qu'un code peut donner au relais.
+const MAX_REVOKED: usize = 1_000;
 const ANON_IDLE: Duration = Duration::from_secs(120);
 /// Les réveils Web Push, tous codes confondus : 50 par seconde au plus.
 const WAKES_PER_SECOND: u32 = 50;
@@ -176,6 +183,11 @@ struct State {
     wakes: Limit,
     /// Les connexions anonymes ouvertes.
     anon: usize,
+    /// Les connexions ouvertes, par adresse IP.
+    per_ip: HashMap<std::net::IpAddr, usize>,
+    /// code → les nonces de ses jetons de remise révoqués (un contact
+    /// bloqué) : redonnés par l'appareil à chaque connexion.
+    revoked: HashMap<String, HashSet<String>>,
     next_n: u64,
     next_conn: u64,
 }
@@ -658,6 +670,56 @@ impl Relay {
     /// Un envoi : vérifié, puis déposé. `from` : l'expéditeur d'une connexion
     /// présentée ; `None` : une connexion anonyme (expéditeur scellé), qui
     /// doit montrer le jeton de remise du destinataire. Renvoie `ack` ou `error`.
+    /// Ce jeton a-t-il été révoqué par son destinataire ?
+    fn is_revoked(&self, to: &str, jeton: &str) -> bool {
+        let nonce = jeton.split_once('.').map_or(jeton, |(n, _)| n);
+        self.lock()
+            .revoked
+            .get(to)
+            .is_some_and(|set| set.contains(nonce))
+    }
+
+    /// Les jetons révoqués de `code` (la liste entière, qui remplace la
+    /// précédente).
+    fn revoke(&self, code: &str, nonces: &[String]) {
+        let set: HashSet<String> = nonces
+            .iter()
+            .filter(|n| !n.is_empty() && n.len() <= 64)
+            .take(MAX_REVOKED)
+            .cloned()
+            .collect();
+        let mut st = self.lock();
+        if set.is_empty() {
+            st.revoked.remove(code);
+        } else {
+            st.revoked.insert(code.to_owned(), set);
+        }
+    }
+
+    /// Une connexion de plus depuis `ip` ; `false` si cette adresse en a
+    /// déjà trop.
+    fn admit(&self, ip: Option<std::net::IpAddr>) -> bool {
+        let Some(ip) = ip else { return true };
+        let mut st = self.lock();
+        let n = st.per_ip.entry(ip).or_default();
+        if *n >= MAX_PER_IP {
+            return false;
+        }
+        *n += 1;
+        true
+    }
+
+    fn release(&self, ip: Option<std::net::IpAddr>) {
+        let Some(ip) = ip else { return };
+        let mut st = self.lock();
+        if let Some(n) = st.per_ip.get_mut(&ip) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                st.per_ip.remove(&ip);
+            }
+        }
+    }
+
     fn send(&self, from: Option<&str>, msg: &Value, limit: &mut Limit) -> Value {
         let id = msg["id"].as_str().unwrap_or("").to_owned();
         let body = msg["body"].as_str().unwrap_or("");
@@ -672,12 +734,12 @@ impl Relay {
         } else if to.is_none() {
             Some("code")
         } else if from.is_none()
-            && !code::verify_jeton(
+            && (!code::verify_jeton(
                 to.as_deref().unwrap_or(""),
                 field("sign"),
                 field("dh"),
                 field("jeton"),
-            )
+            ) || self.is_revoked(to.as_deref().unwrap_or(""), field("jeton")))
         {
             Some("jeton")
         } else {
@@ -777,7 +839,19 @@ impl Relay {
     }
 
     /// Une connexion : la présentation, puis la boucle des messages.
-    pub async fn serve(self, socket: WebSocket) {
+    /// Une connexion, depuis `ip` (l'adresse du client, vue à travers le
+    /// proxy ; `None` si inconnue) : au plus `MAX_PER_IP` à la fois.
+    pub async fn serve(self, socket: WebSocket, ip: Option<std::net::IpAddr>) {
+        if !self.admit(ip) {
+            let (mut tx, _) = socket.split();
+            let _ = tx.close(4005, "ip").await;
+            return;
+        }
+        self.clone().serve_conn(socket).await;
+        self.release(ip);
+    }
+
+    async fn serve_conn(self, socket: WebSocket) {
         let (mut tx, mut rx) = socket.split();
         let nonce = {
             let mut bytes = [0u8; 24];
@@ -961,6 +1035,17 @@ impl Relay {
                         true
                     };
                     reply(json!({ "t": "push", "ok": ok }).to_string());
+                }
+                "revoke" => {
+                    let nonces: Vec<String> = msg["nonces"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.revoke(&me, &nonces);
                 }
                 "ping" => reply(json!({ "t": "pong", "time": now_ms() }).to_string()),
                 _ => {}
@@ -1201,5 +1286,34 @@ mod tests {
                 .len();
         }
         assert_eq!(woken, WAKES_PER_SECOND as usize);
+    }
+
+    /// Un jeton révoqué par son destinataire ne permet plus d'écrire.
+    #[test]
+    fn revoked_jetons_are_refused() {
+        let relay = Relay::default();
+        assert!(!relay.is_revoked("BBBBBBBBBB", "abc.sig"));
+        relay.revoke("BBBBBBBBBB", &["abc".into(), "".into()]);
+        assert!(relay.is_revoked("BBBBBBBBBB", "abc.sig"));
+        assert!(!relay.is_revoked("BBBBBBBBBB", "abd.sig"));
+        assert!(!relay.is_revoked("CCCCCCCCCC", "abc.sig"));
+        // La liste redonnée remplace l'ancienne.
+        relay.revoke("BBBBBBBBBB", &[]);
+        assert!(!relay.is_revoked("BBBBBBBBBB", "abc.sig"));
+    }
+
+    /// Au plus `MAX_PER_IP` connexions depuis une même adresse.
+    #[test]
+    fn connections_per_ip_are_capped() {
+        let relay = Relay::default();
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        for _ in 0..MAX_PER_IP {
+            assert!(relay.admit(Some(ip)));
+        }
+        assert!(!relay.admit(Some(ip)));
+        assert!(relay.admit(Some("203.0.113.8".parse().unwrap())));
+        relay.release(Some(ip));
+        assert!(relay.admit(Some(ip)));
+        assert!(relay.admit(None));
     }
 }

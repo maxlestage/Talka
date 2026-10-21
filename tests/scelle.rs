@@ -138,6 +138,24 @@ async fn sealed_sender_end_to_end() {
         (Some(true), Some(true))
     );
 
+    // Un jeton par contact : celui que Bob donne à Alice passe ; révoqué par
+    // Bob (il bloque Alice), il ne passe plus, et celui des autres, si.
+    let pour_alice = bob.jeton_for(&alice.code, 0);
+    send(&mut anon, envoi("s3", pour_alice.clone())).await;
+    assert_eq!(next_json(&mut anon).await["t"], "ack");
+    assert_eq!(next_json(&mut b).await["id"], "s3");
+    send(
+        &mut b,
+        json!({ "t": "revoke", "nonces": [bob.jeton_nonce(&alice.code, 0)] }),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    send(&mut anon, envoi("s4", pour_alice)).await;
+    assert_eq!(next_json(&mut anon).await["error"], "jeton");
+    send(&mut anon, envoi("s5", bob.jeton_for(&eve.code, 0))).await;
+    assert_eq!(next_json(&mut anon).await["t"], "ack");
+    let _ = next_json(&mut b).await;
+
     // Une connexion anonyme ne peut rien faire d'autre qu'envoyer.
     send(&mut anon, json!({ "t": "lookup", "code": bob.code })).await;
     send(&mut anon, json!({ "t": "ping" })).await;
