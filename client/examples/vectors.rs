@@ -71,6 +71,7 @@ fn main() {
                 avatar: String::new(),
                 v: 2,
             },
+            jeton: String::new(),
         }),
         Wire::new(Body::Group {
             op: "update".into(),
@@ -211,6 +212,12 @@ fn main() {
         "b": b,
         "plain": plain,
         "sealed_a_to_b": sealed,
+        // L'expéditeur scellé (v4) : l'enveloppe ci-dessus, scellée pour B,
+        // et le jeton de remise de A.
+        "scelle": {
+            "a_to_b": crypto::seal_sender(&a.code, &b.code, &b.dh, &sealed).unwrap(),
+            "jeton_a": a.jeton(),
+        },
         "challenge": { "nonce": "abc", "sig": a.sign_challenge("abc") },
         "safety": crypto::safety_number(&a.code, &b.code),
         "pin": { "pin": "2580", "hash": pin },

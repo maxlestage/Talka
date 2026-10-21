@@ -76,6 +76,25 @@ pub fn challenge_message(nonce: &str) -> Vec<u8> {
     format!("talka-auth:{nonce}").into_bytes()
 }
 
+/// Ce que signe un code pour son jeton de remise (l'expéditeur scellé) :
+/// comme `talka_web::crypto::jeton_message`.
+pub fn jeton_message(code: &str, nonce: &str) -> Vec<u8> {
+    format!("talka-jeton:{code}:{nonce}").into_bytes()
+}
+
+/// Le jeton de remise `nonce.signature` est-il signé par la clé du code
+/// `to`, dont on donne les deux clés publiques ? Rien n'est gardé : le
+/// jeton se vérifie seul, même après un redémarrage.
+pub fn verify_jeton(to: &str, sign_b64: &str, dh_b64: &str, jeton: &str) -> bool {
+    let (Some(sign), Some(dh)) = (public_key(sign_b64), public_key(dh_b64)) else {
+        return false;
+    };
+    let Some((nonce, sig)) = jeton.split_once('.') else {
+        return false;
+    };
+    nonce.len() <= 64 && derive(&sign, &dh) == to && verify(&sign, &jeton_message(to, nonce), sig)
+}
+
 /// Ce que signe l'appareil pour publier son paquet de clés v3 (comme
 /// `talka_web::v3::bundle_message`) : il est ainsi lié à son code.
 pub fn bundle_message(bundle: &[u8]) -> Vec<u8> {
