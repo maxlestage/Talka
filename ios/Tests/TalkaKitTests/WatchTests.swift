@@ -405,3 +405,30 @@ final class KeepDaysTests: XCTestCase {
         XCTAssertEqual(old.keepDays, 90)
     }
 }
+
+/// « Exporter la discussion » : le même texte que le navigateur.
+@MainActor
+final class ExportChatTests: XCTestCase {
+    func testExportedText() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-export-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Alice", avatar: "")
+        let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
+        let c = e.ensureDirectChat("WGSEAJNSZJ")
+        e.send(c.id, Content(text: "Bonjour\nsur deux lignes"))
+        e.send(c.id, Content(text: "Plus tard", openAt: nowMs() + 3_600_000))
+        var theirs = Message(chat: c.id, id: "t1", from: "WGSEAJNSZJ", at: nowMs(), content: Content(kind: "voice", dur: 7))
+        theirs.at += 1
+        e.store.writeMessage(theirs)
+        let (name, text) = try XCTUnwrap(e.exportChat(c.id))
+        XCTAssertEqual(name, "Talka - WGSEA-JNSZJ.txt")
+        XCTAssertTrue(text.hasPrefix("Discussion Talka « WGSEA-JNSZJ », exportée le "))
+        XCTAssertTrue(text.contains(" - Alice : Bonjour\nsur deux lignes\n"))
+        XCTAssertTrue(text.contains(" - Alice : Plus tard\n"), "sa propre capsule se lit")
+        XCTAssertTrue(text.contains(" - WGSEA-JNSZJ : 🎙️ Message vocal (0:07)\n"))
+        XCTAssertEqual(exportLine("21/10/2026 23:21", author: "Léa", text: "Bonjour"), "21/10/2026 23:21 - Léa : Bonjour")
+        XCTAssertEqual(exportLine("21/10/2026 23:22", author: nil, text: "Léa a rejoint le groupe."), "21/10/2026 23:22 - Léa a rejoint le groupe.")
+        XCTAssertEqual(exportFilename("Les amis / 2026 : été?"), "Talka - Les amis _ 2026 _ été_.txt")
+        XCTAssertEqual(exportStamp(0).count, 16)
+    }
+}
