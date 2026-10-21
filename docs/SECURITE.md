@@ -62,7 +62,7 @@ secret dans les journaux ; aucune primitive « maison ».
 | Navigateur (Talka) | `brocolis_sealed` : clé tirée du code de verrouillage | code (faible seul) ; à terme passkey (§3.5) |
 | Navigateur (site Brocolis) | valeurs chiffrées par une clé WebCrypto **non extractible** gardée dans IndexedDB | le navigateur ne la donne jamais au code |
 | Navigateur (Talka) — toute la mémoire | chaque valeur d'IndexedDB (messages, contacts, clés…) chiffrée AES-256-GCM, liée à sa clé de ligne ; la clé de l'appareil est chiffrée par une clé WebCrypto **non extractible** (base `talka-cle`) et, au choix, **par le code de verrouillage (Argon2id) ou une passkey (WebAuthn PRF)** | sans le code ou la passkey, les fichiers ne s'ouvrent pas, même avec le navigateur |
-| iPhone (Talka) — toute la mémoire | chaque JSON de la base SQLite chiffré AES-256-GCM (CryptoKit), lié à son magasin et sa clé ; clé de l'appareil dans le trousseau (`AfterFirstUnlockThisDeviceOnly`, groupe de l'application) et, au choix, **derrière Face ID** (`userPresence`, Secure Enclave) ; base exclue des sauvegardes, `secure_delete` | protection de données d'iOS **et** trousseau (**et** Face ID) : ni une copie du fichier, ni une sauvegarde, ni l'iPhone déverrouillé sans le visage ne montrent rien |
+| iPhone (Talka) — toute la mémoire | chaque JSON de la base SQLite chiffré AES-256-GCM (CryptoKit), lié à son magasin et sa clé ; clé de l'appareil dans le trousseau (`AfterFirstUnlockThisDeviceOnly`, groupe de l'application) : **chiffrée par le code de verrouillage** (Argon2id, comme le navigateur) dès qu'il y en a un, avec au choix une copie **liée aux visages enregistrés** (`biometryCurrentSet`) ; sans code, au choix **derrière Face ID** (`userPresence`, Secure Enclave) ; base exclue des sauvegardes, `secure_delete` | protection de données d'iOS **et** trousseau (**et** le code ou Face ID) : ni une copie du fichier, ni une sauvegarde, ni l'appareil déverrouillé sans le code ou le visage ne montrent rien |
 
 Talka affiche les messages en clair ; seul le disque est chiffré. Les
 données d'avant sont réécrites chiffrées au premier lancement (sur
@@ -81,10 +81,28 @@ l'iPhone, suivi d'un `VACUUM`).
   seul l'authentificateur sait calculer ; `HKDF(prf, "talka-passkey",
   "talka-cle-v1")` chiffre la clé de l'appareil. Rien de ce secret n'est
   gardé. La passkey perdue, seule une sauvegarde rend les messages.
-- *Face ID (iPhone)* : la clé est gardée avec un contrôle d'accès
+- *Code de verrouillage (iPhone, iPad)* : le même que dans le navigateur.
+  La clé de l'appareil n'est plus gardée qu'enveloppée par
+  `Argon2id(code, sel)` (AES-256-GCM, AD `talka-cle`, élément `cle-code`
+  du trousseau ; vecteur `cle` de `vectors.json`, ouvert des deux côtés).
+  Talka demande le code **avant** d'ouvrir sa base. Face ID peut le
+  remplacer par une seconde copie gardée avec `biometryCurrentSet` : un
+  visage enregistré, ni le code de l'iPhone ni un visage ajouté plus tard.
+  Un code d'avant cette version chiffre la clé au premier déverrouillage
+  où il est tapé.
+- *Face ID sans code (iPhone)* : la clé est gardée avec un contrôle d'accès
   `userPresence` (Face ID, Touch ID ou code de l'iPhone), vérifié par la
   Secure Enclave ; la nouvelle copie est écrite avant que l'ancienne soit
   effacée.
+- *Partout* : au choix, **tout est effacé après 10 codes faux** (le
+  réglage est gardé hors de la mémoire chiffrée, pour être lu avant
+  qu'elle s'ouvre) ; « Code oublié ? » efface tout pour repartir d'une
+  sauvegarde. Les essais sont espacés après 5 erreurs (15 s, 30 s… 5 min).
+- *L'écran (iPhone, iPad)* : un écran neutre dans le sélecteur d'apps, et
+  Talka se cache pendant un enregistrement, une recopie (AirPlay) ou un
+  partage de l'écran. *Les notifications* (tous) : l'aperçu montre le nom
+  et le message, le nom seulement, ou rien (« Nouveau message »), y compris
+  celles du service worker.
 
 Limites : un code à 6 chiffres reste devinable hors ligne par qui a copié
 les fichiers (Argon2id le ralentit beaucoup, sans l'empêcher) ; la passkey

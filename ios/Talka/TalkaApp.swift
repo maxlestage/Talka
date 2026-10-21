@@ -2,6 +2,7 @@
 // téléphone. Le même protocole et le même chiffrement que le navigateur :
 // un iPhone et un ordinateur discutent ensemble, dans les mêmes groupes.
 
+import Combine
 import SwiftUI
 import TalkaKit
 
@@ -27,12 +28,21 @@ struct TalkaApp: App {
 
 /// Ce que montre l'aperçu d'iOS quand Talka n'est pas au premier plan.
 struct PrivacyCover: View {
+    var note: String?
+
     var body: some View {
         ZStack {
             Color.chatBackground.ignoresSafeArea()
             VStack(spacing: 12) {
                 Image(systemName: "lock.fill").font(.system(size: 40)).foregroundStyle(Color.talkaGreen)
                 Text("Talka").font(.title2.bold())
+                if let note {
+                    Text(note)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 30)
+                }
             }
         }
         .accessibilityHidden(true)
@@ -63,6 +73,9 @@ struct RootView: View {
             Group {
                 if model.vaultLocked {
                     VaultLockView()
+                } else if model.codeLocked {
+                    // Le verrou (au-dessus) ouvre la base avec le code.
+                    Color(.systemBackground).ignoresSafeArea()
                 } else if model.engine == nil {
                     WelcomeView()
                 } else {
@@ -80,7 +93,7 @@ struct RootView: View {
                     .onTapGesture { withAnimation { model.toast = nil } }
                     .zIndex(2)
             }
-            if model.locked {
+            if model.locked || model.codeLocked {
                 LockView().zIndex(3).transition(.opacity)
             }
             if let step = model.loading {
@@ -91,9 +104,17 @@ struct RootView: View {
             if phase != .active, model.engine != nil {
                 PrivacyCover().zIndex(5)
             }
+            // L'écran enregistré, recopié (AirPlay) ou partagé : Talka se
+            // cache (Réglages → Sécurité).
+            if model.screenCaptured, model.hideWhenCaptured, model.engine != nil {
+                PrivacyCover(note: "Talka est masqué pendant l'enregistrement ou la recopie de l'écran.").zIndex(5)
+            }
         }
         .animation(.spring(duration: 0.3), value: model.toast)
         .animation(.easeInOut(duration: 0.2), value: model.locked)
+        .onReceive(NotificationCenter.default.publisher(for: UIScreen.capturedDidChangeNotification)) { _ in
+            model.screenCaptured = UIScreen.main.isCaptured
+        }
         .fullScreenCover(item: Binding(get: { model.call }, set: { if $0 == nil { model.call = nil } })) { call in
             CallScreen(call: call)
         }

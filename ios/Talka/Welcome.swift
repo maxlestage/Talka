@@ -11,7 +11,6 @@ struct WelcomeView: View {
     @State private var name = ""
     @State private var avatar = ""
     @State private var photo: PhotosPickerItem?
-    @State private var server = AppModel.builtInServer
     @State private var importing = false
     @State private var backup: Data?
     @State private var password = ""
@@ -58,17 +57,6 @@ struct WelcomeView: View {
                         .accessibilityLabel("Votre nom")
                     Text("Visible par vos contacts. Vous pourrez le changer.").font(.footnote).foregroundStyle(.secondary)
                 }
-                if AppModel.builtInServer.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        TextField("https://talka.exemple.fr", text: $server)
-                            .keyboardType(.URL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .padding()
-                            .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 12))
-                        Text("L'adresse du serveur Talka (le même que celui du navigateur).").font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
                 if let error {
                     Text(error).foregroundStyle(.red).font(.callout)
                 }
@@ -103,20 +91,10 @@ struct WelcomeView: View {
         }
     }
 
-    func validServer() -> String? {
-        let s = server.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let full = s.contains("://") ? s : "https://\(s)"
-        guard let url = URL(string: full), url.host != nil else {
-            error = "L'adresse du serveur n'est pas valide."
-            return nil
-        }
-        return full
-    }
-
     func create() {
         let n = name.trimmingCharacters(in: .whitespaces)
-        guard !n.isEmpty, let s = validServer() else { return }
-        model.createAccount(name: String(n.prefix(40)), avatar: avatar, server: s)
+        guard !n.isEmpty else { return }
+        model.createAccount(name: String(n.prefix(40)), avatar: avatar)
     }
 
     func restore() {
@@ -124,13 +102,6 @@ struct WelcomeView: View {
         backup = nil
         do {
             try model.restore(data, password: password)
-            // Une sauvegarde du navigateur ne connaît pas toujours le serveur.
-            if model.engine == nil, let s = validServer() {
-                var settings = model.store.read("kv", "settings", as: TalkaKit.Settings.self) ?? TalkaKit.Settings()
-                settings.server = s
-                model.store.write("kv", "settings", settings)
-                model.start()
-            }
             model.show("Sauvegarde restaurée ✓")
         } catch {
             self.error = error.localizedDescription
@@ -151,7 +122,7 @@ struct VaultLockView: View {
             Spacer()
             Logo(size: 70)
             Text("Talka est verrouillé").font(.title2.bold())
-            Text("Vos messages sont chiffrés sur cet iPhone et ne s'ouvrent qu'avec \(model.biometryName ?? "Face ID") ou le code de l'iPhone.")
+            Text("Vos messages sont chiffrés sur cet appareil et ne s'ouvrent qu'avec \(model.biometryName ?? "Face ID") ou le code de l'appareil.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             Button {
@@ -169,56 +140,112 @@ struct VaultLockView: View {
     }
 }
 
+/// Le verrou : le code de Talka (ou Face ID). Talka fermé, sa base chiffrée
+/// par le code : le code ouvre d'abord la clé de la base (`codeLocked`).
 struct LockView: View {
     @Environment(AppModel.self) private var model
     @State private var pin = ""
     @State private var wrong = false
+    @State private var checking = false
+    @State private var forgot = false
     // Les essais manqués survivent à un redémarrage de l'app.
     @State private var fails = UserDefaults.standard.integer(forKey: "talka.essais")
     @State private var until = Date(timeIntervalSince1970: UserDefaults.standard.double(forKey: "talka.essais.jusqua"))
 
+    /// La base n'est pas encore ouverte : le code ouvre sa clé.
+    var cold: Bool { model.codeLocked }
+    /// Un code d'avant cette version : tapé une fois, il chiffrera la base
+    /// (Face ID attend jusque-là).
+    var mustType: Bool { !cold && !model.codeEncrypts }
+    var faceAvailable: Bool { cold ? StoreVault.hasFaceUnlock : (model.faceID && !mustType) }
+
     var body: some View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
-            VStack(spacing: 24) {
-                Spacer()
-                Logo(size: 70)
-                Text("Talka est verrouillé").font(.title2.bold())
-                PinDots(count: pin.count).modifier(Shake(amount: wrong ? 1 : 0))
-                TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    let wait = Int(until.timeIntervalSince(ctx.date).rounded(.up))
-                    Text(wait > 0 ? "Trop d'essais : réessayez dans \(wait) s" : wrong ? "Code PIN incorrect" : "Entrez votre code PIN")
-                        .foregroundStyle(wrong || wait > 0 ? .red : .secondary)
-                }
-                PinPad(pin: $pin, onDone: check)
-                if let bio = model.faceID ? model.biometryName : nil {
-                    Button {
-                        Task { await model.unlockWithBiometry() }
-                    } label: {
-                        Label(bio, systemImage: bio == "Touch ID" ? "touchid" : "faceid")
+            ScrollView {
+                VStack(spacing: 22) {
+                    Logo(size: 70).padding(.top, 30)
+                    Text("Talka est verrouillé").font(.title2.bold())
+                    PinDots(count: pin.count).modifier(Shake(amount: wrong ? 1 : 0))
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        message(wait: Int(until.timeIntervalSince(ctx.date).rounded(.up)))
                     }
+                    PinPad(pin: $pin, onDone: check)
+                        .disabled(checking)
+                    if let bio = faceAvailable ? model.biometryName : nil {
+                        Button {
+                            Task { await biometry() }
+                        } label: {
+                            Label(bio, systemImage: bio == "Touch ID" ? "touchid" : "faceid")
+                        }
+                    }
+                    Button("Code oublié ?") { forgot = true }
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
-                Spacer()
+                .padding()
+                .frame(maxWidth: .infinity)
             }
-            .padding()
+            .scrollBounceBehavior(.basedOnSize)
         }
         .onChange(of: pin) { _, _ in wrong = false }
-        .task { await model.unlockWithBiometry() }
+        .task { await biometry() }
+        .confirmationDialog("Code oublié", isPresented: $forgot, titleVisibility: .visible) {
+            Button("Tout effacer", role: .destructive) { model.wipe() }
+        } message: {
+            Text("Sans lui, vos messages ne s'ouvrent plus sur cet appareil. Vous pouvez tout effacer, puis restaurer une sauvegarde.")
+        }
+    }
+
+    @ViewBuilder func message(wait: Int) -> some View {
+        let text = wait > 0 ? "Trop d'essais : réessayez dans \(wait) s"
+            : checking ? "Vérification…"
+            : wrong ? "Code incorrect"
+            : mustType ? "Entrez votre code une fois : il chiffrera désormais vos messages."
+            : "Entrez votre code"
+        Text(text)
+            .multilineTextAlignment(.center)
+            .foregroundStyle(wrong || wait > 0 ? .red : .secondary)
+    }
+
+    func biometry() async {
+        if cold {
+            await model.unlockColdWithFace()
+        } else if !mustType {
+            await model.unlockWithBiometry()
+        }
     }
 
     func check() {
-        guard Date() >= until else { return }
-        if model.checkPin(pin) {
-            model.locked = false
-            fails = 0
-        } else {
-            fails += 1
-            if fails >= 5 { until = Date().addingTimeInterval(min(300, 15 * pow(2, Double(fails - 5)))) }
-            withAnimation(.default) { wrong = true }
-        }
-        UserDefaults.standard.set(fails, forKey: "talka.essais")
-        UserDefaults.standard.set(fails == 0 ? 0 : until.timeIntervalSince1970, forKey: "talka.essais.jusqua")
+        guard Date() >= until, !checking else { return }
+        let entered = pin
         pin = ""
+        checking = true
+        Task {
+            let ok: Bool
+            if cold {
+                ok = await model.unlock(code: entered)
+            } else {
+                ok = model.checkPin(entered)
+            }
+            checking = false
+            if ok {
+                model.locked = false
+                fails = 0
+            } else {
+                fails += 1
+                // Choisi dans les réglages : au dixième code faux, tout part.
+                if model.wipeAfterFails, fails >= 10 {
+                    model.wipe()
+                    model.show("10 codes faux : Talka a tout effacé sur cet appareil.")
+                    return
+                }
+                if fails >= 5 { until = Date().addingTimeInterval(min(300, 15 * pow(2, Double(fails - 5)))) }
+                withAnimation(.default) { wrong = true }
+            }
+            UserDefaults.standard.set(fails, forKey: "talka.essais")
+            UserDefaults.standard.set(fails == 0 ? 0 : until.timeIntervalSince1970, forKey: "talka.essais.jusqua")
+        }
     }
 }
 
