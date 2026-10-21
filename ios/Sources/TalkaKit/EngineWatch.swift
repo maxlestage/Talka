@@ -40,6 +40,20 @@ extension Engine {
         )
     }
 
+    /// Le résumé le plus complet qui tienne dans WatchConnectivity : moins de
+    /// messages par discussion, puis moins de discussions, si besoin.
+    public func fittedWatchSnapshot(maxBytes: Int = WatchLink.maxSnapshotBytes,
+                                    adjust: (inout WatchSnapshot) -> Void = { _ in }) -> WatchSnapshot {
+        let steps = [(20, 15), (20, 8), (15, 4), (12, 2), (12, 0), (6, 0)]
+        var s = WatchSnapshot()
+        for (chats, messages) in steps {
+            s = watchSnapshot(chats: chats, messages: messages)
+            adjust(&s)
+            if (WatchLink.encode(s)?.count ?? .max) <= maxBytes { return s }
+        }
+        return s
+    }
+
     func watchMessage(_ m: Message, group: Bool) -> WatchMessage {
         var w = WatchMessage(id: m.id)
         w.mine = m.from == me.code
@@ -76,11 +90,25 @@ extension Engine {
             return true
         case .send:
             let text = action.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty, let c = chats[action.chat] else { return false }
-            let readOnly = c.group ? (c.left || !c.members.contains(me.code)) : blocked(c.id)
-            guard !readOnly else { return false }
-            return send(c.id, Content(text: text)) != nil
+            guard !text.isEmpty, watchCanWrite(action.chat) else { return false }
+            return send(action.chat, Content(text: text)) != nil
         }
+    }
+
+    /// Un message vocal enregistré sur la montre (AAC, `audio/mp4`).
+    @discardableResult
+    public func sendWatchVoice(chat: String, audio: Data, seconds: Double) -> Bool {
+        guard watchCanWrite(chat), !audio.isEmpty, audio.count <= WatchLink.maxVoiceBytes,
+              seconds >= 0.5 else { return false }
+        let content = Content(kind: "voice", data: "data:audio/mp4;base64,\(audio.base64EncodedString())",
+                              mime: "audio/mp4", size: Double(audio.count),
+                              dur: min(seconds, WatchLink.maxVoiceSeconds).rounded())
+        return send(chat, content) != nil
+    }
+
+    func watchCanWrite(_ id: String) -> Bool {
+        guard let c = chats[id] else { return false }
+        return !(c.group ? (c.left || !c.members.contains(me.code)) : blocked(c.id))
     }
 }
 
