@@ -95,10 +95,26 @@ struct ChatsTab: View {
                             .tint(.indigo)
                         }
                     }
+                    // La recherche trouve aussi les messages de toutes les
+                    // discussions (comme le navigateur).
+                    let found = e.searchMessages(query)
+                    if !found.isEmpty {
+                        Section("Messages") {
+                            ForEach(found, id: \.key) { m in
+                                Button {
+                                    model.reveal = m.id
+                                    model.openChat(m.chat)
+                                } label: {
+                                    FoundRow(engine: e, message: m)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
                 }
                 .listStyle(.plain)
                 .overlay {
-                    if chats(e).isEmpty {
+                    if chats(e).isEmpty && e.searchMessages(query).isEmpty {
                         ContentUnavailableView {
                             Label(query.isEmpty ? "Aucune discussion" : "Aucun résultat", systemImage: "bubble.left.and.bubble.right")
                         } description: {
@@ -183,6 +199,31 @@ struct ChatsTab: View {
                 if a.pinned != b.pinned { return a.pinned }
                 return max(a.lastAt, a.last?.at ?? 0) > max(b.lastAt, b.last?.at ?? 0)
             }
+    }
+}
+
+/// Un message trouvé par la recherche : sa discussion, sa date, le passage.
+struct FoundRow: View {
+    let engine: Engine
+    let message: Message
+
+    var body: some View {
+        let e = engine
+        let m = message
+        let who = m.from == e.me.code ? "Vous : " : e.isGroup(m.chat) ? "\(e.displayName(m.from)) : " : ""
+        HStack(spacing: 12) {
+            e.avatar(m.chat, size: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(e.chat(m.chat).map(e.title) ?? "").font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Spacer()
+                    Text(Dates.list(m.at)).font(.caption).foregroundStyle(.secondary)
+                }
+                Text(who + e.readable(m)).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 

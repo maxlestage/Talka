@@ -837,6 +837,13 @@ fn quote(r: &Reply) -> El {
         .click(move || jump_to(&id))
 }
 
+/// Ouvre une discussion sur un message (résultat de recherche) : le temps
+/// qu'elle s'affiche, puis le message clignote au milieu de l'écran.
+pub fn reveal(id: &str) {
+    let id = id.to_owned();
+    timer(450, move || jump_to(&id));
+}
+
 /// Amène un message au milieu de l'écran et le fait clignoter.
 fn jump_to(id: &str) {
     let Some(list) = el(|c| c.list.clone()) else {
