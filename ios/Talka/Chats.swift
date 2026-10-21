@@ -12,6 +12,8 @@ struct ChatsTab: View {
     @State private var query = ""
     @State private var filter = Filter.all
     @State private var sheet: Sheet?
+    /// La discussion à mettre en sourdine (choix de la durée).
+    @State private var muting: String?
 
     enum Filter: String, CaseIterable { case all = "Toutes", unread = "Non lues", groups = "Groupes", archived = "Archivées" }
 
@@ -86,7 +88,7 @@ struct ChatsTab: View {
                             }
                             .tint(.gray)
                             Button {
-                                e.updateChat(chat.id) { $0.muted.toggle() }
+                                if chat.muted { e.mute(chat.id, seconds: 0) } else { muting = chat.id }
                             } label: {
                                 Label(chat.muted ? "Son" : "Silence", systemImage: chat.muted ? "bell" : "bell.slash")
                             }
@@ -109,6 +111,14 @@ struct ChatsTab: View {
                     }
                 }
                 .searchable(text: $query, prompt: "Rechercher")
+                .confirmationDialog("Mettre en sourdine", isPresented: Binding(get: { muting != nil }, set: { if !$0 { muting = nil } }),
+                                    titleVisibility: .visible) {
+                    if let id = muting, let e = model.engine {
+                        MuteChoices(engine: e, chatId: id, muted: false)
+                    }
+                } message: {
+                    Text("Plus de notification ni de son ; les messages arrivent quand même.")
+                }
                 .navigationTitle("Discussions")
                 .navigationDestination(for: String.self) { id in ConversationView(chatId: id) }
                 .toolbar {
