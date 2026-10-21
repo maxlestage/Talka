@@ -317,18 +317,30 @@ pub fn push_key() -> String {
 }
 
 /// Donne (ou retire) au relais l'adresse Web Push de ce navigateur.
-pub fn push_endpoint(endpoint: &str, on: bool) -> bool {
-    raw(&json!({ "t": "push", "endpoint": endpoint, "on": on }))
+/// Abonne (ou désabonne) ce navigateur : son adresse, et ses clés Web Push
+/// (`p256dh`, `auth`, base64url) pour que le relais y chiffre les aperçus.
+pub fn push_endpoint(endpoint: &str, p256dh: &str, auth: &str, on: bool) -> bool {
+    raw(&json!({ "t": "push", "endpoint": endpoint, "p256dh": p256dh, "auth": auth, "on": on }))
 }
 
 /// Envoie une enveloppe ; tenue quand le relais l'a reçue. `wake` : un vrai
 /// message, qui réveille un destinataire hors ligne (pas un accusé de
 /// lecture, une réaction ou un profil).
-pub async fn send(id: &str, to: &str, body: &str, live: bool, wake: bool) -> Ack {
+pub async fn send(
+    id: &str,
+    to: &str,
+    body: &str,
+    live: bool,
+    wake: bool,
+    apercu: Option<&str>,
+) -> Ack {
     let d = Deferred::<Ack>::new();
     let mut msg = json!({ "t": "send", "id": id, "to": to, "body": body, "live": live });
     if wake {
         msg["wake"] = json!(true);
+        if let Some(a) = apercu {
+            msg["apercu"] = json!(a);
+        }
     }
     if !raw(&msg) {
         return Ack::Err("offline".into());
@@ -445,7 +457,14 @@ async fn anon_ready() -> bool {
 }
 
 /// Dépose une enveloppe scellée pour `peer`, avec son jeton de remise.
-pub async fn send_sealed(id: &str, peer: &Contact, sealed: &str, live: bool, wake: bool) -> Ack {
+pub async fn send_sealed(
+    id: &str,
+    peer: &Contact,
+    sealed: &str,
+    live: bool,
+    wake: bool,
+    apercu: Option<&str>,
+) -> Ack {
     if !anon_ready().await {
         return Ack::Err("offline".into());
     }
@@ -455,6 +474,9 @@ pub async fn send_sealed(id: &str, peer: &Contact, sealed: &str, live: bool, wak
     });
     if wake {
         msg["wake"] = json!(true);
+        if let Some(a) = apercu {
+            msg["apercu"] = json!(a);
+        }
     }
     let sent = ANON.with(|w| {
         w.borrow()

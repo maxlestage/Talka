@@ -80,6 +80,10 @@ pub struct Contact {
     /// Lui a-t-on donné le nôtre ?
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub jeton_sent: bool,
+    /// Sa clé de notification : l'aperçu de ses notifications (« Léa :
+    /// Bonjour ») lui est chiffré pour elle. Vide : un simple réveil.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub nk: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -400,6 +404,11 @@ pub enum Body {
         /// par les versions qui ne le connaissent pas.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         jeton: String,
+        /// Sa clé de notification (P-256, base64) : pour lui chiffrer
+        /// l'aperçu de ses notifications ; ignorée par les versions qui ne la
+        /// connaissent pas.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        nk: String,
     },
     Group {
         op: String,
@@ -471,6 +480,45 @@ impl Wire {
             .as_ref()
             .map(|g| g.id.clone())
             .or_else(|| self.g.clone())
+    }
+
+    /// L'aperçu de sa notification chez le destinataire, en JSON : qui écrit
+    /// (`n`, son nom choisi, et le groupe), quoi (`t`, `preview` du message,
+    /// comme la liste des discussions) et la discussion vue de chez lui
+    /// (`c`). Seulement pour un message écrit ; il partira chiffré pour la
+    /// clé de notification du destinataire.
+    pub fn apercu(
+        &self,
+        me: &str,
+        name: &str,
+        preview: impl Fn(&Message) -> String,
+    ) -> Option<String> {
+        let Body::Msg { content, .. } = &self.body else {
+            return None;
+        };
+        let m = Message {
+            kind: content.kind.clone(),
+            text: content.text.clone(),
+            name: content.name.clone(),
+            dur: content.dur,
+            open_at: content.open_at,
+            ..Default::default()
+        };
+        let name: String = if name.trim().is_empty() {
+            crate::crypto::pretty(me)
+        } else {
+            name.trim().chars().take(40).collect()
+        };
+        let (n, c) = match (&self.grp, self.group_id()) {
+            (Some(g), Some(id)) if !g.name.is_empty() => (
+                format!("{name} · {}", g.name.chars().take(40).collect::<String>()),
+                format!("g:{id}"),
+            ),
+            (_, Some(id)) => (name, format!("g:{id}")),
+            _ => (name, me.to_owned()),
+        };
+        let t: String = preview(&m).chars().take(120).collect();
+        Some(serde_json::json!({ "n": n, "t": t, "c": c }).to_string())
     }
 }
 
@@ -639,5 +687,77 @@ mod tests {
         }
         let r: Wire = serde_json::from_str(r#"{"k":"status-seen","id":"x"}"#).unwrap();
         assert!(matches!(r.body, Body::StatusSeen { .. }));
+    }
+
+    fn msg(kind: &str, text: &str) -> Wire {
+        Wire::new(Body::Msg {
+            id: "m1".into(),
+            at: 1.0,
+            pn: "Léa".into(),
+            content: Content {
+                kind: kind.into(),
+                text: text.into(),
+                ..Default::default()
+            },
+        })
+    }
+
+    /// Comme la liste des discussions du navigateur, en plus court.
+    fn preview(m: &Message) -> String {
+        if m.is_capsule() {
+            "⏳ Capsule temporelle".into()
+        } else if m.kind == "voice" {
+            "🎙️ Message vocal".into()
+        } else {
+            m.text.clone()
+        }
+    }
+
+    fn apercu(me: &str, name: &str, w: &Wire) -> serde_json::Value {
+        serde_json::from_str(&w.apercu(me, name, preview).expect("un aperçu")).unwrap()
+    }
+
+    /// L'aperçu des notifications dit qui écrit et quoi ; une capsule ne se
+    /// trahit pas, et seuls les messages écrits en ont un.
+    #[test]
+    fn notification_preview_text() {
+        assert_eq!(
+            apercu("KD6YMWRFXX", " Léa ", &msg("text", "Bonjour 👋")),
+            serde_json::json!({ "n": "Léa", "t": "Bonjour 👋", "c": "KD6YMWRFXX" })
+        );
+        let v = apercu("KD6YMWRFXX", "", &msg("voice", ""));
+        assert_eq!(
+            (v["n"].as_str(), v["t"].as_str()),
+            (Some("KD6YM-WRFXX"), Some("🎙️ Message vocal"))
+        );
+
+        let mut capsule = msg("text", "Le secret");
+        if let Body::Msg { content, .. } = &mut capsule.body {
+            content.open_at = 9e12;
+        }
+        assert_eq!(apercu("X", "Léa", &capsule)["t"], "⏳ Capsule temporelle");
+
+        let mut group = msg("text", "À tous");
+        group.grp = Some(GroupInfo {
+            id: "g1".into(),
+            name: "Les amis".into(),
+            ..Default::default()
+        });
+        let g = apercu("X", "Léa", &group);
+        assert_eq!(
+            (g["n"].as_str(), g["c"].as_str()),
+            (Some("Léa · Les amis"), Some("g:g1"))
+        );
+        group.grp = None;
+        group.g = Some("g1".into());
+        assert_eq!(apercu("X", "Léa", &group)["n"], "Léa");
+
+        let long = apercu("X", "Léa", &msg("text", &"a".repeat(500)));
+        assert_eq!(long["t"].as_str().unwrap().chars().count(), 120);
+        assert!(
+            Wire::new(Body::Typing { on: true })
+                .apercu("X", "Léa", preview)
+                .is_none()
+        );
     }
 }
