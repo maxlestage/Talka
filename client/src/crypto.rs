@@ -585,62 +585,185 @@ fn pbkdf2(secret: &str, salt: &[u8], rounds: u32) -> [u8; 32] {
     out
 }
 
-/// Le code de verrouillage, haché : jamais gardé en clair.
+/// Argon2id (RFC 9106) : lent et gourmand en mémoire, pour qu'un code
+/// volé avec les fichiers ne se devine pas à la chaîne (une carte graphique
+/// n'y gagne presque rien). 19 Mio, 2 passes : les réglages minimum de
+/// l'OWASP, environ une demi-seconde dans un navigateur.
+pub const ARGON_M: u32 = 19_456;
+pub const ARGON_T: u32 = 2;
+
+/// 32 octets tirés d'un code par Argon2id.
+pub fn argon2id(secret: &str, salt: &[u8], m: u32, t: u32) -> Option<[u8; 32]> {
+    let params = argon2::Params::new(m, t, 1, Some(32)).ok()?;
+    let mut out = [0u8; 32];
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+        .hash_password_into(secret.as_bytes(), salt, &mut out)
+        .ok()?;
+    Some(out)
+}
+
+/// Le code de verrouillage, haché : jamais gardé en clair. `v` 2 : Argon2id
+/// (`m`, `t`) ; absent : PBKDF2 (les codes d'avant, rehachés au premier
+/// déverrouillage).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PinHash {
     pub salt: String,
     pub hash: String,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub v: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub m: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub t: u32,
 }
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+/// Les nouveaux codes : 6 chiffres au moins (les anciens de 4 ou 5 restent
+/// acceptés au déverrouillage).
+pub const PIN_MIN: usize = 6;
+pub const PIN_MAX: usize = 12;
 
 pub fn hash_pin(pin: &str) -> PinHash {
     let salt = random_bytes(16);
     PinHash {
-        hash: b64(&pbkdf2(pin, &salt, PIN_ROUNDS)),
+        hash: b64(&argon2id(pin, &salt, ARGON_M, ARGON_T).unwrap_or_default()),
         salt: b64(&salt),
+        v: 2,
+        m: ARGON_M,
+        t: ARGON_T,
     }
 }
 
-pub fn check_pin(pin: &str, stored: &PinHash) -> bool {
-    let Some(salt) = unb64(&stored.salt) else {
-        return false;
-    };
-    b64(&pbkdf2(pin, &salt, PIN_ROUNDS)) == stored.hash
+/// Comparaison en temps constant.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Une sauvegarde : un mot de passe → PBKDF2 → AES-256-GCM.
+pub fn check_pin(pin: &str, stored: &PinHash) -> bool {
+    let (Some(salt), Some(hash)) = (unb64(&stored.salt), unb64(&stored.hash)) else {
+        return false;
+    };
+    let got = match stored.v {
+        0 | 1 => pbkdf2(pin, &salt, PIN_ROUNDS),
+        2 if stored.m >= 8 && stored.m <= 1 << 20 && (1..=10).contains(&stored.t) => {
+            match argon2id(pin, &salt, stored.m, stored.t) {
+                Some(h) => h,
+                None => return false,
+            }
+        }
+        _ => return false,
+    };
+    same(&got, &hash)
+}
+
+/// Un code d'avant (PBKDF2) : à rehacher avec Argon2id.
+pub fn pin_is_old(stored: &PinHash) -> bool {
+    stored.v < 2
+}
+
+// ----- La clé de l'appareil, protégée par le code ou une passkey -------------
+//
+// La clé de l'appareil (qui chiffre la mémoire, voir `seal_row`) peut être
+// chiffrée en plus par une clé que seul l'utilisateur apporte : Argon2id du
+// code de verrouillage, ou la sortie PRF d'une passkey. Sans elle, les
+// fichiers de Talka ne s'ouvrent pas, même avec le navigateur.
+
+/// La clé tirée de la sortie PRF d'une passkey (32 octets ou plus).
+pub fn passkey_key(prf: &[u8]) -> Option<[u8; 32]> {
+    let mut key = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(b"talka-passkey"), prf)
+        .expand(b"talka-cle-v1", &mut key)
+        .ok()?;
+    Some(key)
+}
+
+/// Chiffre la clé de l'appareil par la clé de l'utilisateur :
+/// iv (12) ‖ chiffré ‖ tag.
+pub fn lock_device_key(user_key: &[u8], device_key: &[u8]) -> Option<Vec<u8>> {
+    let iv = random_bytes(12);
+    let ct = Aes256Gcm::new_from_slice(user_key)
+        .ok()?
+        .encrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: device_key,
+                aad: b"talka-cle",
+            },
+        )
+        .ok()?;
+    Some([iv, ct].concat())
+}
+
+/// La clé de l'appareil, si c'est la bonne clé de l'utilisateur.
+pub fn unlock_device_key(user_key: &[u8], locked: &[u8]) -> Option<Vec<u8>> {
+    if locked.len() != 12 + 32 + 16 {
+        return None;
+    }
+    Aes256Gcm::new_from_slice(user_key)
+        .ok()?
+        .decrypt(
+            Nonce::from_slice(&locked[..12]),
+            Payload {
+                msg: &locked[12..],
+                aad: b"talka-cle",
+            },
+        )
+        .ok()
+}
+
+/// Une sauvegarde : un mot de passe → Argon2id (`talka` 3 ; PBKDF2 pour
+/// les fichiers d'avant, `talka` 2) → AES-256-GCM. Elle contient la clé
+/// d'identité : Argon2id la rend bien plus chère à attaquer hors ligne.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Backup {
     pub talka: u32,
     pub salt: String,
     pub iv: String,
     pub data: String,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub m: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub t: u32,
 }
+
+/// Argon2id pour la sauvegarde : 46 Mio, 1 passe (une option de l'OWASP).
+pub const BACKUP_M: u32 = 47_104;
+pub const BACKUP_T: u32 = 1;
 
 pub fn encrypt_backup(password: &str, plain: &str) -> Option<Backup> {
     let salt = random_bytes(16);
     let iv = random_bytes(12);
-    let key = pbkdf2(password, &salt, BACKUP_ROUNDS);
+    let key = argon2id(password, &salt, BACKUP_M, BACKUP_T)?;
     let ct = Aes256Gcm::new_from_slice(&key)
         .ok()?
         .encrypt(Nonce::from_slice(&iv), plain.as_bytes())
         .ok()?;
     Some(Backup {
-        talka: 2,
+        talka: 3,
         salt: b64(&salt),
         iv: b64(&iv),
         data: b64(&ct),
+        m: BACKUP_M,
+        t: BACKUP_T,
     })
 }
 
 pub fn decrypt_backup(password: &str, file: &Backup) -> Result<String, &'static str> {
-    if file.talka != 2 {
-        return Err("Ce fichier n'est pas une sauvegarde Talka.");
-    }
     let bad = "Ce fichier n'est pas une sauvegarde Talka.";
     let salt = unb64(&file.salt).ok_or(bad)?;
     let iv = unb64(&file.iv).ok_or(bad)?;
     let data = unb64(&file.data).ok_or(bad)?;
-    let key = pbkdf2(password, &salt, BACKUP_ROUNDS);
+    let key = match file.talka {
+        2 => pbkdf2(password, &salt, BACKUP_ROUNDS),
+        3 if (8..=1 << 21).contains(&file.m) && (1..=10).contains(&file.t) => {
+            argon2id(password, &salt, file.m, file.t).ok_or(bad)?
+        }
+        3 => return Err("Cette sauvegarde demande trop de mémoire pour être ouverte."),
+        _ => return Err(bad),
+    };
     let pt = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| bad)?
         .decrypt(Nonce::from_slice(&iv), data.as_slice())
@@ -795,6 +918,69 @@ mod tests {
         assert!(seal_apercu(&a, "pas une clé", "x").is_none());
         assert!(valid_nk(&nk_pub));
         assert!(!valid_nk("pas une clé") && !valid_nk(&b64(&[4; 65])));
+    }
+
+    #[test]
+    fn pin_argon2_and_old_pbkdf2() {
+        let h = hash_pin("246813");
+        assert_eq!((h.v, h.m, h.t), (2, ARGON_M, ARGON_T));
+        assert!(check_pin("246813", &h) && !check_pin("246812", &h));
+        assert!(!pin_is_old(&h));
+        // Un code d'avant (PBKDF2, sans `v`) se vérifie toujours.
+        let salt = random_bytes(16);
+        let old: PinHash = serde_json::from_value(serde_json::json!({
+            "salt": b64(&salt), "hash": b64(&pbkdf2("2580", &salt, PIN_ROUNDS)),
+        }))
+        .unwrap();
+        assert!(check_pin("2580", &old) && !check_pin("2581", &old) && pin_is_old(&old));
+        // Des réglages absurdes (un fichier trafiqué) : refusé, sans calcul.
+        let mut bad = h.clone();
+        bad.m = u32::MAX;
+        assert!(!check_pin("246813", &bad));
+        // Argon2id lui-même est vérifié contre l'implémentation Swift (pure,
+        // vérifiée par les vecteurs de RFC 9106) : `pin` dans vectors.json.
+        let k = argon2id("password", b"somesalt", 32, 2).unwrap();
+        assert_ne!(k, argon2id("password", b"somesalt", 32, 3).unwrap());
+    }
+
+    #[test]
+    fn backup_argon2_and_old_pbkdf2() {
+        let file = encrypt_backup("une longue phrase secrète", "{\"x\":1}").unwrap();
+        assert_eq!((file.talka, file.m, file.t), (3, BACKUP_M, BACKUP_T));
+        assert_eq!(
+            decrypt_backup("une longue phrase secrète", &file).as_deref(),
+            Ok("{\"x\":1}")
+        );
+        assert!(decrypt_backup("une autre phrase", &file).is_err());
+        let mut greedy = file.clone();
+        greedy.m = u32::MAX;
+        assert!(decrypt_backup("une longue phrase secrète", &greedy).is_err());
+        // Une sauvegarde d'avant (PBKDF2) s'ouvre toujours.
+        let (salt, iv) = (random_bytes(16), random_bytes(12));
+        let key = pbkdf2("motdepasse", &salt, BACKUP_ROUNDS);
+        let ct = Aes256Gcm::new_from_slice(&key)
+            .unwrap()
+            .encrypt(Nonce::from_slice(&iv), b"{}".as_slice())
+            .unwrap();
+        let old: Backup = serde_json::from_value(serde_json::json!({
+            "talka": 2, "salt": b64(&salt), "iv": b64(&iv), "data": b64(&ct),
+        }))
+        .unwrap();
+        assert_eq!(decrypt_backup("motdepasse", &old).as_deref(), Ok("{}"));
+    }
+
+    #[test]
+    fn device_key_locked_by_the_user() {
+        let device = random_bytes(32);
+        let code = argon2id("246813", b"0123456789abcdef", 64, 1).unwrap();
+        let locked = lock_device_key(&code, &device).unwrap();
+        assert_eq!(unlock_device_key(&code, &locked), Some(device.clone()));
+        let wrong = argon2id("246812", b"0123456789abcdef", 64, 1).unwrap();
+        assert!(unlock_device_key(&wrong, &locked).is_none());
+        let pk = passkey_key(&[7; 32]).unwrap();
+        let locked = lock_device_key(&pk, &device).unwrap();
+        assert_eq!(unlock_device_key(&pk, &locked), Some(device));
+        assert!(unlock_device_key(&passkey_key(&[8; 32]).unwrap(), &locked).is_none());
     }
 
     #[test]

@@ -140,8 +140,49 @@ fn aes_gcm(iv: &[u8]) -> Result<JsValue, JsValue> {
     Ok(alg.into())
 }
 
-/// Ouvre la clé de l'appareil gardée (`{wrap, iv, data}`).
-async fn unwrap_key(record: &JsValue) -> Result<Vec<u8>, JsValue> {
+/// Ce qui protège la clé de l'appareil, en plus du navigateur.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Lock {
+    /// Rien : Talka s'ouvre seul.
+    None,
+    /// Le code de verrouillage (Argon2id).
+    Code,
+    /// Une passkey (WebAuthn, extension PRF) : son identifiant et le sel.
+    Passkey { id: Vec<u8>, salt: Vec<u8> },
+}
+
+/// Une nouvelle protection pour la clé de l'appareil.
+pub enum NewLock<'a> {
+    None,
+    Code(&'a str),
+    Passkey {
+        id: Vec<u8>,
+        salt: Vec<u8>,
+        prf: Vec<u8>,
+    },
+}
+
+async fn key_db() -> Result<IdbDatabase, JsValue> {
+    open_idb(KEY_DB, |db| {
+        if !db.object_store_names().contains(KEY_STORE) {
+            let _ = db.create_object_store(KEY_STORE);
+        }
+    })
+    .await
+}
+
+/// L'enregistrement de la clé (`{wrap, iv, data, lock?}`), ou `undefined`.
+async fn read_record(db: &IdbDatabase) -> Result<JsValue, JsValue> {
+    let req = db
+        .transaction_with_str(KEY_STORE)?
+        .object_store(KEY_STORE)?
+        .get(&"repos".into())?;
+    wait(&req).await
+}
+
+/// Ce que garde l'enregistrement, ouvert par la clé d'emballage : la clé de
+/// l'appareil (32 octets), ou la clé verrouillée par l'utilisateur (60).
+async fn unwrap_inner(record: &JsValue) -> Result<Vec<u8>, JsValue> {
     let iv = Uint8Array::new(&get(record, "iv")).to_vec();
     let plain = await_promise(call(
         &subtle(),
@@ -149,32 +190,203 @@ async fn unwrap_key(record: &JsValue) -> Result<Vec<u8>, JsValue> {
         &[aes_gcm(&iv)?, get(record, "wrap"), get(record, "data")],
     ))
     .await?;
-    let key = Uint8Array::new(&plain).to_vec();
-    if key.len() != 32 {
-        return Err(JsValue::from_str("clé"));
-    }
-    Ok(key)
+    Ok(Uint8Array::new(&plain).to_vec())
 }
 
-/// La clé de l'appareil : lue (et ouverte), ou tirée la première fois. Elle
-/// est gardée chiffrée par une clé WebCrypto non exportable.
-async fn device_key() -> Result<Vec<u8>, JsValue> {
-    let db = open_idb(KEY_DB, |db| {
-        if !db.object_store_names().contains(KEY_STORE) {
-            let _ = db.create_object_store(KEY_STORE);
-        }
-    })
+/// Écrit l'enregistrement : `inner` chiffré par la clé d'emballage `wrap`.
+/// `add` : seulement s'il n'y en a pas encore (sinon `false`).
+async fn write_record(
+    db: &IdbDatabase,
+    wrap: &JsValue,
+    inner: &[u8],
+    lock: &JsValue,
+    add: bool,
+) -> Result<bool, JsValue> {
+    let iv = crypto::random_bytes(12);
+    let data = await_promise(call(
+        &subtle(),
+        "encrypt",
+        &[aes_gcm(&iv)?, wrap.clone(), Uint8Array::from(inner).into()],
+    ))
     .await?;
-    let read = |db: &IdbDatabase| -> Result<IdbRequest, JsValue> {
-        db.transaction_with_str(KEY_STORE)?
-            .object_store(KEY_STORE)?
-            .get(&"repos".into())
+    let record = Object::new();
+    Reflect::set(&record, &"wrap".into(), wrap)?;
+    Reflect::set(
+        &record,
+        &"iv".into(),
+        &Uint8Array::from(iv.as_slice()).into(),
+    )?;
+    Reflect::set(&record, &"data".into(), &data)?;
+    if !lock.is_undefined() {
+        Reflect::set(&record, &"lock".into(), lock)?;
+    }
+    let tx = db.transaction_with_str_and_mode(KEY_STORE, IdbTransactionMode::Readwrite)?;
+    let store = tx.object_store(KEY_STORE)?;
+    let req = if add {
+        store.add_with_key(&record, &"repos".into())
+    } else {
+        store.put_with_key(&record, &"repos".into())
     };
-    let record = wait(&read(&db)?).await?;
-    if !record.is_undefined() && !record.is_null() {
-        let key = unwrap_key(&record).await;
+    let ok = match req {
+        Ok(req) => wait(&req).await.is_ok(),
+        Err(_) => false,
+    };
+    let _ = JsFuture::from(done(&tx)).await;
+    Ok(ok)
+}
+
+fn bytes(v: &JsValue) -> Vec<u8> {
+    if v.is_undefined() || v.is_null() {
+        Vec::new()
+    } else {
+        Uint8Array::new(v).to_vec()
+    }
+}
+
+fn lock_of(record: &JsValue) -> Lock {
+    let lock = get(record, "lock");
+    match get(&lock, "kind").as_string().as_deref() {
+        Some("code") => Lock::Code,
+        Some("passkey") => Lock::Passkey {
+            id: bytes(&get(&lock, "id")),
+            salt: bytes(&get(&lock, "salt")),
+        },
+        _ => Lock::None,
+    }
+}
+
+/// Ce qui protège la clé de l'appareil (lu avant d'ouvrir la mémoire).
+pub async fn lock() -> Lock {
+    let Ok(db) = key_db().await else {
+        return Lock::None;
+    };
+    let lock = match read_record(&db).await {
+        Ok(r) if !r.is_undefined() && !r.is_null() => lock_of(&r),
+        _ => Lock::None,
+    };
+    db.close();
+    lock
+}
+
+/// Ouvre la clé de l'appareil avec la clé de l'utilisateur ; `false` si ce
+/// n'est pas la bonne. Ensuite, [`open`] ouvre la mémoire.
+async fn unlock_with(user_key: impl FnOnce(&JsValue) -> Option<[u8; 32]>) -> bool {
+    let Ok(db) = key_db().await else {
+        return false;
+    };
+    let record = read_record(&db).await.unwrap_or(JsValue::UNDEFINED);
+    db.close();
+    if record.is_undefined() || record.is_null() {
+        return false;
+    }
+    let Ok(inner) = unwrap_inner(&record).await else {
+        return false;
+    };
+    let Some(key) = user_key(&get(&record, "lock")) else {
+        return false;
+    };
+    match crypto::unlock_device_key(&key, &inner) {
+        Some(device) if device.len() == 32 => {
+            DEVICE_KEY.with(|k| *k.borrow_mut() = Some(device));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Le code de verrouillage ouvre-t-il la clé de l'appareil ?
+pub async fn unlock_code(code: &str) -> bool {
+    unlock_with(|lock| {
+        let salt = bytes(&get(lock, "salt"));
+        let m = get(lock, "m").as_f64()? as u32;
+        let t = get(lock, "t").as_f64()? as u32;
+        if !(8..=1 << 20).contains(&m) || !(1..=10).contains(&t) {
+            return None;
+        }
+        crypto::argon2id(code, &salt, m, t)
+    })
+    .await
+}
+
+/// La sortie PRF de la passkey ouvre-t-elle la clé de l'appareil ?
+pub async fn unlock_passkey(prf: &[u8]) -> bool {
+    unlock_with(|_| crypto::passkey_key(prf)).await
+}
+
+/// Change ce qui protège la clé de l'appareil (la mémoire doit être
+/// ouverte). `false` si rien n'a pu être écrit.
+pub async fn protect(new: NewLock<'_>) -> bool {
+    let Some(device) = key() else { return false };
+    let Ok(db) = key_db().await else { return false };
+    let record = read_record(&db).await.unwrap_or(JsValue::UNDEFINED);
+    if record.is_undefined() || record.is_null() {
         db.close();
-        return key;
+        return false;
+    }
+    let wrap = get(&record, "wrap");
+    let built: Result<(Vec<u8>, JsValue), JsValue> = (|| {
+        let lock = Object::new();
+        Ok(match new {
+            NewLock::None => (device.clone(), JsValue::UNDEFINED),
+            NewLock::Code(code) => {
+                let salt = crypto::random_bytes(16);
+                let user = crypto::argon2id(code, &salt, crypto::ARGON_M, crypto::ARGON_T)
+                    .ok_or_else(|| JsValue::from_str("argon2"))?;
+                Reflect::set(&lock, &"kind".into(), &"code".into())?;
+                Reflect::set(
+                    &lock,
+                    &"salt".into(),
+                    &Uint8Array::from(salt.as_slice()).into(),
+                )?;
+                Reflect::set(&lock, &"m".into(), &crypto::ARGON_M.into())?;
+                Reflect::set(&lock, &"t".into(), &crypto::ARGON_T.into())?;
+                let inner = crypto::lock_device_key(&user, &device)
+                    .ok_or_else(|| JsValue::from_str("aes"))?;
+                (inner, lock.into())
+            }
+            NewLock::Passkey { id, salt, prf } => {
+                let user = crypto::passkey_key(&prf).ok_or_else(|| JsValue::from_str("prf"))?;
+                Reflect::set(&lock, &"kind".into(), &"passkey".into())?;
+                Reflect::set(&lock, &"id".into(), &Uint8Array::from(id.as_slice()).into())?;
+                Reflect::set(
+                    &lock,
+                    &"salt".into(),
+                    &Uint8Array::from(salt.as_slice()).into(),
+                )?;
+                let inner = crypto::lock_device_key(&user, &device)
+                    .ok_or_else(|| JsValue::from_str("aes"))?;
+                (inner, lock.into())
+            }
+        })
+    })();
+    let ok = match built {
+        Ok((inner, lock)) => write_record(&db, &wrap, &inner, &lock, false)
+            .await
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+    db.close();
+    ok
+}
+
+/// La clé de l'appareil : déjà ouverte (code, passkey), lue, ou tirée la
+/// première fois. Elle est gardée chiffrée par une clé WebCrypto non
+/// exportable ; protégée en plus, elle ne s'ouvre pas sans l'utilisateur.
+async fn device_key() -> Result<Vec<u8>, JsValue> {
+    if let Some(k) = key() {
+        return Ok(k);
+    }
+    let db = key_db().await?;
+    let record = read_record(&db).await?;
+    if !record.is_undefined() && !record.is_null() {
+        let inner = unwrap_inner(&record).await;
+        db.close();
+        let inner = inner?;
+        if inner.len() != 32 {
+            // Protégée par le code ou une passkey : `unlock_*` d'abord.
+            return Err(JsValue::from_str("verrouillée"));
+        }
+        return Ok(inner);
     }
     // La première fois : une clé d'emballage non exportable, et la clé de
     // l'appareil chiffrée par elle.
@@ -189,40 +401,18 @@ async fn device_key() -> Result<Vec<u8>, JsValue> {
     ))
     .await?;
     let key = crypto::random_bytes(32);
-    let iv = crypto::random_bytes(12);
-    let data = await_promise(call(
-        &subtle(),
-        "encrypt",
-        &[
-            aes_gcm(&iv)?,
-            wrap.clone(),
-            Uint8Array::from(key.as_slice()).into(),
-        ],
-    ))
-    .await?;
-    let record = Object::new();
-    Reflect::set(&record, &"wrap".into(), &wrap)?;
-    Reflect::set(
-        &record,
-        &"iv".into(),
-        &Uint8Array::from(iv.as_slice()).into(),
-    )?;
-    Reflect::set(&record, &"data".into(), &data)?;
-    let tx = db.transaction_with_str_and_mode(KEY_STORE, IdbTransactionMode::Readwrite)?;
     // `add` : si un autre onglet l'a écrite entre-temps, c'est la sienne.
-    let added = match tx
-        .object_store(KEY_STORE)?
-        .add_with_key(&record, &"repos".into())
-    {
-        Ok(req) => wait(&req).await.is_ok(),
-        Err(_) => false,
-    };
-    let _ = JsFuture::from(done(&tx)).await;
-    let out = if added {
+    let out = if write_record(&db, &wrap, &key, &JsValue::UNDEFINED, true).await? {
         Ok(key)
     } else {
-        let record = wait(&read(&db)?).await?;
-        unwrap_key(&record).await
+        let record = read_record(&db).await?;
+        unwrap_inner(&record).await.and_then(|k| {
+            if k.len() == 32 {
+                Ok(k)
+            } else {
+                Err(JsValue::from_str("verrouillée"))
+            }
+        })
     };
     db.close();
     out
@@ -592,6 +782,24 @@ pub async fn wipe() {
         db.wipe().await;
         flush_now().await;
     }
+    // La clé de l'appareil (et sa protection) part avec.
+    DEVICE_KEY.with(|k| *k.borrow_mut() = None);
+    if let Ok(Some(factory)) = window().indexed_db() {
+        let _ = factory.delete_database(KEY_DB);
+    }
+}
+
+/// Tout effacer sans pouvoir ouvrir la mémoire (passkey perdue) : les deux
+/// bases, et ce que garde `localStorage`.
+pub async fn forget_everything() {
+    if let Ok(Some(factory)) = window().indexed_db() {
+        for name in [NAME, KEY_DB] {
+            if let Ok(req) = factory.delete_database(name) {
+                let _ = wait(&req).await;
+            }
+        }
+    }
+    local_clear();
 }
 
 /// L'espace occupé (octets), quand le navigateur sait le dire.

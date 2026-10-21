@@ -18,6 +18,7 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 sha2 = "0.10"
 base64 = "0.22"
 rand_core = { version = "0.6", features = ["getrandom"] }
