@@ -224,9 +224,13 @@ public final class Relay {
         }
     }
 
-    /// Envoie une enveloppe ; tenue quand le relais l'a reçue.
-    public func send(id: String, to: String, body: String, live: Bool) async -> Ack {
-        guard raw(["t": "send", "id": id, "to": to, "body": body, "live": live]) else { return .failed("offline") }
+    /// Envoie une enveloppe ; tenue quand le relais l'a reçue. `wake` : un vrai
+    /// message, qui réveille un destinataire hors ligne (notifications du
+    /// navigateur) ; pas un accusé de lecture, une réaction ou un profil.
+    public func send(id: String, to: String, body: String, live: Bool, wake: Bool = false) async -> Ack {
+        var msg: [String: Any] = ["t": "send", "id": id, "to": to, "body": body, "live": live]
+        if wake { msg["wake"] = true }
+        guard raw(msg) else { return .failed("offline") }
         return await withCheckedContinuation { c in
             pending[id] = c
             Task { @MainActor [weak self] in
