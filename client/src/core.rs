@@ -2514,6 +2514,12 @@ pub async fn import_backup(password: &str, file: &str) -> Result<(), String> {
     // doit plus réveiller ce navigateur (la nouvelle se réabonne).
     crate::push::forget().await;
     store::restore(&data["data"]).await;
+    // Le code de la sauvegarde n'est peut-être pas celui de cet appareil : la
+    // clé de l'appareil n'est plus protégée par l'ancien ; le code restauré
+    // la protégera au prochain déverrouillage (une passkey, elle, reste).
+    if store::lock().await == store::Lock::Code {
+        store::protect(store::NewLock::None).await;
+    }
     Ok(())
 }
 

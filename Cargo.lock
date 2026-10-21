@@ -1751,6 +1751,7 @@ name = "talka-web"
 version = "0.1.0"
 dependencies = [
  "aes-gcm 0.10.3",
+ "argon2",
  "base64 0.22.1",
  "brocolis-proto",
  "getrandom 0.2.17",
