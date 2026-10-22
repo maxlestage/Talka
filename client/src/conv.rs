@@ -251,12 +251,12 @@ fn chat_menu(chat: &Chat, at: At) {
             danger("trash", "Vider la discussion", move || {
                 let id = i7.clone();
                 spawn(async move {
-                    // Des favoris : on peut les garder, comme WhatsApp.
+                    // Des messages importants : on peut les garder, comme WhatsApp.
                     let keep = if core::has_starred(&id).await {
                         confirm_check(
                             "Vider la discussion ?",
                             "Les messages seront effacés de vos appareils.",
-                            "Garder les messages favoris",
+                            "Garder les messages importants",
                             true,
                             "Vider",
                         )
@@ -1560,9 +1560,9 @@ fn message_menu(m: &Message, at: At) {
             item(
                 "star",
                 if m.is_starred() {
-                    "Retirer des favoris"
+                    "Retirer des importants"
                 } else {
-                    "Mettre en favori"
+                    "Important"
                 },
                 move || {
                     let (c, i) = (m3.chat.clone(), m3.id.clone());
