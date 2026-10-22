@@ -857,7 +857,7 @@ public final class Engine {
         if bumpChat, var c = chats[m.chat] {
             c.last = lastOf(m)
             c.lastAt = max(c.lastAt, m.at)
-            if c.archived, m.from != me.code, !c.muted { c.archived = false }
+            if c.unarchivesOn(m.from, me: me.code, keepArchived: settings.keepArchived) { c.archived = false }
             if m.exp != nil { c.hasExp = true }
             saveChat(c)
         }

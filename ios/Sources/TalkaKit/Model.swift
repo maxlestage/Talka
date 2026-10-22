@@ -106,6 +106,9 @@ public struct Settings: Codable, Equatable, Sendable {
     /// Ce que montrent les notifications : `all` (le nom et le message),
     /// `name` (le nom seulement), `none` (rien : « Nouveau message »).
     public var notifyPreview = "all"
+    /// Une discussion archivée le reste quand un message y arrive (comme
+    /// « Garder les discussions archivées » de WhatsApp).
+    public var keepArchived = false
 
     /// Le titre et le texte d'une notification, selon `notifyPreview`
     /// (comme `Settings::notification` du navigateur).
@@ -121,6 +124,7 @@ public struct Settings: Codable, Equatable, Sendable {
         case theme, notify, sound, wallpaper, server
         case keepDays = "keep_days"
         case notifyPreview = "notify_preview"
+        case keepArchived = "keep_archived"
         case readReceipts = "read_receipts"
         case hideOnline = "hide_online"
         case presenceDot = "presence_dot"
@@ -142,6 +146,7 @@ public struct Settings: Codable, Equatable, Sendable {
         presenceDot = c.v(.presenceDot, d.presenceDot)
         keepDays = c.v(.keepDays, d.keepDays)
         notifyPreview = c.v(.notifyPreview, d.notifyPreview)
+        keepArchived = c.v(.keepArchived, d.keepArchived)
     }
 }
 
@@ -954,6 +959,13 @@ public enum JSON {
 /// `Chat::accepts` du navigateur.
 extension Chat {
     public static let groupVersionStep = 1_000
+
+    /// Un message de `from` arrive : la discussion sort-elle des archives ?
+    /// Pas pour nos propres messages, ni en sourdine, ni si l'on garde les
+    /// discussions archivées. Comme `Chat::unarchives_on` du navigateur.
+    public func unarchivesOn(_ from: String, me: String, keepArchived: Bool) -> Bool {
+        archived && from != me && !muted && !keepArchived
+    }
 
     public func accepts(_ from: String, _ grp: GroupInfo) -> Bool {
         guard group, grp.v > v, grp.v - v <= Self.groupVersionStep, members.contains(from) else { return false }

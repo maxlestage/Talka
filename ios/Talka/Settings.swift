@@ -77,10 +77,11 @@ struct SettingsTab: View {
                             Text("Toujours").tag(0)
                         }
                         Toggle("Entrée pour envoyer", isOn: setting(e, \.enterSends))
+                        Toggle("Garder les discussions archivées", isOn: setting(e, \.keepArchived))
                     } header: {
                         Text("Discussions")
                     } footer: {
-                        Text("Plus vieux, ils s'effacent de cet appareil, sauf les messages importants ⭐. Entrée pour envoyer : avec un clavier (iPad, Mac), Maj + Entrée va à la ligne.")
+                        Text("Plus vieux, ils s'effacent de cet appareil, sauf les messages importants ⭐. Entrée pour envoyer : avec un clavier (iPad, Mac), Maj + Entrée va à la ligne. Discussions archivées gardées : un nouveau message ne les fait pas ressortir.")
                     }
                     Section {
                         Toggle("Notifications", isOn: Binding(get: { e.settings.notify }, set: { on in
