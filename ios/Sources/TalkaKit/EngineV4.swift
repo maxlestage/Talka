@@ -169,9 +169,15 @@ extension Engine {
         await flush()
         relay.unlink(d)
         var list = devices
-        list.list.removeAll { $0.dev == d }
-        list.v += 1
+        list.remove(d)
         devicesChanged(list, tellSiblings: true)
+    }
+
+    /// Les appareils retirés, redits au relais à chaque connexion (il ne
+    /// garde rien sur disque) : un appareil retiré pendant qu'il était hors
+    /// ligne reste refusé, et efface tout à son retour.
+    func unlinkGone() {
+        for d in devices.gone { relay.unlink(d) }
     }
 
     /// Cet appareil quitte le compte (avant de tout effacer) : nos autres
@@ -344,6 +350,7 @@ extension Engine {
         c.avatar = grp.avatar
         c.members = grp.members
         c.admins = grp.admins
+        if let d = grp.desc { c.desc = groupDesc(d) }
         c.v = grp.v
         c.left = left
         saveChat(c)

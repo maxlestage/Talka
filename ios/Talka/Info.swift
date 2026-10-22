@@ -312,6 +312,7 @@ struct GroupInfoView: View {
     @Environment(AppModel.self) private var model
     let chatId: String
     @State private var name = ""
+    @State private var desc = ""
     @State private var photo: PhotosPickerItem?
     @State private var adding = false
     @State private var confirmLeave = false
@@ -345,6 +346,7 @@ struct GroupInfoView: View {
                             .onSubmit { rename(e, chat) }
                     }
                 }
+                descriptionSection(e, chat, admin: admin)
                 Section {
                     Picker(selection: Binding(get: { chat.timer }, set: { e.setTimer(chatId, secs: $0) })) {
                         timerOptions()
@@ -412,8 +414,16 @@ struct GroupInfoView: View {
             }
             .navigationTitle("Infos du groupe")
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear { name = chat.name }
-            .onDisappear { if admin { rename(e, chat) } }
+            .onAppear {
+                name = chat.name
+                desc = chat.desc
+            }
+            .onDisappear {
+                if admin {
+                    rename(e, chat)
+                    saveDesc(e)
+                }
+            }
             .onChange(of: photo) { _, item in
                 guard let item else { return }
                 photo = nil // la même photo pourra être rechoisie
@@ -437,6 +447,33 @@ struct GroupInfoView: View {
         let n = String(name.trimmingCharacters(in: .whitespaces).prefix(60))
         guard !n.isEmpty, n != e.chat(chatId)?.name else { return }
         e.updateGroup(chatId, note: "Vous avez renommé le groupe en « \(n) ».") { $0.name = n }
+    }
+
+    /// La description : les admins l'écrivent, tous les membres la lisent.
+    @ViewBuilder func descriptionSection(_ e: Engine, _ chat: Chat, admin: Bool) -> some View {
+        if admin {
+            Section {
+                TextField("Ajouter une description", text: $desc, axis: .vertical)
+                    .lineLimit(1...6)
+                Button("Enregistrer la description") { saveDesc(e) }
+                    .disabled(groupDesc(desc) == chat.desc)
+            } header: {
+                Text("Description")
+            } footer: {
+                Text("Visible par tous les membres.")
+            }
+        } else if !chat.desc.isEmpty {
+            Section("Description") {
+                Text(chat.desc).textSelection(.enabled)
+            }
+        }
+    }
+
+    func saveDesc(_ e: Engine) {
+        let d = groupDesc(desc)
+        guard let chat = e.chat(chatId), d != chat.desc else { return }
+        let note = d.isEmpty ? "Vous avez supprimé la description du groupe." : "Vous avez changé la description du groupe."
+        e.updateGroup(chatId, note: note) { $0.desc = d }
     }
 }
 

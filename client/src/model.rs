@@ -164,10 +164,19 @@ pub struct Device {
 pub struct Devices {
     pub v: u64,
     pub list: Vec<Device>,
+    /// Les appareils retirés, les plus récents d'abord. Le relais ne garde
+    /// rien sur disque : chacun de nos appareils les lui redit à chaque
+    /// connexion, pour qu'un appareil retiré pendant qu'il était hors ligne
+    /// reste refusé (et efface tout à son retour), même après un redémarrage.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gone: Vec<String>,
 }
 
 /// Six appareils au plus par compte.
 pub const MAX_DEVICES: usize = 6;
+
+/// Les seize derniers appareils retirés sont retenus.
+pub const MAX_GONE: usize = 16;
 
 impl Devices {
     pub fn has(&self, dev: &str) -> bool {
@@ -185,12 +194,24 @@ impl Devices {
             .collect()
     }
 
+    /// Retire `dev` du compte : il quitte la liste et rejoint les appareils
+    /// retirés.
+    pub fn remove(&mut self, dev: &str) {
+        self.list.retain(|d| d.dev != dev);
+        self.gone.retain(|d| d != dev);
+        self.gone.insert(0, dev.to_owned());
+        self.gone.truncate(MAX_GONE);
+        self.v += 1;
+    }
+
     /// La liste reçue d'un autre de nos appareils : gardée si elle est plus
     /// récente (et bien formée).
     pub fn merge(&mut self, other: Devices) -> bool {
         if other.v <= self.v
             || other.list.len() > MAX_DEVICES
+            || other.gone.len() > MAX_GONE
             || other.list.iter().any(|d| !crate::crypto::is_dev(&d.dev))
+            || other.gone.iter().any(|d| !crate::crypto::is_dev(d))
         {
             return false;
         }
@@ -223,6 +244,9 @@ pub struct Chat {
     pub avatar: String,
     pub members: Vec<String>,
     pub admins: Vec<String>,
+    /// La description d'un groupe (ce qu'en disent ses admins).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub desc: String,
     pub created_by: String,
     pub created_at: f64,
     pub last_at: f64,
@@ -473,6 +497,17 @@ pub struct GroupInfo {
     pub admins: Vec<String>,
     pub avatar: String,
     pub v: u64,
+    /// Sa description ; absente (un client d'avant elle) : inchangée.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desc: Option<String>,
+}
+
+/// Une description de groupe : 500 caractères au plus.
+pub const MAX_GROUP_DESC: usize = 500;
+
+/// La description d'un groupe telle qu'elle est gardée.
+pub fn group_desc(d: &str) -> String {
+    d.trim().chars().take(MAX_GROUP_DESC).collect()
 }
 
 /// Le contenu d'un message (ce qui est commun à l'envoi et au stockage).
@@ -595,6 +630,7 @@ impl Chat {
             && grp.admins.iter().collect::<Vec<_>>() == admins
             && grp.name == self.name
             && grp.avatar == self.avatar
+            && grp.desc.as_ref().is_none_or(|d| group_desc(d) == self.desc)
     }
 }
 
@@ -917,6 +953,47 @@ mod tests {
     }
 
     #[test]
+    fn removed_devices_are_remembered() {
+        let dev = |d: &str| Device {
+            dev: d.into(),
+            ..Default::default()
+        };
+        let mut list = Devices {
+            v: 3,
+            list: vec![dev("00000000000000a1"), dev("00000000000000a2")],
+            gone: vec![],
+        };
+        // Sans appareil retiré, la liste s'écrit comme avant (et se relit).
+        let json = serde_json::to_string(&list).unwrap();
+        assert!(!json.contains("gone"));
+        assert_eq!(
+            serde_json::from_str::<Devices>(r#"{"v":3,"list":[]}"#)
+                .unwrap()
+                .gone,
+            Vec::<String>::new()
+        );
+        list.remove("00000000000000a2");
+        assert_eq!(list.v, 4);
+        assert!(!list.has("00000000000000a2"));
+        assert_eq!(list.gone, ["00000000000000a2"]);
+        // Retirer de nouveau ne le compte qu'une fois ; seize au plus.
+        list.remove("00000000000000a2");
+        assert_eq!(list.gone.len(), 1);
+        for i in 0..20 {
+            list.remove(&format!("{i:016x}"));
+        }
+        assert_eq!(list.gone.len(), MAX_GONE);
+        assert_eq!(list.gone[0], format!("{:016x}", 19));
+        // Une liste reçue avec des retirés mal formés, ou trop, est refusée.
+        let mut mine = Devices::default();
+        let mut bad = list.clone();
+        bad.gone.push("pas-un-appareil".into());
+        assert!(!mine.merge(bad));
+        assert!(mine.merge(list.clone()));
+        assert_eq!(mine.gone, list.gone);
+    }
+
+    #[test]
     fn old_messages_go_except_starred() {
         let now = 1_800_000_000_000.0;
         let m = |days: f64, starred: bool| Message {
@@ -1144,6 +1221,7 @@ mod tests {
             admins: c.admins.clone(),
             avatar: c.avatar.clone(),
             v,
+            desc: Some(c.desc.clone()),
         }
     }
 
@@ -1173,6 +1251,12 @@ mod tests {
         assert!(c.accepts("B", &leave));
         leave.name = "À moi".into();
         assert!(!c.accepts("B", &leave));
+        // … sans toucher à la description (absente : inchangée).
+        leave.name = c.name.clone();
+        leave.desc = Some("Mon groupe".into());
+        assert!(!c.accepts("B", &leave));
+        leave.desc = None;
+        assert!(c.accepts("B", &leave));
         // Le dernier admin part : le premier membre restant le devient.
         let mut last = info(&c, 6);
         last.members = vec!["B".into(), "C".into()];
