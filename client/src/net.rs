@@ -50,6 +50,8 @@ thread_local! {
     static RETRY: Cell<u32> = const { Cell::new(0) };
     static TIMER: Cell<i32> = const { Cell::new(0) };
     static SKEW: Cell<f64> = const { Cell::new(0.0) };
+    /// Le défi de la connexion en cours : le relais le signe (v6).
+    static NONCE: RefCell<String> = const { RefCell::new(String::new()) };
     static BOOT: RefCell<String> = const { RefCell::new(String::new()) };
     /// La clé VAPID du relais (`ready.push`) : vide s'il n'envoie pas de notifications.
     static PUSH_KEY: RefCell<String> = const { RefCell::new(String::new()) };
@@ -251,6 +253,7 @@ fn on_text(text: &str) {
                 SKEW.with(|s| s.set(t - now()));
             }
             let nonce = msg["nonce"].as_str().unwrap_or("");
+            NONCE.with(|n| *n.borrow_mut() = nonce.to_owned());
             let hello = IDENTITY.with(|i| {
                 i.borrow().as_ref().map(|id| {
                     json!({ "t": "hello", "sign": id.sign, "dh": id.dh, "sig": id.sign_challenge(nonce), "hidden": HIDDEN.with(Cell::get), "dev": DEV.with(|d| d.borrow().clone()) })
@@ -266,6 +269,12 @@ fn on_text(text: &str) {
         }
         "ready" => {
             RETRY.with(|r| r.set(0));
+            let nonce = NONCE.with(|n| n.borrow().clone());
+            crate::core::on_relay_key(
+                msg["relais"].as_str().unwrap_or(""),
+                msg["relais_sig"].as_str().unwrap_or(""),
+                &nonce,
+            );
             let boot = msg["boot"].as_str().unwrap_or("").to_owned();
             BOOT.with(|b| *b.borrow_mut() = boot);
             SEALED.with(|s| s.set(msg["sealed"].as_bool().unwrap_or(false)));
@@ -335,7 +344,9 @@ fn on_text(text: &str) {
         }
         "presence" => crate::core::on_presence(&msg),
         // Cet appareil a été retiré du compte (v4).
-        "unlinked" => crate::core::on_unlinked(),
+        "unlinked" if crate::core::relay_says_unlinked(msg["sig"].as_str().unwrap_or("")) => {
+            crate::core::on_unlinked()
+        }
         _ => {}
     }
 }
