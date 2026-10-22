@@ -319,6 +319,49 @@ struct SealedSender {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     fd: String,
     body: String,
+    /// Du remplissage (v6) : l'enveloppe a la taille d'un palier, pas celle
+    /// du message. Ignoré à l'ouverture (un ancien client l'ignore aussi).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    p: String,
+}
+
+/// Une boîte de couverture (v6, §7.15) : à nous seuls (`secret` ne quitte
+/// pas l'appareil), indiscernable d'une boîte tournante pour le relais.
+pub fn cover_box(secret: &[u8], day: u64, i: usize) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret).expect("toute longueur");
+    mac.update(format!("talka-couverture:{day}:{i}").as_bytes());
+    b64url(&mac.finalize().into_bytes()[..16])
+}
+
+/// Les paliers de taille des enveloppes scellées (v6, docs/SECURITE.md
+/// §7.15) : 1 Kio, 2, 4… 256 Kio, puis des multiples de 256 Kio, sans
+/// dépasser 5 Mio (en base64, l'enveloppe reste sous la limite du relais ;
+/// au-delà, la taille reste celle du message).
+pub fn sealed_bucket(n: usize) -> usize {
+    const STEP: usize = 256 * 1024;
+    const MAX: usize = 5 * 1024 * 1024;
+    let b = if n <= STEP {
+        n.max(1024).next_power_of_two()
+    } else {
+        n.div_ceil(STEP) * STEP
+    };
+    if b > MAX { n } else { b }
+}
+
+/// Le clair d'une enveloppe scellée, rempli jusqu'à son palier.
+fn sealed_plain(from: &str, fd: &str, body: &str) -> Option<String> {
+    let mut s = SealedSender {
+        from: from.to_owned(),
+        fd: fd.to_owned(),
+        body: body.to_owned(),
+        p: String::new(),
+    };
+    let base = serde_json::to_string(&s).ok()?.len();
+    // `,"p":""` : 7 octets, puis autant de « 0 » qu'il faut (un au moins).
+    let target = sealed_bucket(base + 8);
+    s.p = "0".repeat(target - base - 7);
+    serde_json::to_string(&s).ok()
 }
 
 fn sealed_key(shared: &[u8], eph: &[u8], to_dh: &[u8], to: &str) -> Option<Aes256Gcm> {
@@ -414,12 +457,7 @@ pub fn seal_sender_from(from: &str, fd: &str, to: &str, to_dh: &str, body: &str)
     let eph_raw = raw(&eph.public_key());
     let shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
     let cipher = sealed_key(shared.raw_secret_bytes(), &eph_raw, &to_dh_raw, to)?;
-    let plain = serde_json::to_string(&SealedSender {
-        from: from.to_owned(),
-        fd: fd.to_owned(),
-        body: body.to_owned(),
-    })
-    .ok()?;
+    let plain = sealed_plain(from, fd, body)?;
     let iv = random_bytes(12);
     let ad = format!("talka-scelle:{to}");
     let ct = cipher
@@ -1159,6 +1197,33 @@ mod tests {
             Some("[{\"id\":\"k1\"}]")
         );
         assert_eq!(open_keys(&pin_key("0000", &salt), &sealed), None);
+    }
+
+    #[test]
+    fn sealed_envelopes_come_in_a_few_sizes() {
+        assert_eq!(sealed_bucket(10), 1024);
+        assert_eq!(sealed_bucket(1024), 1024);
+        assert_eq!(sealed_bucket(1025), 2048);
+        assert_eq!(sealed_bucket(200_000), 262_144);
+        assert_eq!(sealed_bucket(300_000), 524_288);
+        assert_eq!(sealed_bucket(6_000_000), 6_000_000);
+        for len in [0, 100, 900, 1_000, 5_000, 70_000] {
+            let plain = sealed_plain("K7Q2MX9PRT", "00000000000000a1", &"x".repeat(len)).unwrap();
+            assert_eq!(plain.len(), sealed_bucket(plain.len()), "{len}");
+            assert!(plain.len() >= len);
+        }
+        // Deux messages de tailles proches : la même enveloppe.
+        let a = sealed_plain("K7Q2MX9PRT", "", "court").unwrap();
+        let b = sealed_plain("K7Q2MX9PRT", "", &"un peu plus long".repeat(20)).unwrap();
+        assert_eq!(a.len(), b.len());
+        // Le remplissage ne change rien à ce qu'on lit (et un ancien client
+        // l'ignore : champ inconnu).
+        let me = Identity::create(0.0);
+        let sealed = seal_sender_from("K7Q2MX9PRT", "", &me.code, &me.dh, "corps").unwrap();
+        assert_eq!(
+            open_sealed_from(&me, &sealed),
+            Some(("K7Q2MX9PRT".into(), String::new(), "corps".into()))
+        );
     }
 
     #[test]
