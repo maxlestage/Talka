@@ -654,6 +654,22 @@ label.list-item {
   cursor: pointer;
 }
 
+/* Une case à cocher sous le texte d'une confirmation (« Garder les
+   messages favoris »). */
+.check-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  cursor: pointer;
+}
+.check-line input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--green-2);
+}
+
 .list-item input[type="checkbox"] {
   flex: none;
   width: 22px;
