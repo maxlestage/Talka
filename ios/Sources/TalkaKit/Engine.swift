@@ -88,6 +88,9 @@ public final class Engine {
     @ObservationIgnored var boxRefresh: Task<Void, Never>?
     /// Cet appareil a été retiré du compte (v4) : tout vient d'être effacé.
     @ObservationIgnored public var onUnlinked: (() -> Void)?
+    /// Le relais ne prouve pas son identité habituelle (v6, §7.16) : ses
+    /// ordres d'effacement sont ignorés.
+    @ObservationIgnored public var onUnprovenRelay: (() -> Void)?
     /// Le nom de cet appareil dans la liste des appareils du compte (v4) :
     /// l'application le donne (« iPhone », « iPad »).
     public static var deviceName = "iPhone"
@@ -132,6 +135,9 @@ public final class Engine {
         }
         relay.onBoxEnvelope = { [weak self] e in self?.onBoxEnvelope(e) }
         relay.onUnlinked = { [weak self] in self?.unlinked() }
+        relay.relayKey = store.read("kv", "relais_cle", as: String.self) ?? ""
+        relay.onRelayKey = { [weak self] key in self?.store.write("kv", "relais_cle", key) }
+        relay.onUnprovenRelay = { [weak self] in self?.onUnprovenRelay?() }
         startV3()
         ensureDevice()
     }

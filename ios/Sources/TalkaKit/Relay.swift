@@ -40,6 +40,16 @@ public final class Relay {
     }
     /// Cet appareil a été retiré du compte (v4).
     public var onUnlinked: (() -> Void)?
+    /// La clé du relais retenue (v6, §7.16) : vide tant qu'aucune n'est
+    /// prouvée. `onRelayKey` reçoit la première prouvée, à retenir.
+    public var relayKey = ""
+    public var onRelayKey: ((String) -> Void)?
+    /// Le relais ne prouve pas sa clé habituelle, ou un ordre d'effacement
+    /// n'est pas signé d'elle : il est ignoré (une fois par ouverture).
+    public var onUnprovenRelay: (() -> Void)?
+    var relayWarned = false
+    /// Le défi de la connexion en cours : le relais le signe (v6).
+    var nonce = ""
 
     let identity: Identity
     /// Cet appareil (v4) : sa boîte chez le relais est `<code>/<dev>`.
@@ -222,6 +232,7 @@ public final class Relay {
         case "challenge":
             if let t = msg["time"] as? Double { skew = t - nowMs() }
             let nonce = msg["nonce"] as? String ?? ""
+            self.nonce = nonce
             var hello: [String: Any] = [
                 "t": "hello", "sign": identity.sign, "dh": identity.dh,
                 "sig": identity.signChallenge(nonce), "hidden": hidden,
@@ -233,6 +244,7 @@ public final class Relay {
             }
         case "ready":
             retry = 0
+            checkRelayKey(msg["relais"] as? String ?? "", msg["relais_sig"] as? String ?? "")
             boot = msg["boot"] as? String ?? ""
             sealed = msg["sealed"] as? Bool ?? false
             relayV3 = nil
@@ -274,7 +286,7 @@ public final class Relay {
             onPresence?(msg["code"] as? String ?? "", msg["online"] as? Bool ?? false, msg["seen"] as? Double)
         // Cet appareil a été retiré du compte (v4).
         case "unlinked":
-            onUnlinked?()
+            if relaySaysUnlinked(msg["sig"] as? String ?? "") { onUnlinked?() }
         default:
             break
         }
@@ -627,6 +639,63 @@ public final class BoxSocket {
 
 /// Les avertissements du protocole v3 (journal de développement ; jamais de
 /// secret).
+// ----- La clé du relais (v6, docs/SECURITE.md §7.16) -----
+
+public enum RelayKey {
+    /// La clé du relais officiel, si elle est connue d'avance (sinon, la
+    /// première prouvée est retenue).
+    public static let official = ""
+
+    public static func readyMessage(nonce: String, code: String, dev: String) -> Data {
+        Data("talka-relais-v6:pret:\(nonce):\(code)/\(dev)".utf8)
+    }
+
+    public static func unlinkedMessage(code: String, dev: String) -> Data {
+        Data("talka-relais-v6:retire:\(code)/\(dev)".utf8)
+    }
+}
+
+extension Relay {
+    /// La clé attendue du relais : celle des sources, ou celle retenue.
+    var pinnedRelayKey: String { RelayKey.official.isEmpty ? relayKey : RelayKey.official }
+
+    /// Le relais vient d'accepter la connexion : une clé prouvée est retenue
+    /// la première fois ; une autre ensuite, ou plus de preuve, et Talka le
+    /// dit et n'obéit plus à ses ordres d'effacement.
+    func checkRelayKey(_ key: String, _ sig: String) {
+        let proven = !key.isEmpty && TalkaCrypto.verify(
+            sign: key, message: RelayKey.readyMessage(nonce: nonce, code: identity.code, dev: dev), signature: sig)
+        let pinned = pinnedRelayKey
+        if proven, pinned.isEmpty {
+            relayKey = key
+            onRelayKey?(key)
+        } else if !pinned.isEmpty, !(proven && pinned == key) {
+            v3Log("v6 : le relais ne prouve pas sa clé habituelle")
+            warnUnproven()
+        }
+    }
+
+    /// L'ordre « cet appareil est retiré » : à croire seulement s'il est
+    /// signé de la clé retenue (sans clé retenue, comme avant).
+    func relaySaysUnlinked(_ sig: String) -> Bool {
+        let pinned = pinnedRelayKey
+        guard !pinned.isEmpty else { return true }
+        let ok = TalkaCrypto.verify(
+            sign: pinned, message: RelayKey.unlinkedMessage(code: identity.code, dev: dev), signature: sig)
+        if !ok {
+            v3Log("v6 : ordre d'effacement non signé par le relais, ignoré")
+            warnUnproven()
+        }
+        return ok
+    }
+
+    func warnUnproven() {
+        guard !relayWarned else { return }
+        relayWarned = true
+        onUnprovenRelay?()
+    }
+}
+
 func v3Log(_ text: String) {
     #if DEBUG
     print(text)
