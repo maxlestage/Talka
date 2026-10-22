@@ -319,6 +319,31 @@ final class CompatTests: XCTestCase {
         XCTAssertEqual(short.count, filled.count, "même palier, même taille")
     }
 
+    /// Le cliquet post-quantique (§7.17) : la même clé tirée de la même
+    /// graine, la même annonce, et un jeton enveloppé par le navigateur
+    /// s'ouvre ici.
+    func testPq6() throws {
+        try XCTSkipUnless(Pq6.available, "ML-KEM : iOS 26")
+        let v6 = try XCTUnwrap(v["v6"] as? [String: Any])
+        let pq = try XCTUnwrap(v6["pq6"] as? [String: Any])
+        let seed = Array(try XCTUnwrap(unb64(try XCTUnwrap(pq["graine"] as? String))))
+        let cle = try XCTUnwrap(pq["cle"] as? [String: Any])
+        let key = try XCTUnwrap(Pq6.Key(seed: seed, at: 1_700_000_000))
+        XCTAssertEqual(key.id, cle["id"] as? String)
+        var keys = Pq6.Keys(keys: [key])
+        let advert = try XCTUnwrap(keys.advert)
+        let theirs = try XCTUnwrap(pq["annonce"] as? [String: Any])
+        XCTAssertEqual(advert["ek"] as? String, theirs["ek"] as? String)
+        XCTAssertEqual(Pq6.parseAdvert(theirs)?.id, key.id)
+        let opened = try keys.open(try XCTUnwrap(pq["enveloppe"] as? String)).get()
+        XCTAssertEqual(opened.token, pq["jeton"] as? String)
+        XCTAssertEqual(opened.id, key.id)
+        XCTAssertTrue(opened.first)
+        // Et ce que l'iPhone enveloppe s'ouvre de même.
+        let mine = try XCTUnwrap(Pq6.wrap(ek: try XCTUnwrap(theirs["ek"] as? String), token: "[[BROCOLIS:v3:AQ]]"))
+        XCTAssertEqual(try keys.open(mine).get().token, "[[BROCOLIS:v3:AQ]]")
+    }
+
     /// v4 (`docs/SECURITE.md` §7.11 à §7.13) : les boîtes tournantes, le
     /// paquet d'un appareil, l'expéditeur scellé avec son appareil et la
     /// liaison, comme le navigateur.

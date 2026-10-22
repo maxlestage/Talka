@@ -32,6 +32,71 @@ final class V3Tests: XCTestCase {
         to.engine.open(to.id, peerCode: from.id.code, peerDh: from.id.dh, body: s.body, now: now)
     }
 
+    func inner(_ to: Side, _ from: Side, _ s: V3.Sealed) -> String {
+        TalkaCrypto.open(to.id, peerCode: from.id.code, peerDh: from.id.dh, body: s.body)!
+    }
+
+    func k(_ o: V3.Opened) -> Int? {
+        guard case .v3(let wire) = o,
+              let obj = (try? JSONSerialization.jsonObject(with: Data(wire.utf8))) as? [String: Any]
+        else { return nil }
+        return obj["k"] as? Int
+    }
+
+    /// Le cliquet post-quantique (v6, §7.17), comme le navigateur : l'annonce,
+    /// l'enveloppe, la rotation, la relecture et la clé perdue.
+    func testThePostQuantumRatchetStartsRotatesAndHeals() throws {
+        try XCTSkipUnless(Pq6.available, "ML-KEM : iOS 26")
+        let a = Side(), b = Side()
+        a.engine.startPq(json: nil, now: 1_000)
+        b.engine.startPq(json: nil, now: 1_000)
+        let m1 = send(a, b, bundle: true, "{\"k\":1}")
+        XCTAssertTrue(V3.isToken(inner(b, a, m1)))
+        XCTAssertEqual(k(recv(b, a, m1)), 1)
+        XCTAssertTrue(b.engine.pqWith(a.id.code))
+        let m2 = send(b, a, bundle: false, "{\"k\":2}")
+        XCTAssertTrue(Pq6.isWrapped(inner(a, b, m2)))
+        XCTAssertEqual(k(recv(a, b, m2)), 2)
+        let m3 = send(a, b, bundle: false, "{\"k\":3}")
+        XCTAssertTrue(Pq6.isWrapped(inner(b, a, m3)))
+        XCTAssertLessThan(inner(b, a, m3).count, 3_000, "sans annonce")
+        XCTAssertEqual(k(recv(b, a, m3)), 3)
+        // Une heure après, la clé de A tourne ; B l'apprend et s'en sert.
+        let old = a.engine.pq?.current?.id
+        a.engine.maintainPq(now: 1_000 + Pq6.rotateSecs)
+        XCTAssertNotEqual(a.engine.pq?.current?.id, old)
+        XCTAssertEqual(k(recv(b, a, send(a, b, bundle: false, "{\"k\":4}"))), 4)
+        XCTAssertEqual(k(recv(a, b, send(b, a, bundle: false, "{\"k\":5}"))), 5)
+        XCTAssertEqual(a.engine.peers[b.id.code]?.pq.told, a.engine.pq?.current?.id)
+        // Tout se garde et se relit.
+        let dirty = a.engine.takeDirty()
+        let keys = try XCTUnwrap(dirty.pq)
+        let peer = try XCTUnwrap(dirty.peers.first { $0.code == b.id.code }?.json)
+        let again = V3Engine(deviceJson: a.engine.device.toJson(), now: 1_000)
+        again.startPq(json: keys, now: 1_000 + Pq6.rotateSecs)
+        again.load(b.id.code, json: peer)
+        a.engine = again
+        XCTAssertEqual(k(recv(a, b, send(b, a, bundle: false, "{\"k\":6}"))), 6)
+        // Ses clés perdues (une restauration) : à réparer, comme une session.
+        a.engine.pq = Pq6.Keys()
+        a.engine.maintainPq(now: 10_000)
+        XCTAssertEqual(recv(a, b, send(b, a, bundle: false, "{\"k\":7}")), .failed(.v3(.cleInconnue)))
+    }
+
+    /// Sans cliquet post-quantique d'un côté (avant iOS 26, ou une version
+    /// d'avant), rien ne change.
+    func testWithoutThePostQuantumRatchetNothingChanges() throws {
+        try XCTSkipUnless(Pq6.available, "ML-KEM : iOS 26")
+        let a = Side(), b = Side()
+        a.engine.startPq(json: nil, now: 1_000)
+        XCTAssertEqual(k(recv(b, a, send(a, b, bundle: true, "{\"k\":1}"))), 1)
+        let m2 = send(b, a, bundle: false, "{\"k\":2}")
+        XCTAssertTrue(V3.isToken(inner(a, b, m2)))
+        XCTAssertEqual(k(recv(a, b, m2)), 2)
+        XCTAssertTrue(V3.isToken(inner(b, a, send(a, b, bundle: false, "{\"k\":3}"))))
+        XCTAssertFalse(a.engine.pqWith(b.id.code))
+    }
+
     func testBundleIsBoundToTheTalkaCode() throws {
         let a = Side(), b = Side()
         let (bundle, sig) = try XCTUnwrap(a.engine.published(a.id))
@@ -270,7 +335,8 @@ final class V3EngineStoreTests: XCTestCase {
         XCTAssertNotNil(b.store.readRaw("kv", V3.sessionPrefix + a.me.code))
         XCTAssertEqual(b.v3?.sessionProtection(a.me.code), .ratchet(pq: V3.postQuantum))
         let protection = await b.protection(a.me.code)
-        XCTAssertEqual(protection, .ratchet(pq: V3.postQuantum))
+        // Avec ML-KEM, Alice a annoncé sa clé : le cliquet post-quantique (v6).
+        XCTAssertEqual(protection, Pq6.available ? .ratchetPq6 : .ratchet(pq: V3.postQuantum))
         // Le même message, renvoyé par le relais : ignoré, sans réparation
         // (rien ne part vers Alice).
         let outbox = b.store.all("outbox", as: OutItem.self).count
@@ -299,7 +365,12 @@ final class V3EngineStoreTests: XCTestCase {
         XCTAssertTrue(b.v3?.hasSession(a.me.code) ?? false)
         XCTAssertTrue(b.store.all("outbox", as: OutItem.self).isEmpty, "rien à réparer")
         let reply = try XCTUnwrap(b.v3?.seal(b.me, peerCode: a.me.code, peerDh: a.me.dh, bundle: nil, plain: "{}"))
-        XCTAssertEqual(a.v3?.open(a.me, peerCode: b.me.code, peerDh: b.me.dh, body: reply.body, now: 2_000), .v3("{}"))
+        // (Avec, éventuellement, l'annonce de la clé ML-KEM de Bob : v6.)
+        guard case .v3(let wire) = a.v3?.open(a.me, peerCode: b.me.code, peerDh: b.me.dh, body: reply.body, now: 2_000),
+              var obj = (try? JSONSerialization.jsonObject(with: Data(wire.utf8))) as? [String: Any]
+        else { return XCTFail("réponse illisible") }
+        obj["pq6"] = nil
+        XCTAssertTrue(obj.isEmpty)
         // … que Bob perd (ses données effacées).
         b.v3?.forget(a.me.code)
         b.saveV3()
