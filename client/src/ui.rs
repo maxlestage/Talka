@@ -708,10 +708,12 @@ async fn render_side_body() {
 
 async fn update_status_dot() {
     let me = core::my_code();
-    let fresh = core::statuses()
-        .await
-        .iter()
-        .any(|s| s.owner != me && !s.seen && !core::blocked(&s.owner));
+    let fresh = core::statuses().await.iter().any(|s| {
+        s.owner != me
+            && !s.seen
+            && !core::blocked(&s.owner)
+            && !core::contact(&s.owner).is_some_and(|c| c.status_muted)
+    });
     if let Some(tabs) = with(|u| u.tabs.clone())
         && let Some(dot) = query_in(&tabs, "[data-tab=\"status\"] .tab-dot")
     {
@@ -1983,9 +1985,11 @@ async fn pick_contacts(title: &str, exclude: &[String], ok: &str) -> Option<Vec<
 
 /// Choisir des discussions (transférer) : renvoie leurs identifiants.
 pub async fn pick_chats(title: &str) -> Option<Vec<String>> {
+    // Seulement là où l'on peut écrire (pas un groupe réservé aux admins).
+    let me = core::my_code();
     let mut chats: Vec<Chat> = core::chats()
         .into_iter()
-        .filter(|c| !c.left && !core::blocked(&c.id))
+        .filter(|c| c.can_write(&me) && !core::blocked(&c.id))
         .collect();
     chats.sort_by(|a, b| b.last_at.total_cmp(&a.last_at));
     let chosen = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -2764,6 +2768,10 @@ async fn render_statuses() {
             .map_or(0.0, |s| s.at)
             .total_cmp(&a.1.last().map_or(0.0, |s| s.at))
     });
+    // Les actus en sourdine : à part, en bas, jamais « Récentes ».
+    let (hidden, owners): (Vec<_>, Vec<_>) = owners
+        .into_iter()
+        .partition(|(o, _)| core::contact(o).is_some_and(|c| c.status_muted));
     let (fresh, seen): (Vec<_>, Vec<_>) = owners
         .into_iter()
         .partition(|(_, items)| items.iter().any(|s| !s.seen));
@@ -2772,18 +2780,54 @@ async fn render_statuses() {
             let unseen = items.iter().any(|s| !s.seen);
             let last = items.last().map_or(0.0, |s| s.at);
             let items2 = items.clone();
-            h("button.list-item")
+            let muted = core::contact(owner).is_some_and(|c| c.status_muted);
+            let name = core::display_name(owner);
+            let more = h("button.icon-btn")
                 .attr("type", "button")
-                .child(ring(avatar(owner, 46), !unseen))
+                .attr("aria-label", format!("Options des actus de {name}"))
+                .child(icon("more"))
+                .el();
+            let (o, m) = (owner.clone(), more.clone());
+            listen(&more, "click", move |e| {
+                e.stop_propagation();
+                let o = o.clone();
+                let label = if muted {
+                    "Afficher ses actus"
+                } else {
+                    "Masquer ses actus"
+                };
+                menu(
+                    vec![item(
+                        if muted { "bell" } else { "belloff" },
+                        label,
+                        move || {
+                            let o = o.clone();
+                            spawn(async move {
+                                core::update_contact(&o, |c| c.status_muted = !muted).await;
+                                render_statuses().await;
+                            })
+                        },
+                    )],
+                    At::El(m.clone()),
+                );
+            });
+            h("div.list-item.status-row")
+                .class_if("status-muted", muted)
                 .child(
-                    h("div.grow")
-                        .child(h("div.strong").text(core::display_name(owner)))
-                        .child(h("small.muted").text(list_time(last))),
+                    h("button.status-open")
+                        .attr("type", "button")
+                        .child(ring(avatar(owner, 46), !unseen || muted))
+                        .child(
+                            h("div.grow")
+                                .child(h("div.strong").text(&name))
+                                .child(h("small.muted").text(list_time(last))),
+                        )
+                        .click(move || {
+                            let start = items2.iter().position(|s| !s.seen).unwrap_or(0);
+                            view_statuses(items2.clone(), start)
+                        }),
                 )
-                .click(move || {
-                    let start = items2.iter().position(|s| !s.seen).unwrap_or(0);
-                    view_statuses(items2.clone(), start)
-                })
+                .child(more)
         };
         let mine2 = mine.clone();
         let my_avatar = if mine.is_empty() {
@@ -2796,7 +2840,8 @@ async fn render_statuses() {
         };
         let has_fresh = !fresh.is_empty();
         let has_seen = !seen.is_empty();
-        let nobody = !has_fresh && !has_seen;
+        let has_hidden = !hidden.is_empty();
+        let nobody = !has_fresh && !has_seen && !has_hidden;
         replace(
             &body,
             h("div.list")
@@ -2824,6 +2869,8 @@ async fn render_statuses() {
                 .children(fresh.iter().map(row))
                 .child(has_seen.then(|| h("div.list-title").text("Vues")))
                 .children(seen.iter().map(row))
+                .child(has_hidden.then(|| h("div.list-title").text("Masquées")))
+                .children(hidden.iter().map(row))
                 .child(nobody.then(|| h("p.muted.pad").text("Les actus de vos contacts apparaîtront ici. Elles disparaissent au bout de 24 heures."))),
         );
     });
