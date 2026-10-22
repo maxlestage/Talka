@@ -31,4 +31,25 @@ final class ClearChatTests: XCTestCase {
         XCTAssertTrue(e.messages(c.id).isEmpty)
         XCTAssertNil(e.chats[c.id]?.last)
     }
+
+    /// Un message supprimé pour tous n'est plus important (il n'a plus rien
+    /// à garder) ; la liste d'une discussion ne montre que les siens.
+    func testDeletedMessagesLeaveTheStarredList() async throws {
+        let e = phone()
+        let c = e.ensureDirectChat("K7Q2MX9PRT")
+        let other = e.ensureDirectChat("WGSEAJNSZJ")
+        let a = try XCTUnwrap(e.send(c.id, Content(text: "Un")))
+        let b = try XCTUnwrap(e.send(c.id, Content(text: "Deux")))
+        let o = try XCTUnwrap(e.send(other.id, Content(text: "Ailleurs")))
+        for (chat, id) in [(c.id, a.id), (c.id, b.id), (other.id, o.id)] { e.toggleStar(chat, id) }
+        XCTAssertEqual(e.starred(in: c.id).map(\.text), ["Deux", "Un"])
+        XCTAssertEqual(e.starred().count, 3)
+
+        e.delete(c.id, b.id, forEveryone: true)
+        XCTAssertEqual(e.starred(in: c.id).map(\.text), ["Un"])
+        XCTAssertEqual(e.starred().count, 2)
+        // Vider en gardant les importants : le message supprimé part aussi.
+        e.clearChat(c.id, keepStarred: true)
+        XCTAssertEqual(e.messages(c.id).map(\.id), [a.id])
+    }
 }
