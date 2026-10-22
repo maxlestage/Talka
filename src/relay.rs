@@ -32,7 +32,7 @@
 //! | → | `{"t":"revoke","nonces":[…]}` | les nonces des jetons de remise révoqués par ce code (contacts bloqués) ; la liste remplace la précédente |
 //! | → | `hello` avec `"dev"` | (v4) un appareil du compte : ses messages ont leur boîte (`<code>/<dev>`) ; un envoi peut viser un appareil (`"dev"` dans `send`) ; ce qui est livré dit de quel appareil il vient (`"fd"`) |
 //! | → | `{"t":"publish-bundle","bundle","sig","dev"}` | (v4) le paquet de cet appareil, signé avec `talka-v4-appareil:<dev>:` ; `fetch-bundle` les rend tous (`"devices":[{"dev","bundle","sig"}]`) |
-//! | → | `{"t":"unlink","dev"}` | (v4) retire un appareil du compte : son paquet, sa boîte, ses connexions ; son `hello` est refusé (4006) |
+//! | → | `{"t":"unlink","dev"}` | (v4) retire un appareil du compte : son paquet, sa boîte, ses connexions ; son `hello` reçoit `{"t":"unlinked"}` puis est refusé (4006) |
 //! | → (anonyme) | `{"t":"send","id","boite","body","live","wake","apercu","ttl"}` | (v4) un dépôt dans une boîte aux lettres tournante (ou de liaison) : ni code, ni jeton ; `ttl` : secondes de garde (30 jours au plus) |
 //! | → (anonyme) | `{"t":"boites","list":[…],"push"}` | (v4) s'abonne à des boîtes : ← ce qui attend (`{"t":"msg","n","id","boite","body","ts","sealed":true}`), puis ce qui arrive ; `push` : l'abonnement Web Push à réveiller pour elles ; `got` les oublie |
 //!
@@ -1353,7 +1353,11 @@ impl Relay {
             let _ = tx.close(4001, "dev").await;
             return;
         }
+        // Retiré pendant qu'il était hors ligne : il l'apprend d'abord par un
+        // message (les clients ne lisent pas les codes de fermeture), puis il
+        // est coupé ; il efface alors tout.
         if self.is_banned(&me, &dev) {
+            let _ = tx.send(json!({ "t": "unlinked" }).to_string()).await;
             let _ = tx.close(4006, "unlinked").await;
             return;
         }

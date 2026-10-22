@@ -294,4 +294,23 @@ final class LiveTests: XCTestCase {
         let after = try XCTUnwrap(b.send(a1.me.code, Content(text: "Encore là ?")))
         try await wait("toujours reçu sur l'iPhone") { a1.messages(b.me.code).contains { $0.id == after.id } }
     }
+
+    /// v4 : un iPad retiré pendant qu'il était hors ligne l'apprend à son
+    /// retour (le relais le lui dit avant de le refuser), et efface tout.
+    func testDeviceRemovedWhileOffline() async throws {
+        let url = try server()
+        let a1 = phone("Alice", url)
+        defer { a1.stop() }
+        try await wait("connexion") { a1.netState == .online }
+        let (a2, _) = try await linkIPad(to: a1, url)
+        defer { a2.stop() }
+
+        a2.relay.stop()
+        await a1.unlinkDevice(a2.dev)
+        XCTAssertEqual(a1.devices.list.map(\.dev), [a1.dev])
+        var gone = false
+        a2.onUnlinked = { gone = true }
+        a2.relay.start()
+        try await wait("l'iPad retiré l'apprend à son retour", timeout: 20) { gone }
+    }
 }
