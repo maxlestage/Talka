@@ -40,6 +40,24 @@ final class V4Tests: XCTestCase {
         XCTAssertNil(obj?["gone"], "sans appareil retiré, le JSON est celui d'avant")
     }
 
+    /// Un contact revient en ligne : ses absences de paquet retenues sont
+    /// oubliées, à son code comme à chacun de ses appareils (un appareil
+    /// tout juste lié n'attend pas dix minutes).
+    @MainActor
+    func testAContactBackOnlineIsAskedAgainForItsBundles() async {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("presence-\(randomId(4))")
+        let e = Engine(store: Store(directory: dir), server: URL(string: "http://127.0.0.1:9")!)
+        let known = deviceBundle(Side(), "00000000000000a2")
+        e.bundleCache["CODE"] = (nil, 1)
+        e.bundleCache["CODE/00000000000000a1"] = (nil, 1)
+        e.bundleCache["CODE/00000000000000a2"] = (known, 1)
+        e.bundleCache["CODEX/00000000000000a1"] = (nil, 1)
+        e.bundleCache["AUTRE"] = (nil, 1)
+        e.relay.onPresence?("CODE", true, nil)
+        XCTAssertEqual(Set(e.bundleCache.keys), ["AUTRE", "CODE/00000000000000a2", "CODEX/00000000000000a1"])
+        XCTAssertFalse(e.forgetMissingBundles("CODE"))
+    }
+
     /// Les appareils retirés sont retenus (seize au plus), comme dans le
     /// navigateur : chaque appareil les redit au relais à chaque connexion.
     func testRemovedDevicesAreRemembered() {
@@ -146,7 +164,7 @@ final class V4Tests: XCTestCase {
     /// Cet appareil a son identifiant, gardé ; lié depuis un autre appareil,
     /// il prend son vrai nom dans la liste.
     @MainActor
-    func testEnsureDeviceAndItsName() throws {
+    func testEnsureDeviceAndItsName() async throws {
         let store = tempStore()
         Engine.createAccount(store, name: "Léa", avatar: "")
         let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
@@ -179,7 +197,7 @@ final class V4Tests: XCTestCase {
     /// Ce que la liaison emporte (et pas : ce qui est propre à l'appareil),
     /// puis ce que le nouvel appareil range.
     @MainActor
-    func testLinkDumpAndImport() throws {
+    func testLinkDumpAndImport() async throws {
         let store = tempStore()
         Engine.createAccount(store, name: "Léa", avatar: "")
         let e = Engine(store: store, server: URL(string: "http://localhost:1")!)

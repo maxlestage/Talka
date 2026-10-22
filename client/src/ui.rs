@@ -365,7 +365,11 @@ pub fn event(e: Ev) {
         return;
     }
     match e {
-        Ev::Chats | Ev::Profile => queue_side(),
+        Ev::Chats => queue_side(),
+        Ev::Profile => {
+            queue_side();
+            refresh_devices_row();
+        }
         Ev::Contacts(code) => {
             queue_side();
             spawn(crate::push::contacts_changed());
@@ -783,6 +787,11 @@ fn render_chat_list() {
         .filter(|c| !core::blocked(&c.id) || c.last.is_some())
         .collect();
     let archived_count = all.iter().filter(|c| c.archived).count();
+    // Gardées archivées, elles peuvent avoir du nouveau : combien (en vert).
+    let archived_unread = all
+        .iter()
+        .filter(|c| c.archived && !c.muted && (c.unread > 0 || c.marked_unread))
+        .count();
     let mut chats: Vec<Chat> = all
         .into_iter()
         .filter(|c| c.archived == archived)
@@ -885,7 +894,13 @@ fn render_chat_list() {
                         .attr("type", "button")
                         .child(icon("archive"))
                         .child(h("span").text("Archivées"))
-                        .child(h("small").text(archived_count.to_string()))
+                        .child(if archived_unread > 0 {
+                            h("span.badge")
+                                .attr("aria-label", format!("{archived_unread} non lues"))
+                                .text(archived_unread.to_string())
+                        } else {
+                            h("small").text(archived_count.to_string())
+                        })
                         .click(|| {
                             with(|u| u.archived = true);
                             spawn(render_side_body());
@@ -918,7 +933,8 @@ fn render_chat_list() {
             let mut e = h("div.side-empty");
             if !q.is_empty() {
                 e = e.child(h("p").text("Aucun résultat."));
-            } else if !archived {
+            } else if !archived && archived_count == 0 {
+                // (Toutes archivées : la ligne « Archivées » suffit.)
                 e = e
                     .child(h("p").text("Aucune discussion pour l'instant."))
                     .child(
@@ -1326,6 +1342,17 @@ fn devices_summary() -> String {
     }
 }
 
+/// La ligne « Appareils liés » des réglages, s'ils sont ouverts : la liste a
+/// changé (une liaison, un retrait, ou un autre de nos appareils).
+fn refresh_devices_row() {
+    let Some(root) = document().document_element() else {
+        return;
+    };
+    for el in query_all_in(&root, ".devices-row small") {
+        el.set_text_content(Some(&devices_summary()));
+    }
+}
+
 /// La liste des appareils du compte : les retirer, en lier un nouveau.
 fn open_devices() {
     let list = core::devices();
@@ -1454,6 +1481,8 @@ async fn link_other_device(camera: bool) {
                 false,
             )
             .await;
+            // La liste, avec le nouveau venu (comme WhatsApp).
+            open_devices();
         }
         Err(e) => toast(e),
     }
@@ -3543,7 +3572,7 @@ pub async fn open_settings() {
                 .child(h("div.settings-profile").child(avatar_btn).child(h("div.stack.grow").child(h("label.muted.small").text("Votre nom")).child(name.clone()).child(h("label.muted.small").text("Actu")).child(about.clone())))
                 .child(h("div.settings-group").child(h("h3").text("Mon code")).child(setting("qr", &pretty(&core::my_code()), "Votre identifiant Talka : il remplace le numéro de téléphone", false, show_my_code)))
                 .child(privacy)
-                .child(h("div.settings-group").child(h("h3").text("Appareils")).child(setting("phone", "Appareils liés", &devices_summary(), false, open_devices)))
+                .child(h("div.settings-group").child(h("h3").text("Appareils")).child(setting("phone", "Appareils liés", &devices_summary(), false, open_devices).class("devices-row")))
                 .child(h("div.settings-group").child(h("h3").text("Brocolis 🥦")).child(setting("lock", "Clés Brocolis", &brocolis_summary(), false, crate::brocoli::keys_dialog)))
                 .child(
                     h("div.settings-group")
@@ -3555,6 +3584,7 @@ pub async fn open_settings() {
                         }))
                         .child(setting("palette", "Fond d'écran", "Pour toutes les discussions", false, || conv::wallpaper_dialog(None)))
                         .child(toggle("Entrée pour envoyer", "Sur ordinateur ; Maj + Entrée va à la ligne", s.enter_sends, |v| spawn(core::save_settings(move |s| s.enter_sends = v))))
+                        .child(toggle("Garder les discussions archivées", "Un nouveau message ne les fait pas ressortir", s.keep_archived, |v| spawn(core::save_settings(move |s| s.keep_archived = v))))
                         .child(select("Conserver les messages", &[("1", "24 heures"), ("7", "7 jours"), ("30", "1 mois"), ("90", "3 mois"), ("180", "6 mois"), ("365", "1 an"), ("0", "Toujours")], &s.keep_days.to_string(), |v| {
                             let days = v.parse().unwrap_or(crate::model::KEEP_DAYS);
                             spawn(core::save_settings(move |s| s.keep_days = days))
