@@ -145,6 +145,7 @@ public final class Engine {
                 self?.sweep()
                 // Ce qui attend un paquet v3 (ou le réseau) est réessayé.
                 await self?.flush()
+                await self?.sendCover()
             }
         }
     }
@@ -1388,7 +1389,8 @@ public final class Engine {
         let n = env["n"] as? Int
         let boite = env["boite"] as? String ?? ""
         Task { @MainActor in
-            if let contact = boxMap[boite] { await receive(env, boite: contact) }
+            // Une boîte de couverture : rien à lire, seulement à oublier.
+            if let contact = boxMap[boite], !contact.isEmpty { await receive(env, boite: contact) }
             if let n { relay.boxes.got([n]) }
         }
     }

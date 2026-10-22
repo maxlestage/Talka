@@ -296,6 +296,29 @@ final class CompatTests: XCTestCase {
         XCTAssertEqual(sent.text, "Envoyé de l'iPad")
     }
 
+    /// v6 (`docs/SECURITE.md` §7.15) : la même boîte de couverture, les mêmes
+    /// paliers, et une enveloppe remplie par le navigateur s'ouvre ici.
+    func testV6() throws {
+        let b = try identity("b")
+        let v6 = try XCTUnwrap(v["v6"] as? [String: Any])
+        let cover = try XCTUnwrap(v6["couverture"] as? [String: Any])
+        let secret = try XCTUnwrap(unb64(try XCTUnwrap(cover["secret"] as? String)))
+        XCTAssertEqual(TalkaV4.coverBox(secret: secret, day: try XCTUnwrap(cover["jour"] as? Int), i: try XCTUnwrap(cover["i"] as? Int)),
+                       cover["boite"] as? String)
+        for pair in try XCTUnwrap(v6["paliers"] as? [[Int]]) {
+            XCTAssertEqual(TalkaCrypto.sealedBucket(pair[0]), pair[1], "\(pair[0])")
+        }
+        let filled = try XCTUnwrap(v6["scelle_rempli"] as? String)
+        XCTAssertEqual(TalkaCrypto.openSealed(b, filled)?.body, "x")
+        // Ce que l'iPhone scelle a la taille d'un palier, comme le navigateur.
+        for len in [0, 100, 900, 5_000] {
+            let plain = try XCTUnwrap(TalkaCrypto.sealedPlain(from: "K7Q2MX9PRT", fd: "", body: String(repeating: "x", count: len)))
+            XCTAssertEqual(plain.count, TalkaCrypto.sealedBucket(plain.count))
+        }
+        let short = try XCTUnwrap(TalkaCrypto.sealSender(from: "K7Q2MX9PRT", to: b.code, toDh: b.dh, body: "court"))
+        XCTAssertEqual(short.count, filled.count, "même palier, même taille")
+    }
+
     /// v4 (`docs/SECURITE.md` §7.11 à §7.13) : les boîtes tournantes, le
     /// paquet d'un appareil, l'expéditeur scellé avec son appareil et la
     /// liaison, comme le navigateur.
