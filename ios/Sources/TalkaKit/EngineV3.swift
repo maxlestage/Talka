@@ -12,7 +12,12 @@ extension Engine {
     /// sait faire v3.
     func startV3() {
         do {
-            v3 = V3Engine(deviceJson: try loadV3Device(), now: V3.secs(nowMs()))
+            let engine = V3Engine(deviceJson: try loadV3Device(), now: V3.secs(nowMs()))
+            // Le cliquet post-quantique (v6, §7.17), s'il y a ML-KEM.
+            if Pq6.available {
+                engine.startPq(json: store.readRaw("kv", Pq6.keysKey), now: V3.secs(nowMs()))
+            }
+            v3 = engine
             saveV3()
         } catch {
             // Le trousseau ne répond pas : l'ancien format pour cette fois,
@@ -55,6 +60,7 @@ extension Engine {
     /// à écrire ensuite (`saveV3Device`).
     func saveV3Sessions() -> String? {
         guard let dirty = v3?.takeDirty() else { return nil }
+        if let keys = dirty.pq { store.writeRaw("kv", Pq6.keysKey, keys) }
         for (code, json) in dirty.peers {
             let key = V3.sessionPrefix + code
             if json.isEmpty { store.remove("kv", key) } else { store.writeRaw("kv", key, json) }
@@ -126,6 +132,8 @@ extension Engine {
     /// Avant iOS 26 (pas de ML-KEM), une session neuve serait classique.
     public func protection(_ code: String) async -> V3.Protection {
         loadV3(code)
+        for d in targets(code) where !d.isEmpty { loadV3(TalkaV4.address(code, d)) }
+        if v3?.pqWithAny(code) == true { return .ratchetPq6 }
         if let p = v3?.sessionProtection(code) { return p }
         // v4 : la session avec l'un de ses appareils.
         for d in targets(code) where !d.isEmpty {

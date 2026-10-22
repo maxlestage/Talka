@@ -947,6 +947,7 @@ public final class Engine {
             payload = split.small
             blob = split.blob
         }
+        if ratchet { v3?.maintainPq(now: V3.secs(nowMs())) }
         let sealed = (ratchet ? v3?.sealTo(me, addr: addr, peerCode: peer.code, peerDh: peer.dh, bundle: bundle, plain: payload) : nil)
             ?? TalkaCrypto.seal(me, peerCode: peer.code, peerDh: peer.dh, plain: payload).map { V3.Sealed(body: $0, v3: false) }
         guard var sealed else { return .failed("crypto") }
@@ -1838,7 +1839,7 @@ public final class Engine {
         // ouvre (ou reçoit) une session neuve.
         var kv = (dump["kv"] as? [[Any]] ?? []).filter {
             let key = $0.first as? String ?? ""
-            return !key.hasPrefix(V3.sessionPrefix) && key != V3.deviceKey
+            return !key.hasPrefix(V3.sessionPrefix) && key != V3.deviceKey && key != Pq6.keysKey
         }
         if let device = try? loadV3Device() { kv.append([V3.deviceKey, device]) }
         dump["kv"] = kv

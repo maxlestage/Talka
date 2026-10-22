@@ -13,6 +13,7 @@ use serde_json::json;
 use talka_web::crypto::{self, Identity};
 use talka_web::jetons;
 use talka_web::model::*;
+use talka_web::pq6;
 
 fn main() {
     let a = Identity::create(1_700_000_000_000.0);
@@ -343,6 +344,18 @@ fn main() {
         "paliers": [[10, crypto::sealed_bucket(10)], [1_025, crypto::sealed_bucket(1_025)],
                     [300_000, crypto::sealed_bucket(300_000)], [6_000_000, crypto::sealed_bucket(6_000_000)]],
         "scelle_rempli": crypto::seal_sender_from(&a.code, "", &b.code, &b.dh, "x").unwrap(),
+        // Le cliquet post-quantique (§7.17) : une clé tirée d'une graine
+        // fixe, son annonce, et un jeton enveloppé pour elle.
+        "pq6": {
+            "graine": crypto::b64(&[9u8; 64]),
+            "cle": pq6::Key::from_seed(&[9u8; 64], 1_700_000_000),
+            "annonce": pq6::Keys { keys: vec![pq6::Key::from_seed(&[9u8; 64], 1_700_000_000)] }.advert(),
+            "jeton": "[[BROCOLIS:v3:AAEC]]",
+            "enveloppe": pq6::wrap(
+                pq6::Keys { keys: vec![pq6::Key::from_seed(&[9u8; 64], 1_700_000_000)] }
+                    .advert().unwrap()["ek"].as_str().unwrap(),
+                "[[BROCOLIS:v3:AAEC]]", &[3u8; 32], &[4u8; 12]).unwrap(),
+        },
     });
     let vectors = json!({
         "v6": v6,
