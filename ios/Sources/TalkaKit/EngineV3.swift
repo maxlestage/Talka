@@ -69,28 +69,47 @@ extension Engine {
     }
 
     /// Publie le paquet de clés v3, signé par la clé du code (à chaque
-    /// connexion : le relais ne garde rien sur disque).
+    /// connexion : le relais ne garde rien sur disque) : celui des anciens
+    /// clients, puis celui de cet appareil (v4).
     func publishV3() {
-        guard let (bundle, sig) = v3?.published(me) else { return }
-        relay.publishBundle(bundle, sig: sig)
+        if let legacy = v3?.published(me) { relay.publishBundle(legacy.bundle, sig: legacy.sig) }
+        if !dev.isEmpty, let mine = v3?.publishedDevice(me, dev: dev) {
+            relay.publishBundle(mine.bundle, sig: mine.sig, dev: dev)
+        }
     }
 
-    /// Le paquet v3 d'un contact, vérifié (lié à son code) ; gardé une heure
-    /// en mémoire (dix minutes s'il n'en a pas).
-    func bundleFor(_ peer: Contact) async -> KeyBundle? {
+    /// Le paquet v3 d'un contact (de son appareil `dev` en v4), vérifié (lié
+    /// à son code, et à l'appareil) ; gardé une heure en mémoire (dix
+    /// minutes s'il n'en a pas).
+    func bundleFor(_ peer: Contact, dev d: String = "") async -> KeyBundle? {
         let t = nowMs()
-        if let cached = bundleCache[peer.code], t - cached.at < (cached.bundle != nil ? 3_600_000 : 600_000) {
+        let addr = TalkaV4.address(peer.code, d)
+        if let cached = bundleCache[addr], t - cached.at < (cached.bundle != nil ? 3_600_000 : 600_000) {
             return cached.bundle
         }
         // Pas de réponse (réseau, ancien relais) : rien n'est retenu.
         guard let found = await relay.fetchBundle(peer.code) else { return nil }
         let none = found["none"] as? Bool ?? false
-        var bundle: KeyBundle?
-        if !none, let b = found["bundle"] as? String, let sig = found["sig"] as? String {
-            bundle = V3.verifyBundle(code: peer.code, sign: peer.sign, dh: peer.dh, bundle: b, sig: sig)
+        // Celui des anciens clients.
+        var legacy: KeyBundle?
+        if let b = found["bundle"] as? String, let sig = found["sig"] as? String {
+            legacy = V3.verifyBundle(code: peer.code, sign: peer.sign, dh: peer.dh, bundle: b, sig: sig)
         }
-        if bundle == nil, !none { v3Log("v3 : paquet de clés refusé (signature ou format)") }
-        bundleCache[peer.code] = (bundle, t)
+        // Et ceux de ses appareils (v4) : chacun gardé à son adresse.
+        var mine: KeyBundle?
+        for item in found["devices"] as? [[String: Any]] ?? [] {
+            guard let id = item["dev"] as? String, let b = item["bundle"] as? String, let sig = item["sig"] as? String
+            else { continue }
+            guard let bundle = V3.verifyDeviceBundle(code: peer.code, sign: peer.sign, dh: peer.dh, dev: id, bundle: b, sig: sig) else {
+                v3Log("v4 : paquet d'appareil refusé (signature ou format)")
+                continue
+            }
+            if id == d { mine = bundle }
+            bundleCache[TalkaV4.address(peer.code, id)] = (bundle, t)
+        }
+        let bundle = d.isEmpty ? legacy : mine
+        if bundle == nil, d.isEmpty, !none { v3Log("v3 : paquet de clés refusé (signature ou format)") }
+        bundleCache[addr] = (bundle, t)
         return bundle
     }
 
@@ -99,6 +118,12 @@ extension Engine {
     public func protection(_ code: String) async -> V3.Protection {
         loadV3(code)
         if let p = v3?.sessionProtection(code) { return p }
+        // v4 : la session avec l'un de ses appareils.
+        for d in targets(code) where !d.isEmpty {
+            let addr = TalkaV4.address(code, d)
+            loadV3(addr)
+            if let p = v3?.sessionProtection(addr) { return p }
+        }
         if let peer = await keys(for: code), let bundle = await bundleFor(peer) {
             return .ratchet(pq: bundle.pq != nil && V3.postQuantum)
         }
@@ -106,16 +131,23 @@ extension Engine {
     }
 
     /// Une enveloppe v3 illisible parce que la session est perdue (d'un côté
-    /// ou de l'autre) : on oublie nos sessions avec ce contact et on lui
-    /// envoie notre profil, qui ouvre une session neuve ; il la prend, et ses
-    /// messages suivants se lisent. Au plus une fois toutes les cinq minutes
-    /// par contact.
-    func repairV3(_ code: String) {
+    /// ou de l'autre) : on oublie nos sessions avec cet appareil et on lui
+    /// envoie notre profil (ou, pour un de nos appareils, la liste des
+    /// appareils), qui ouvre une session neuve ; il la prend, et ses messages
+    /// suivants se lisent. Au plus une fois toutes les cinq minutes par
+    /// appareil.
+    func repairV3(_ code: String, dev d: String = "") {
+        let addr = TalkaV4.address(code, d)
         let t = nowMs()
-        if let at = repairs[code], t - at < 300_000 { return }
-        repairs[code] = t
-        v3?.forget(code)
+        if let at = repairs[addr], t - at < 300_000 { return }
+        repairs[addr] = t
+        v3?.forget(addr)
         saveV3()
-        enqueue(code, Wire(profileBody(for: code)))
+        let body: Body = code == me.code ? .sync(op: "devices", d: jsonValue(devices)) : profileBody(for: code)
+        if d.isEmpty {
+            enqueue(code, Wire(body))
+        } else {
+            enqueueTo(code, dev: d, Wire(body))
+        }
     }
 }

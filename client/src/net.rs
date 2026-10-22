@@ -36,6 +36,16 @@ thread_local! {
     static WS: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
     static STATE: Cell<State> = const { Cell::new(State::Offline) };
     static IDENTITY: RefCell<Option<Identity>> = const { RefCell::new(None) };
+    /// Cet appareil (v4).
+    static DEV: RefCell<String> = const { RefCell::new(String::new()) };
+    /// La connexion anonyme qui lit nos boîtes tournantes (v4), et les
+    /// boîtes suivies (avec l'abonnement Web Push à leur donner).
+    static BOX: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
+    static BOX_READY: Cell<bool> = const { Cell::new(false) };
+    static BOX_LIST: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static BOX_PUSH: RefCell<Option<Value>> = const { RefCell::new(None) };
+    static BOX_HANDLERS: RefCell<Vec<Handler>> = const { RefCell::new(Vec::new()) };
+    static BOX_TIMER: Cell<i32> = const { Cell::new(0) };
     static HIDDEN: Cell<bool> = const { Cell::new(false) };
     static RETRY: Cell<u32> = const { Cell::new(0) };
     static TIMER: Cell<i32> = const { Cell::new(0) };
@@ -124,8 +134,9 @@ pub fn api_base() -> String {
     base.trim_end_matches('/').to_owned()
 }
 
-pub fn start(identity: Identity, hidden: bool) {
+pub fn start(identity: Identity, hidden: bool, dev: &str) {
     IDENTITY.with(|i| *i.borrow_mut() = Some(identity));
+    DEV.with(|d| *d.borrow_mut() = dev.to_owned());
     HIDDEN.with(|h| h.set(hidden));
     listen_forever(&window(), "online", |_| connect_soon(0));
     listen_forever(&crate::dom::document(), "visibilitychange", |_| {
@@ -139,6 +150,9 @@ pub fn start(identity: Identity, hidden: bool) {
 pub fn stop() {
     STOPPED.with(|s| s.set(true));
     if let Some(ws) = ANON.with(|w| w.borrow_mut().take()) {
+        let _ = ws.close();
+    }
+    if let Some(ws) = BOX.with(|w| w.borrow_mut().take()) {
         let _ = ws.close();
     }
     if let Some(ws) = WS.with(|w| w.borrow_mut().take()) {
@@ -239,7 +253,7 @@ fn on_text(text: &str) {
             let nonce = msg["nonce"].as_str().unwrap_or("");
             let hello = IDENTITY.with(|i| {
                 i.borrow().as_ref().map(|id| {
-                    json!({ "t": "hello", "sign": id.sign, "dh": id.dh, "sig": id.sign_challenge(nonce), "hidden": HIDDEN.with(Cell::get) })
+                    json!({ "t": "hello", "sign": id.sign, "dh": id.dh, "sig": id.sign_challenge(nonce), "hidden": HIDDEN.with(Cell::get), "dev": DEV.with(|d| d.borrow().clone()) })
                 })
             });
             if let Some(hello) = hello {
@@ -320,8 +334,15 @@ fn on_text(text: &str) {
             }
         }
         "presence" => crate::core::on_presence(&msg),
+        // Cet appareil a été retiré du compte (v4).
+        "unlinked" => crate::core::on_unlinked(),
         _ => {}
     }
+}
+
+/// Retire un appareil de notre compte (v4).
+pub fn unlink(dev: &str) -> bool {
+    raw(&json!({ "t": "unlink", "dev": dev }))
 }
 
 /// La clé VAPID du relais, vide s'il n'envoie pas de notifications.
@@ -348,6 +369,7 @@ pub fn push_endpoint(endpoint: &str, p256dh: &str, auth: &str, on: bool) -> bool
 pub async fn send(
     id: &str,
     to: &str,
+    dev: &str,
     body: &str,
     live: bool,
     wake: bool,
@@ -355,6 +377,9 @@ pub async fn send(
 ) -> Ack {
     let d = Deferred::<Ack>::new();
     let mut msg = json!({ "t": "send", "id": id, "to": to, "body": body, "live": live });
+    if !dev.is_empty() {
+        msg["dev"] = json!(dev);
+    }
     if wake {
         msg["wake"] = json!(true);
         if let Some(a) = apercu {
@@ -475,22 +500,49 @@ async fn anon_ready() -> bool {
     ok
 }
 
-/// Dépose une enveloppe scellée pour `peer`, avec son jeton de remise.
+/// Dépose une enveloppe scellée pour `peer` (son appareil `dev` en v4),
+/// avec son jeton de remise.
 pub async fn send_sealed(
     id: &str,
     peer: &Contact,
+    dev: &str,
     sealed: &str,
     live: bool,
     wake: bool,
     apercu: Option<&str>,
 ) -> Ack {
-    if !anon_ready().await {
-        return Ack::Err("offline".into());
-    }
     let mut msg = json!({
         "t": "send", "id": id, "to": peer.code, "sign": peer.sign, "dh": peer.dh,
         "jeton": peer.jeton, "body": sealed, "live": live,
     });
+    if !dev.is_empty() {
+        msg["dev"] = json!(dev);
+    }
+    anon_send(id, msg, wake, apercu).await
+}
+
+/// Dépose une enveloppe scellée dans une boîte tournante (v4) : ni code, ni
+/// jeton. `ttl` : combien de temps le relais la garde (secondes).
+pub async fn send_boite(
+    id: &str,
+    boite: &str,
+    sealed: &str,
+    live: bool,
+    wake: bool,
+    apercu: Option<&str>,
+    ttl: Option<u64>,
+) -> Ack {
+    let mut msg = json!({ "t": "send", "id": id, "boite": boite, "body": sealed, "live": live });
+    if let Some(ttl) = ttl {
+        msg["ttl"] = json!(ttl);
+    }
+    anon_send(id, msg, wake, apercu).await
+}
+
+async fn anon_send(id: &str, mut msg: Value, wake: bool, apercu: Option<&str>) -> Ack {
+    if !anon_ready().await {
+        return Ack::Err("offline".into());
+    }
     if wake {
         msg["wake"] = json!(true);
         if let Some(a) = apercu {
@@ -544,10 +596,14 @@ pub async fn lookup(code: &str) -> Option<Value> {
     out
 }
 
-/// Publie le paquet de clés v3 (base64) et sa signature par la clé du code.
-pub fn publish_bundle(bundle: &str, sig: &str) -> bool {
-    raw(&json!({ "t": "publish-bundle", "bundle": bundle, "sig": sig }))
-        && raw(&json!({ "t": "ping" }))
+/// Publie le paquet de clés v3 (base64) et sa signature par la clé du code ;
+/// `dev` : celui de cet appareil (v4), sinon celui des anciens clients.
+pub fn publish_bundle(bundle: &str, sig: &str, dev: &str) -> bool {
+    let mut msg = json!({ "t": "publish-bundle", "bundle": bundle, "sig": sig });
+    if !dev.is_empty() {
+        msg["dev"] = json!(dev);
+    }
+    raw(&msg) && raw(&json!({ "t": "ping" }))
 }
 
 /// La réponse du relais à la demande du paquet de clés v3 d'un code
@@ -571,6 +627,127 @@ pub async fn fetch_bundle(code: &str) -> Option<Value> {
     let out = d.wait().await;
     clear_timer(t);
     out
+}
+
+// ----- Les boîtes tournantes (v4) ---------------------------------------------
+//
+// Une troisième WebSocket, anonyme elle aussi, qui ne fait que lire : elle
+// s'abonne à nos boîtes (`{"t":"boites"}`) et reçoit ce qui y arrive. Rien
+// ne la relie à notre code, sauf l'adresse IP (docs/SECURITE.md §7.13).
+
+/// Les boîtes à lire (elles remplacent les précédentes) ; `push` :
+/// l'abonnement Web Push de ce navigateur, pour qu'un dépôt le réveille.
+pub fn listen_boxes(list: Vec<String>, push: Option<Value>) {
+    BOX_PUSH.with(|p| *p.borrow_mut() = push);
+    let changed = BOX_LIST.with(|l| {
+        let mut l = l.borrow_mut();
+        let changed = *l != list;
+        *l = list;
+        changed
+    });
+    if BOX_LIST.with(|l| l.borrow().is_empty()) {
+        if let Some(ws) = BOX.with(|w| w.borrow_mut().take()) {
+            let _ = ws.close();
+        }
+        return;
+    }
+    let open = BOX.with(|w| w.borrow().as_ref().is_some_and(|w| w.ready_state() <= 1));
+    if !open {
+        open_box();
+    } else if changed && BOX_READY.with(Cell::get) {
+        subscribe_boxes();
+    }
+}
+
+fn subscribe_boxes() {
+    let list: Vec<String> = BOX_LIST.with(|l| l.borrow().clone());
+    let push = BOX_PUSH.with(|p| p.borrow().clone());
+    BOX.with(|w| {
+        let w = w.borrow();
+        let Some(ws) = w.as_ref() else { return };
+        // Par paquets de 4 000 (le relais en prend 8 000 par demande).
+        for (i, part) in list.chunks(4_000).enumerate() {
+            let mut msg = json!({ "t": "boites", "list": part });
+            if i == 0
+                && let Some(p) = &push
+            {
+                msg["push"] = p.clone();
+            }
+            let _ = ws.send_with_str(&msg.to_string());
+        }
+    });
+}
+
+fn open_box() {
+    if STOPPED.with(Cell::get) {
+        return;
+    }
+    let Ok(ws) = WebSocket::new(&ws_url()) else {
+        return;
+    };
+    let me = ws.clone();
+    let on_message = Closure::<dyn FnMut(JsValue)>::new(move |e: JsValue| {
+        let Some(text) = e
+            .dyn_ref::<MessageEvent>()
+            .and_then(|m| m.data().as_string())
+        else {
+            return;
+        };
+        let Ok(msg) = serde_json::from_str::<Value>(&text) else {
+            return;
+        };
+        match msg["t"].as_str().unwrap_or("") {
+            "challenge" => {
+                let _ = me.send_with_str(&json!({ "t": "anon" }).to_string());
+            }
+            "ready" => {
+                BOX_READY.with(|r| r.set(msg["boites"].as_bool().unwrap_or(false)));
+                if BOX_READY.with(Cell::get) {
+                    subscribe_boxes();
+                }
+            }
+            "msg" => crate::core::on_box_envelope(msg),
+            _ => {}
+        }
+    });
+    let me = ws.clone();
+    let on_close = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+        if !BOX.with(|w| w.borrow().as_ref() == Some(&me)) {
+            return;
+        }
+        BOX.with(|w| *w.borrow_mut() = None);
+        BOX_READY.with(|r| r.set(false));
+        // Elle se rouvre tant qu'il y a des boîtes à lire.
+        if !BOX_LIST.with(|l| l.borrow().is_empty()) && !STOPPED.with(Cell::get) {
+            clear_timer(BOX_TIMER.with(Cell::get));
+            let wait = 2_000.0 + js_sys::Math::random() * 3_000.0;
+            BOX_TIMER.with(|t| t.set(timer(wait as i32, open_box)));
+        }
+    });
+    ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+    ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+    BOX_HANDLERS.with(|h| {
+        let mut h = h.borrow_mut();
+        let n = h.len();
+        if n > 4 {
+            h.drain(..n - 4);
+        }
+        h.push(on_message);
+        h.push(on_close);
+    });
+    BOX.with(|w| *w.borrow_mut() = Some(ws));
+}
+
+/// Les messages des boîtes tournantes rangés : le relais les oublie.
+pub fn box_got(numbers: &[u64]) {
+    if numbers.is_empty() {
+        return;
+    }
+    BOX.with(|w| {
+        if let Some(ws) = w.borrow().as_ref() {
+            let _ = ws.send_with_str(&json!({ "t": "got", "n": numbers }).to_string());
+        }
+    });
 }
 
 pub fn watch(codes: &[String]) {

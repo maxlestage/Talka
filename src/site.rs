@@ -406,8 +406,8 @@ pub fn home(site: &Site) -> Page {
                 ),
         );
 
-    // La v4 : ce qui arrive, présenté comme une feuille de route (rien n'est
-    // annoncé comme disponible avant d'être en ligne et vérifié).
+    // La v4, étape par étape (rien n'est annoncé comme disponible avant
+    // d'être en ligne et vérifié).
     let v4 = section()
         .id("v4")
         .class("section band")
@@ -417,10 +417,10 @@ pub fn home(site: &Site) -> Page {
                 .child(span().class("kicker").text("Talka v4, étape par étape"))
                 .child(h2().text("Un relais qui ne sait plus rien."))
                 .child(p().class("lead").text(
-                    "Aujourd'hui déjà, le relais ne lit rien et ne connaît ni votre numéro ni votre nom. \
-                     La v4 va plus loin : entre contacts, il ne sait déjà plus qui écrit ; \
-                     bientôt, il ne saura plus vraiment à qui. \
-                     Elle arrive par étapes, chacune publiée seulement une fois testée.",
+                    "Le relais ne lit rien et ne connaît ni votre numéro ni votre nom. \
+                     Avec la v4, entre contacts, il ne sait plus ni qui écrit, ni à qui : \
+                     les messages passent par des boîtes aux lettres anonymes qui changent chaque jour. \
+                     Et votre compte vit sur plusieurs appareils à la fois.",
                 ))
                 .child(
                     table()
@@ -428,7 +428,7 @@ pub fn home(site: &Site) -> Page {
                         .child(
                             thead().child(
                                 tr().child(th().text("Ce que voit le relais"))
-                                    .child(th().text("Aujourd'hui"))
+                                    .child(th().text("Avant"))
                                     .child(th().text("Avec la v4")),
                             ),
                         )
@@ -436,8 +436,8 @@ pub fn home(site: &Site) -> Page {
                             tbody()
                                 .child(row("Votre numéro, votre e-mail", "Jamais", "Jamais"))
                                 .child(row("Le contenu des messages", "Chiffré, illisible", "Chiffré, illisible"))
-                                .child(row("Qui écrit", "Personne, entre contacts (un premier message à un inconnu montre encore son auteur)", "Personne"))
-                                .child(row("À qui", "Le code du destinataire", "Une boîte aux lettres qui change chaque jour"))
+                                .child(row("Qui écrit", "Son code", "Personne, entre contacts (un premier message à un inconnu montre encore son auteur)"))
+                                .child(row("À qui", "Le code du destinataire", "Une boîte aux lettres qui change chaque jour, entre contacts"))
                                 .child(row("Les notifications", "Un aperçu chiffré pour votre appareil : illisible", "Un aperçu chiffré pour votre appareil : illisible")),
                         ),
                 )
@@ -445,9 +445,9 @@ pub fn home(site: &Site) -> Page {
                     div()
                         .class("features roadmap")
                         .child(milestone("1", "Disponible", "🔔", "Notifications chiffrées", "App fermée, la notification montre qui écrit et quoi, « Léa : On se voit à 19 h ? ». Cet aperçu est chiffré par votre contact pour votre appareil : ni le relais, ni Google ou Apple ne peuvent le lire."))
-                        .child(milestone("2", "Prévu", "📱", "Plusieurs appareils", "Le même compte sur l'iPhone et l'ordinateur, liés par un QR code. Chaque appareil a ses propres clés ; chaque message part chiffré pour chacun."))
+                        .child(milestone("2", "Disponible", "📱", "Plusieurs appareils", "Le même compte sur l'iPhone, l'iPad et l'ordinateur, liés par un QR code. Chaque appareil a ses propres clés ; chaque message part chiffré pour chacun, et vos appareils restent synchronisés."))
                         .child(milestone("3", "Disponible", "🕶️", "Expéditeur scellé", "Le relais ne voit plus qui envoie : un jeton de remise, donné seulement à vos contacts, prouve qu'on a le droit d'écrire, sans dire qui l'on est."))
-                        .child(milestone("4", "Prévu", "📮", "Boîtes aux lettres tournantes", "Entre contacts, les messages ne sont plus adressés à votre code mais à une boîte pseudonyme renouvelée chaque jour.")),
+                        .child(milestone("4", "Disponible", "📮", "Boîtes aux lettres tournantes", "Entre contacts, les messages ne sont plus adressés à votre code mais à une boîte pseudonyme renouvelée chaque jour, que seuls vous et votre contact savez calculer.")),
                 )
                 .child(p().class("muted small").text(
                     "Compatible : un appareil v4 parle v3 avec un appareil qui ne l'a pas encore. \
@@ -493,7 +493,7 @@ pub fn home(site: &Site) -> Page {
                 .child(faq("Faut-il un numéro de téléphone ou un e-mail ?", "Non. Talka ne vous demande qu'un nom à afficher. Votre code Talka est créé sur votre appareil et c'est lui que vous partagez."))
                 .child(faq("Où sont gardés mes messages ?", "Sur votre appareil : dans le navigateur (Memoire ORM, sur IndexedDB), ou dans l'app iPhone (SQLite). Talka n'a pas de base de données sur un serveur. Si vous effacez les données du site, vos discussions disparaissent : pensez à la sauvegarde chiffrée dans les Réglages."))
                 .child(faq("Et si mon ami n'est pas connecté ?", "Le relais garde le message chiffré jusqu'à ce que votre ami ouvre Talka (30 jours au plus), puis l'oublie. Vous voyez ✓ quand le message est parti, ✓✓ quand il est arrivé, ✓✓ en bleu quand il est lu."))
-                .child(faq("Puis-je utiliser Talka sur plusieurs appareils ?", "Pas encore en même temps : votre compte vit sur un appareil à la fois. Pour en changer, Réglages → Exporter une sauvegarde (un fichier chiffré, à garder dans Fichiers ou iCloud), puis restaurez-la sur le nouvel appareil, iPhone ou navigateur, et n'utilisez plus l'ancien. Le même compte sur plusieurs appareils à la fois arrive avec la v4."))
+                .child(faq("Puis-je utiliser Talka sur plusieurs appareils ?", "Oui, jusqu'à six à la fois : iPhone, iPad, navigateur. Sur le nouvel appareil, ouvrez Talka et choisissez « J'ai déjà Talka sur un autre appareil » ; un QR code s'affiche. Sur l'appareil où Talka est déjà ouvert : Réglages → Appareils liés → Scanner son QR code. Vos discussions arrivent, chiffrées pour lui seul ; ensuite, tout reste synchronisé. Retirer un appareil l'efface."))
                 .child(faq("Y a-t-il une app iPhone et Apple Watch ?", "Oui, en bêta sur TestFlight. L'app iPhone discute avec le navigateur (mêmes codes, mêmes groupes). L'app de la montre passe par l'iPhone : elle n'a pas de clés à elle, et rien ne passe par un serveur entre les deux."))
                 .child(faq("Puis-je ouvrir Talka dans deux onglets ?", "Un seul onglet est actif à la fois, comme sur WhatsApp Web : le dernier ouvert prend la main, l'autre vous propose « Utiliser ici »."))
                 .child(faq("Mes messages s'effacent-ils ?", "Seulement si vous le choisissez. Par discussion, les messages éphémères disparaissent après 24 heures, 7 jours ou 90 jours. Pour tout l'appareil, le réglage « Conserver les messages » efface ce qui est plus vieux que la durée choisie (3 mois par défaut, ou toujours garder) ; les messages importants ⭐ restent."))
