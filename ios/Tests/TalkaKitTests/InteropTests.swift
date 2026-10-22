@@ -46,7 +46,8 @@ final class InteropTests: XCTestCase {
         // Un navigateur à jour : le protocole v3, dans les deux sens (sa
         // réponse a confirmé une session).
         let protection = await e.protection(browser)
-        XCTAssertEqual(protection, .ratchet(pq: V3.postQuantum))
+        // (v6 : et le cliquet post-quantique, le navigateur ayant annoncé sa clé.)
+        XCTAssertEqual(protection, Pq6.available ? .ratchetPq6 : .ratchet(pq: V3.postQuantum))
         // (v4 : la session est à l'adresse de l'appareil du navigateur,
         // `<code>/<dev>`.)
         let confirmed = e.v3?.peers.contains { key, peer in
@@ -88,6 +89,19 @@ final class InteropTests: XCTestCase {
         try await wait("message du navigateur 2", 90) {
             e.messages(browser).contains { $0.text == "Envoyé du navigateur lié" && $0.from == e.me.code }
         }
+        // Le navigateur 2 fermé, l'iPhone écrit puis se met en veille ; le
+        // relais redémarre (un déploiement : ses boîtes, en mémoire, sont
+        // perdues). Au retour de chacun, rien ne manque.
+        func exists(_ name: String) -> Bool { FileManager.default.fileExists(atPath: "\(dir)/\(name)") }
+        try await wait("navigateur 2 fermé", 120) { exists("b2.closed") }
+        let away = try XCTUnwrap(e.send(browser, Content(text: "Pendant l'absence du navigateur 2")))
+        try await wait("accepté par le relais", 30) { e.store.message(browser, away.id)?.tick != .pending }
+        e.stop()
+        try "".write(toFile: "\(dir)/swift.away", atomically: true, encoding: .utf8)
+        try await wait("relais redémarré", 180) { exists("relay.restarted") }
+        e.start()
+        try await wait("reconnexion après le redémarrage", 60) { e.netState == .online }
+        try await wait("reçu par l'ordinateur et le navigateur 2", 180) { exists("b2.got") }
         try "fini".write(toFile: "\(dir)/swift.done", atomically: true, encoding: .utf8)
         try await Task.sleep(nanoseconds: 2_000_000_000)
     }
