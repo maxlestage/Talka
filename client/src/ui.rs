@@ -2747,7 +2747,7 @@ fn show_starred(list: Vec<Message>) {
             }
             h("div.list")
                 .children(list.iter().map(|m| {
-                    let chat = m.chat.clone();
+                    let (chat, id) = (m.chat.clone(), m.id.clone());
                     let title = core::chat(&m.chat)
                         .map(|c| core::chat_title(&c))
                         .unwrap_or_default();
@@ -2763,9 +2763,13 @@ fn show_starred(list: Vec<Message>) {
                                 )))
                                 .child(h("div.ellipsis").text(core::readable(m))),
                         )
+                        // La discussion s'ouvre sur le message, comme WhatsApp.
                         .click(move || {
-                            let c = chat.clone();
-                            spawn(async move { open_chat(&c).await })
+                            let (c, id) = (chat.clone(), id.clone());
+                            spawn(async move {
+                                open_chat(&c).await;
+                                conv::reveal(&id);
+                            })
                         })
                 }))
                 .into()
