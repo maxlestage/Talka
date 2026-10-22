@@ -602,6 +602,9 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     public var starred = false
     public var exp: Double?
     public var readByMe = false
+    /// Important (⭐), et pas supprimé pour tous : un message supprimé n'a
+    /// plus rien à garder (comme WhatsApp et le navigateur).
+    public var isStarred: Bool { starred && !deleted }
     /// Une capsule temporelle : scellée jusqu'à cette heure (ms).
     public var openAt: Double?
     /// Arrivé ou parti chiffré par Brocolis 🥦 (et ouvert sur cet appareil).

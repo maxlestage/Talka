@@ -783,14 +783,14 @@ public final class Engine {
 
     /// La discussion a-t-elle des messages favoris ?
     public func hasStarred(_ id: String) -> Bool {
-        store.messagesOf(id).contains { $0.starred }
+        store.messagesOf(id).contains { $0.isStarred }
     }
 
     /// Efface tout sauf les messages favoris.
     func emptyChatButStarred(_ id: String) {
         let t = nowMs()
         var gone: [(String, Double)] = []
-        for m in store.messagesOf(id) where !m.starred {
+        for m in store.messagesOf(id) where !m.isStarred {
             store.removeMessage(id, m.id)
             if t - m.at < Self.tombWindow { gone.append((m.id, m.at)) }
         }
@@ -1203,7 +1203,7 @@ public final class Engine {
         guard let c = chats[chat], var m = store.message(chat, id) else { return }
         if forEveryone, m.from == me.code {
             m.deleted = true
-            m.text = ""; m.data = ""; m.reactions = [:]
+            m.text = ""; m.data = ""; m.reactions = [:]; m.starred = false
             store.writeMessage(m)
             broadcast(c, .delete(id: id))
         } else {
@@ -1237,8 +1237,13 @@ public final class Engine {
         return m
     }
 
+    /// Les messages importants d'une discussion, les plus récents d'abord.
+    public func starred(in chat: String) -> [Message] {
+        store.messagesOf(chat).filter(\.isStarred).sorted { $0.at > $1.at }
+    }
+
     public func starred() -> [Message] {
-        store.allMessages().filter(\.starred).sorted { $0.at > $1.at }
+        store.allMessages().filter(\.isStarred).sorted { $0.at > $1.at }
     }
 
     /// Le libellé d'une mention (« @Léa ») : le nom que chacun s'est choisi,
@@ -1763,7 +1768,7 @@ public final class Engine {
         case let .delete(id):
             guard var m = store.message(c.id, id), m.from == from else { return }
             m.deleted = true
-            m.text = ""; m.data = ""; m.reactions = [:]
+            m.text = ""; m.data = ""; m.reactions = [:]; m.starred = false
             store.writeMessage(m)
             refreshLast(c.id)
             bump(c.id)
