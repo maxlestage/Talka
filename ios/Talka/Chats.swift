@@ -657,12 +657,14 @@ struct MyCodeSheet: View {
 struct StarredSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    /// Ceux d'une seule discussion (depuis ses infos), sinon tous.
+    var chatId: String?
 
     var body: some View {
         NavigationStack {
             if let e = model.engine {
                 let _ = e.revisions
-                let list = e.starred()
+                let list = chatId.map { e.starred(in: $0) } ?? e.starred()
                 List(list, id: \.key) { m in
                     Button {
                         dismiss()

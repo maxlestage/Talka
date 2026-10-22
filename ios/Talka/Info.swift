@@ -13,6 +13,7 @@ struct ContactInfoView: View {
     @State private var name = ""
     @State private var confirmDelete = false
     @State private var confirmClear = false
+    @State private var showStarred = false
     /// La protection de la discussion : session à double cliquet (v3) ou
     /// ancien chiffrement, comme dans le navigateur.
     @State private var protection: V3.Protection?
@@ -70,6 +71,7 @@ struct ContactInfoView: View {
                         }
                         if chat != nil { MuteMenu(chatId: code) }
                         WallpaperPicker(chatId: code)
+                        StarredRow(engine: e, chatId: code, shown: $showStarred)
                     }
                 }
                 Section {
@@ -104,6 +106,7 @@ struct ContactInfoView: View {
             .onDisappear { save(e) }
             .task(id: code) { protection = await e.protection(code) }
             .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: code)
+            .sheet(isPresented: $showStarred) { StarredSheet(chatId: code) }
             .confirmationDialog("Supprimer la discussion ?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Supprimer", role: .destructive) {
                     e.deleteChat(code)
@@ -319,6 +322,7 @@ struct GroupInfoView: View {
     @State private var adding = false
     @State private var confirmLeave = false
     @State private var confirmClear = false
+    @State private var showStarred = false
 
     var body: some View {
         if let e = model.engine, let chat = e.chat(chatId) {
@@ -369,6 +373,7 @@ struct GroupInfoView: View {
                     .disabled(chat.left)
                     MuteMenu(chatId: chatId)
                     WallpaperPicker(chatId: chatId)
+                    StarredRow(engine: e, chatId: chatId, shown: $showStarred)
                 }
                 Section("\(chat.members.count) membres") {
                     if admin {
@@ -426,6 +431,7 @@ struct GroupInfoView: View {
                 }
             }
             .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: chatId)
+            .sheet(isPresented: $showStarred) { StarredSheet(chatId: chatId) }
             .navigationTitle("Infos du groupe")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
@@ -535,19 +541,41 @@ struct AddMembersSheet: View {
     }
 }
 
-/// « Vider la discussion ? » : avec des favoris, on peut les garder (comme
+/// « Vider la discussion ? » : avec des messages importants, on peut les garder (comme
 /// WhatsApp).
 extension View {
     func clearChatDialog(isPresented: Binding<Bool>, engine e: Engine, chatId: String) -> some View {
         confirmationDialog("Vider la discussion ?", isPresented: isPresented, titleVisibility: .visible) {
             if e.hasStarred(chatId) {
-                Button("Vider, garder les favoris", role: .destructive) { e.clearChat(chatId, keepStarred: true) }
+                Button("Vider, garder les importants", role: .destructive) { e.clearChat(chatId, keepStarred: true) }
                 Button("Tout vider", role: .destructive) { e.clearChat(chatId) }
             } else {
                 Button("Vider", role: .destructive) { e.clearChat(chatId) }
             }
         } message: {
             Text("Les messages seront effacés de vos appareils.")
+        }
+    }
+}
+
+/// « Messages importants (n) » dans les infos d'un contact ou d'un groupe,
+/// s'il y en a (comme WhatsApp et le navigateur).
+struct StarredRow: View {
+    let engine: Engine
+    let chatId: String
+    @Binding var shown: Bool
+
+    var body: some View {
+        let n = engine.starred(in: chatId).count
+        if n > 0 {
+            Button { shown = true } label: {
+                LabeledContent {
+                    Text("\(n)")
+                } label: {
+                    Label("Messages importants", systemImage: "star")
+                }
+            }
+            .foregroundStyle(.primary)
         }
     }
 }
