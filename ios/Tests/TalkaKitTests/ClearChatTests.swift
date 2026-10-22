@@ -64,4 +64,20 @@ final class ClearChatTests: XCTestCase {
         m.deleted = true
         XCTAssertTrue(m.tooOld(keepDays: keepDaysDefault, now: now))
     }
+
+    /// Chercher parmi les messages importants : le texte (accents et
+    /// majuscules ignorés), ou le nom de la discussion.
+    func testSearchInStarredMessages() async throws {
+        let e = phone()
+        let c = e.ensureDirectChat("K7Q2MX9PRT")
+        let a = try XCTUnwrap(e.send(c.id, Content(text: "Rendez-vous à l'École")))
+        let b = try XCTUnwrap(e.send(c.id, Content(text: "Le code du portail")))
+        for m in [a, b] { e.toggleStar(c.id, m.id) }
+        let all = e.starred()
+        XCTAssertEqual(e.starred(all, matching: "ecole").map(\.id), [a.id])
+        XCTAssertEqual(e.starred(all, matching: "PORTAIL").map(\.id), [b.id])
+        XCTAssertEqual(e.starred(all, matching: "  ").count, 2)
+        XCTAssertEqual(e.starred(all, matching: "K7Q2M").count, 2, "le nom de la discussion compte")
+        XCTAssertTrue(e.starred(all, matching: "piscine").isEmpty)
+    }
 }

@@ -659,12 +659,16 @@ struct StarredSheet: View {
     @Environment(\.dismiss) private var dismiss
     /// Ceux d'une seule discussion (depuis ses infos), sinon tous.
     var chatId: String?
+    /// Chercher parmi eux (accents et majuscules ignorés), comme le
+    /// navigateur et WhatsApp.
+    @State private var query = ""
 
     var body: some View {
         NavigationStack {
             if let e = model.engine {
                 let _ = e.revisions
-                let list = chatId.map { e.starred(in: $0) } ?? e.starred()
+                let all = chatId.map { e.starred(in: $0) } ?? e.starred()
+                let list = e.starred(all, matching: query)
                 List(list, id: \.key) { m in
                     Button {
                         dismiss()
@@ -683,7 +687,14 @@ struct StarredSheet: View {
                         }
                     }
                 }
-                .overlay { if list.isEmpty { ContentUnavailableView("Aucun message important", systemImage: "star") } }
+                .overlay {
+                    if all.isEmpty {
+                        ContentUnavailableView("Aucun message important", systemImage: "star")
+                    } else if list.isEmpty {
+                        ContentUnavailableView.search(text: query)
+                    }
+                }
+                .searchable(text: $query, prompt: "Rechercher")
                 .navigationTitle("Messages importants")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("OK") { dismiss() } } }
