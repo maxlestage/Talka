@@ -83,6 +83,18 @@ final class V3Tests: XCTestCase {
         XCTAssertEqual(recv(a, b, send(b, a, bundle: false, "{\"k\":7}")), .failed(.v3(.cleInconnue)))
     }
 
+    /// Une annonce qui n'est pas partie (l'ancien format, faute de session)
+    /// part avec le message suivant.
+    func testAnAdvertThatDidNotLeaveIsSentAgain() throws {
+        try XCTSkipUnless(Pq6.available, "ML-KEM : iOS 26")
+        let a = Side(), b = Side()
+        a.engine.startPq(json: nil, now: 1_000)
+        b.engine.startPq(json: nil, now: 1_000)
+        XCTAssertFalse(V3.isToken(inner(b, a, send(a, b, bundle: false, "{\"k\":0}"))))
+        XCTAssertEqual(k(recv(b, a, send(a, b, bundle: true, "{\"k\":1}"))), 1)
+        XCTAssertTrue(b.engine.pqWith(a.id.code))
+    }
+
     /// Sans cliquet post-quantique d'un côté (avant iOS 26, ou une version
     /// d'avant), rien ne change.
     func testWithoutThePostQuantumRatchetNothingChanges() throws {
