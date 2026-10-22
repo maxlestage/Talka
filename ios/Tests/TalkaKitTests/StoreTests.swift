@@ -178,6 +178,26 @@ final class GroupRulesTests: XCTestCase {
         XCTAssertTrue(c.accepts("A", last))
     }
 
+    /// « Garder les discussions archivées » : un message reçu la laisse dans
+    /// les archives ; sans le réglage, elle en sort. Comme le navigateur
+    /// (`archived_chats_come_back_unless_kept`).
+    @MainActor
+    func testKeepArchived() async throws {
+        let e = Engine(store: Store(directory: FileManager.default.temporaryDirectory.appendingPathComponent("archive-\(randomId(4))")), server: URL(string: "http://127.0.0.1:9")!)
+        var c = Chat(id: "WGSEAJNSZJ")
+        c.archived = true
+        e.saveChat(c)
+        e.saveSettings { $0.keepArchived = true }
+        e.storeMessage(Message(chat: c.id, id: "m1", from: c.id, at: 1, content: Content(text: "Coucou")))
+        XCTAssertEqual(e.chat(c.id)?.archived, true, "gardée archivée")
+        // Le réglage s'écrit comme dans le navigateur.
+        XCTAssertTrue(JSON.encode(e.settings).contains("\"keep_archived\":true"))
+        e.saveSettings { $0.keepArchived = false }
+        e.storeMessage(Message(chat: c.id, id: "m2", from: c.id, at: 2, content: Content(text: "Encore")))
+        XCTAssertEqual(e.chat(c.id)?.archived, false, "sans le réglage, elle ressort")
+        XCTAssertEqual(JSON.decode(Settings.self, #"{"theme":"dark"}"#)?.keepArchived, false)
+    }
+
     /// La description d'un groupe : envoyée par les admins, gardée telle que
     /// le navigateur la garde ; absente (un ancien client), elle ne change pas.
     @MainActor

@@ -344,12 +344,12 @@ pub fn on_presence(msg: &Value) {
     let was = with(|s| s.presence.insert(code.clone(), (online, seen)));
     // Il revient : il a republié son paquet v3. Ce qui l'attendait faute de
     // paquet (un contact qui refuse l'ancien format) part maintenant.
-    if online && !was.is_some_and(|(o, _)| o) {
-        let missing = BUNDLES.with(|b| b.borrow().get(&code).is_some_and(|(b, _)| b.is_none()));
-        if missing {
-            BUNDLES.with(|b| b.borrow_mut().remove(&code));
-            spawn(flush());
-        }
+    // À son code comme à chacun de ses appareils (v4).
+    if online
+        && !was.is_some_and(|(o, _)| o)
+        && BUNDLES.with(|b| forget_missing(&mut b.borrow_mut(), &code))
+    {
+        spawn(flush());
     }
     emit(Ev::Presence(code));
 }
@@ -2097,7 +2097,7 @@ async fn store_message(m: &Message, bump: bool) {
     if bump && let Some(mut c) = chat(&m.chat) {
         c.last = Some(last_of(m));
         c.last_at = c.last_at.max(m.at);
-        if c.archived && m.from != my_code() && !c.muted {
+        if c.unarchives_on(&m.from, &my_code(), settings().keep_archived) {
             c.archived = false;
         }
         if m.exp.is_some() {
