@@ -772,6 +772,36 @@ d'une clé partagée), secrets effacés (`zeroize`), aucune panique sur une
 entrée hostile, aucune heure ni hasard implicite (passés par l'appelant :
 `wasm32-unknown-unknown` n'a pas d'horloge).
 
+### 7.15 Contre l'analyse du trafic (v6)
+
+Les boîtes tournantes (§7.13) cachent au relais qui écrit à qui. La v6
+cache aussi **combien**, **quand** et **à combien de personnes** :
+
+- **Paliers de taille.** Le clair de chaque enveloppe scellée (§7.9) est
+  rempli jusqu'à un palier : 1 Kio, 2, 4… 256 Kio, puis des multiples de
+  256 Kio, 5 Mio au plus (au-delà, la taille reste celle du message). Le
+  remplissage est un champ `"p"` de « 0 » dans le JSON scellé : un ancien
+  client l'ignore. Un « ok » et un paragraphe ont la même enveloppe.
+- **Trafic de couverture.** Chaque appareil tire une fois un secret de 32
+  octets (`kv/couverture`, jamais copié ailleurs) ; ses boîtes de
+  couverture sont `base64url(HMAC-SHA256(secret, "talka-couverture:<jour>:<i>")[0..16])`,
+  indiscernables d'une boîte tournante. En ligne, une fois toutes les trois
+  minutes en moyenne, l'appareil y dépose par la connexion anonyme une
+  enveloppe scellée vide (même palier qu'un court message) ; elle lui
+  revient, et il l'oublie (`got`).
+- **Nombre de boîtes suivies.** L'abonnement compte 4 boîtes de couverture
+  pour aujourd'hui et 4 pour demain, puis assez d'autres pour atteindre le
+  multiple de 64 supérieur : il ne dit plus combien nous avons de contacts.
+- **Heure du dépôt.** Un dépôt anonyme part après un délai au hasard de
+  0,2 à 2 s (sauf ce qui est en direct, appels et « écrit… », et la liaison
+  d'un appareil) : il ne colle plus à la frappe.
+
+**Limites.** Le relais voit encore l'adresse IP de chaque connexion : un
+dépôt de couverture et sa remise viennent de la même adresse, ce qu'il
+pourrait remarquer ; contre lui, la couverture sert surtout à brouiller le
+rythme et le nombre des boîtes, et contre un observateur du réseau, elle
+sert pleinement. Un VPN ou Tor cache l'adresse.
+
 ## 8. Revue de sécurité (octobre 2026)
 
 Une revue adversariale du relais, du navigateur et de l'iPhone a relevé

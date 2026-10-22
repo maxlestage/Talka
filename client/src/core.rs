@@ -99,6 +99,8 @@ thread_local! {
     /// Nos boîtes tournantes suivies : boîte → le contact qui y écrit ; et le
     /// jour pour lequel elles ont été calculées.
     static BOXES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// Le secret des boîtes de couverture (v6) : propre à cet appareil.
+    static COVER_SECRET: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static BOX_DAY: Cell<u64> = const { Cell::new(0) };
     /// Une liaison en cours sur ce nouvel appareil (v4) : le secret, et les
     /// morceaux reçus.
@@ -304,6 +306,7 @@ pub async fn start() {
         spawn(sweep());
         // Ce qui attend un paquet v3 (ou le réseau) est réessayé.
         spawn(flush());
+        spawn(send_cover());
     });
 }
 
@@ -864,11 +867,65 @@ pub async fn refresh_boxes() {
             map.insert(crypto::boite(&key, &me.code, &dev, day), c.code.clone());
         }
     }
+    // Des boîtes de couverture (v6, §7.15) : à aujourd'hui et demain, et
+    // assez pour que le nombre de boîtes suivies ne dise pas combien nous
+    // avons de contacts (un multiple de 64).
+    let secret = cover_secret().await;
+    for day in [today, today + 1] {
+        for i in 0..COVER_MIN {
+            map.insert(crypto::cover_box(&secret, day, i), String::new());
+        }
+    }
+    let mut i = COVER_MIN;
+    while map.len() % COVER_ROUND != 0 {
+        map.insert(crypto::cover_box(&secret, today, i), String::new());
+        i += 1;
+    }
+    COVER_SECRET.with(|c| *c.borrow_mut() = secret);
     let list: Vec<String> = map.keys().cloned().collect();
     BOXES.with(|b| *b.borrow_mut() = map);
     net::listen_boxes(list, crate::push::subscription());
     if net::state() == State::Online {
         store::write("kv", "boites_jour", &today).await;
+    }
+}
+
+/// Boîtes de couverture par jour, au moins ; le nombre de boîtes suivies est
+/// arrondi au multiple de `COVER_ROUND` supérieur.
+const COVER_MIN: usize = 4;
+const COVER_ROUND: usize = 64;
+
+/// Le secret des boîtes de couverture : tiré une fois, propre à l'appareil.
+async fn cover_secret() -> Vec<u8> {
+    let saved: String = store::read("kv", "couverture").await.unwrap_or_default();
+    if let Some(s) = crypto::unb64(&saved).filter(|s| s.len() == 32) {
+        return s;
+    }
+    let s = crypto::random_bytes(32);
+    store::write("kv", "couverture", &crypto::b64(&s)).await;
+    s
+}
+
+/// Le trafic de couverture (v6, §7.15) : de temps en temps (une fois toutes
+/// les trois minutes en moyenne, en ligne), une enveloppe scellée vide, au
+/// même palier qu'un court message, part dans une de nos boîtes de
+/// couverture ; pour le relais, c'est un dépôt comme un autre. Elle nous
+/// revient, et on l'oublie.
+async fn send_cover() {
+    if net::state() != State::Online || !net::sealed_supported() || js_sys::Math::random() > 0.35 {
+        return;
+    }
+    let secret = COVER_SECRET.with(|c| c.borrow().clone());
+    if secret.is_empty() || with(|s| s.me.is_none()) {
+        return;
+    }
+    let me = me();
+    let day = crypto::day(net::server_now());
+    let i = (js_sys::Math::random() * COVER_MIN as f64) as usize % COVER_MIN;
+    let boite = crypto::cover_box(&secret, day, i);
+    if let Some(sealed) = crypto::seal_sender_from(&me.code, &my_dev(), &me.code, &me.dh, "") {
+        let id = crypto::random_id(9);
+        let _ = net::send_boite(&id, &boite, &sealed, false, false, None, None).await;
     }
 }
 
@@ -879,7 +936,7 @@ pub async fn refresh_boxes() {
 fn device_only(key: &str) -> bool {
     matches!(
         key,
-        "dev" | "nk" | "pin" | "appareils" | "boites_jour" | "brocolis_sealed"
+        "dev" | "nk" | "pin" | "appareils" | "boites_jour" | "brocolis_sealed" | "couverture"
     ) || key == v3::DEVICE_KEY
         || key.starts_with(v3::SESSION_PREFIX)
 }
@@ -3058,7 +3115,10 @@ pub fn on_box_envelope(env: Value) {
         let boite = env["boite"].as_str().unwrap_or("").to_owned();
         if LINKING.with(|l| l.borrow().is_some()) {
             link_chunk(&env).await;
-        } else if let Some(contact) = BOXES.with(|b| b.borrow().get(&boite).cloned()) {
+        } else if let Some(contact) = BOXES.with(|b| b.borrow().get(&boite).cloned())
+            // Une boîte de couverture : rien à lire, seulement à oublier.
+            && !contact.is_empty()
+        {
             receive(&env, Some(&contact)).await;
         }
         if let Some(n) = n {
