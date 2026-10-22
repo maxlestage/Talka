@@ -201,7 +201,13 @@ final class AppModel {
         switch phase {
         case .active:
             engine?.foreground = true
-            engine?.relay.wake()
+            // Après une veille, les connexions ont pu mourir sans le dire :
+            // rouvertes (ce qui attend chez le relais arrive aussitôt).
+            if let at = hiddenAt, Date().timeIntervalSince(at) >= 20 {
+                engine?.relay.reopen()
+            } else {
+                engine?.relay.wake()
+            }
             if let id = path.last { engine?.markRead(id) }
             if let at = hiddenAt, hasPin, Date().timeIntervalSince(at) >= Double(engine?.settings.lockAfter ?? 0) {
                 locked = true
