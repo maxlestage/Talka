@@ -787,6 +787,11 @@ fn render_chat_list() {
         .filter(|c| !core::blocked(&c.id) || c.last.is_some())
         .collect();
     let archived_count = all.iter().filter(|c| c.archived).count();
+    // Gardées archivées, elles peuvent avoir du nouveau : combien (en vert).
+    let archived_unread = all
+        .iter()
+        .filter(|c| c.archived && !c.muted && (c.unread > 0 || c.marked_unread))
+        .count();
     let mut chats: Vec<Chat> = all
         .into_iter()
         .filter(|c| c.archived == archived)
@@ -889,7 +894,13 @@ fn render_chat_list() {
                         .attr("type", "button")
                         .child(icon("archive"))
                         .child(h("span").text("Archivées"))
-                        .child(h("small").text(archived_count.to_string()))
+                        .child(if archived_unread > 0 {
+                            h("span.badge")
+                                .attr("aria-label", format!("{archived_unread} non lues"))
+                                .text(archived_unread.to_string())
+                        } else {
+                            h("small").text(archived_count.to_string())
+                        })
                         .click(|| {
                             with(|u| u.archived = true);
                             spawn(render_side_body());
@@ -922,7 +933,8 @@ fn render_chat_list() {
             let mut e = h("div.side-empty");
             if !q.is_empty() {
                 e = e.child(h("p").text("Aucun résultat."));
-            } else if !archived {
+            } else if !archived && archived_count == 0 {
+                // (Toutes archivées : la ligne « Archivées » suffit.)
                 e = e
                     .child(h("p").text("Aucune discussion pour l'instant."))
                     .child(
@@ -3572,6 +3584,7 @@ pub async fn open_settings() {
                         }))
                         .child(setting("palette", "Fond d'écran", "Pour toutes les discussions", false, || conv::wallpaper_dialog(None)))
                         .child(toggle("Entrée pour envoyer", "Sur ordinateur ; Maj + Entrée va à la ligne", s.enter_sends, |v| spawn(core::save_settings(move |s| s.enter_sends = v))))
+                        .child(toggle("Garder les discussions archivées", "Un nouveau message ne les fait pas ressortir", s.keep_archived, |v| spawn(core::save_settings(move |s| s.keep_archived = v))))
                         .child(select("Conserver les messages", &[("1", "24 heures"), ("7", "7 jours"), ("30", "1 mois"), ("90", "3 mois"), ("180", "6 mois"), ("365", "1 an"), ("0", "Toujours")], &s.keep_days.to_string(), |v| {
                             let days = v.parse().unwrap_or(crate::model::KEEP_DAYS);
                             spawn(core::save_settings(move |s| s.keep_days = days))

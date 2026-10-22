@@ -2097,7 +2097,7 @@ async fn store_message(m: &Message, bump: bool) {
     if bump && let Some(mut c) = chat(&m.chat) {
         c.last = Some(last_of(m));
         c.last_at = c.last_at.max(m.at);
-        if c.archived && m.from != my_code() && !c.muted {
+        if c.unarchives_on(&m.from, &my_code(), settings().keep_archived) {
             c.archived = false;
         }
         if m.exp.is_some() {
