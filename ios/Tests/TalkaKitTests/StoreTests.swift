@@ -208,6 +208,17 @@ final class GroupRulesTests: XCTestCase {
         XCTAssertTrue(JSON.encode(e.groupInfo(try XCTUnwrap(e.chat("g:ga")))).contains("\"admins_only\":false"))
     }
 
+    /// Les actus d'un contact en sourdine : le même champ que le navigateur
+    /// (`status_muted`), absent des anciens contacts.
+    func testMutedStatusesField() {
+        XCTAssertEqual(JSON.decode(Contact.self, #"{"code":"WGSEAJNSZJ"}"#)?.statusMuted, false)
+        var c = Contact(code: "WGSEAJNSZJ")
+        XCTAssertFalse(JSON.encode(c).contains("status_muted"))
+        c.statusMuted = true
+        XCTAssertTrue(JSON.encode(c).contains("\"status_muted\":true"))
+        XCTAssertEqual(JSON.decode(Contact.self, JSON.encode(c))?.statusMuted, true)
+    }
+
     /// « Garder les discussions archivées » : un message reçu la laisse dans
     /// les archives ; sans le réglage, elle en sort. Comme le navigateur
     /// (`archived_chats_come_back_unless_kept`).

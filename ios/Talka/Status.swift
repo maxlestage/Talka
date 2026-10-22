@@ -30,8 +30,11 @@ struct StatusTab: View {
                 let mine = all.filter { $0.owner == e.me.code }
                 let others = Dictionary(grouping: all.filter { $0.owner != e.me.code && e.contact($0.owner)?.blocked != true }, by: \.owner)
                     .sorted { ($0.value.last?.at ?? 0) > ($1.value.last?.at ?? 0) }
-                let unseen = others.filter { $0.value.contains { !$0.seen } }
-                let seen = others.filter { !$0.value.contains { !$0.seen } }
+                // Les actus en sourdine : à part, en bas, jamais « Récentes ».
+                let hidden = others.filter { e.contact($0.key)?.statusMuted == true }
+                let shown = others.filter { e.contact($0.key)?.statusMuted != true }
+                let unseen = shown.filter { $0.value.contains { !$0.seen } }
+                let seen = shown.filter { !$0.value.contains { !$0.seen } }
                 List {
                     Section {
                         Button {
@@ -58,6 +61,9 @@ struct StatusTab: View {
                     }
                     if !seen.isEmpty {
                         Section("Vues") { ForEach(seen, id: \.key) { row(e, $0.key, $0.value) } }
+                    }
+                    if !hidden.isEmpty {
+                        Section("Masquées") { ForEach(hidden, id: \.key) { row(e, $0.key, $0.value) } }
                     }
                     if others.isEmpty {
                         Text("Les actus de vos contacts apparaîtront ici. Elles disparaissent au bout de 24 heures.")
@@ -96,13 +102,22 @@ struct StatusTab: View {
     func viewers(_ items: [StatusItem]) -> Int { Set(items.flatMap(\.viewers.keys)).count }
 
     func row(_ e: Engine, _ owner: String, _ items: [StatusItem]) -> some View {
-        Button { viewing = items } label: {
+        let muted = e.contact(owner)?.statusMuted == true
+        return Button { viewing = items } label: {
             HStack(spacing: 12) {
-                StatusRing(count: items.count, unseen: items.filter { !$0.seen }.count) { e.avatar(owner, size: 50) }
+                StatusRing(count: items.count, unseen: muted ? 0 : items.filter { !$0.seen }.count) { e.avatar(owner, size: 50) }
                 VStack(alignment: .leading) {
                     Text(e.displayName(owner)).font(.body.weight(.semibold)).foregroundStyle(.primary)
                     Text(Dates.list(items.last?.at ?? 0)).font(.subheadline).foregroundStyle(.secondary)
                 }
+            }
+            .opacity(muted ? 0.6 : 1)
+        }
+        .contextMenu {
+            Button {
+                e.updateContact(owner) { $0.statusMuted.toggle() }
+            } label: {
+                Label(muted ? "Afficher ses actus" : "Masquer ses actus", systemImage: muted ? "bell" : "bell.slash")
             }
         }
     }
