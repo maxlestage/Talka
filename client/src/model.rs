@@ -99,6 +99,10 @@ pub struct Contact {
     pub dh: String,
     pub blocked: bool,
     pub saved: bool,
+    /// Ses actus en sourdine, sur cet appareil (comme WhatsApp) : rangées
+    /// sous « Masquées », sans compter comme nouvelles.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub status_muted: bool,
     pub added_at: f64,
     pub profile_v: u64,
     pub sent_profile_v: u64,
@@ -986,6 +990,25 @@ mod tests {
 
     fn b64_len(n: usize) -> usize {
         n.div_ceil(3) * 4
+    }
+
+    #[test]
+    fn muted_statuses_are_remembered_per_contact() {
+        // Absent des anciens contacts : non ; écrit seulement s'il est mis.
+        let old: Contact = serde_json::from_str(r#"{"code":"WGSEAJNSZJ"}"#).unwrap();
+        assert!(!old.status_muted);
+        assert!(
+            !serde_json::to_string(&old)
+                .unwrap()
+                .contains("status_muted")
+        );
+        let muted = Contact {
+            status_muted: true,
+            ..old
+        };
+        let json = serde_json::to_string(&muted).unwrap();
+        assert!(json.contains(r#""status_muted":true"#));
+        assert!(serde_json::from_str::<Contact>(&json).unwrap().status_muted);
     }
 
     #[test]
