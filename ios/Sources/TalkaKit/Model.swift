@@ -397,6 +397,8 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public var avatar = ""
     public var members: [String] = []
     public var admins: [String] = []
+    /// La description d'un groupe (ce qu'en disent ses admins).
+    public var desc = ""
     public var createdBy = ""
     public var createdAt: Double = 0
     public var lastAt: Double = 0
@@ -425,7 +427,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public var muteUntil: Double?
 
     enum CodingKeys: String, CodingKey {
-        case id, group, name, avatar, members, admins, unread, pinned, archived, muted, timer, draft, wallpaper, left, v, last, brocolis
+        case id, group, name, avatar, members, admins, desc, unread, pinned, archived, muted, timer, draft, wallpaper, left, v, last, brocolis
         case muteUntil = "mute_until"
         case createdBy = "created_by"
         case createdAt = "created_at"
@@ -445,7 +447,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.v(.id, ""); group = c.v(.group, false); name = c.v(.name, ""); avatar = c.v(.avatar, "")
-        members = c.v(.members, []); admins = c.v(.admins, []); createdBy = c.v(.createdBy, "")
+        members = c.v(.members, []); admins = c.v(.admins, []); desc = c.v(.desc, ""); createdBy = c.v(.createdBy, "")
         createdAt = c.v(.createdAt, 0); lastAt = c.v(.lastAt, 0); unread = c.v(.unread, 0)
         markedUnread = c.v(.markedUnread, false); pinned = c.v(.pinned, false); archived = c.v(.archived, false)
         muted = c.v(.muted, false); timer = c.v(.timer, 0); draft = c.v(.draft, ""); wallpaper = c.v(.wallpaper, "")
@@ -760,16 +762,27 @@ public struct GroupInfo: Codable, Equatable, Sendable {
     public var admins: [String] = []
     public var avatar = ""
     public var v = 0
+    /// Sa description ; absente (un client d'avant elle) : inchangée.
+    public var desc: String?
 
-    public init(id: String, name: String, members: [String], admins: [String], avatar: String, v: Int) {
+    public init(id: String, name: String, members: [String], admins: [String], avatar: String, v: Int, desc: String? = nil) {
         self.id = id; self.name = name; self.members = members; self.admins = admins; self.avatar = avatar; self.v = v
+        self.desc = desc
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.v(.id, ""); name = c.v(.name, ""); members = c.v(.members, []); admins = c.v(.admins, [])
-        avatar = c.v(.avatar, ""); v = c.v(.v, 0)
+        avatar = c.v(.avatar, ""); v = c.v(.v, 0); desc = c.v(.desc, nil)
     }
+}
+
+/// Une description de groupe : 500 caractères au plus.
+public let maxGroupDesc = 500
+
+/// La description d'un groupe telle qu'elle est gardée (comme le navigateur).
+public func groupDesc(_ d: String) -> String {
+    String(d.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxGroupDesc))
 }
 
 /// Ce qui voyage, chiffré, d'un appareil à l'autre (`k` en donne la sorte).
@@ -949,6 +962,7 @@ extension Chat {
         var newAdmins = admins.filter { $0 != from }
         if newAdmins.isEmpty, let first = rest.first { newAdmins = [first] }
         return grp.members == rest && grp.admins == newAdmins && grp.name == name && grp.avatar == avatar
+            && (grp.desc.map { groupDesc($0) == desc } ?? true)
     }
 }
 
