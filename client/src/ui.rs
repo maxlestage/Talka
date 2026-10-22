@@ -2157,6 +2157,7 @@ async fn contact_info(code: &str) {
     } else {
         None
     };
+    let starred = core::starred_in(code).await.len();
     let me = core::me();
     let safety = safety_number((&me.code, &me.sign, &me.dh), (code, &c.sign, &c.dh));
     let protection = match core::protection(code).await {
@@ -2234,6 +2235,9 @@ async fn contact_info(code: &str) {
                                 open_add_contact(&k, &pn);
                             }),
                     );
+                }
+                if let Some(b) = starred_button(&code, starred) {
+                    a = a.child(b);
                 }
                 if let Some(chat) = core::chat(&code) {
                     a = a.child(
@@ -2327,7 +2331,7 @@ async fn contact_info(code: &str) {
     );
 }
 
-fn group_body(id: &str, md: &Modal, grid: Option<Element>) -> Child {
+fn group_body(id: &str, md: &Modal, grid: Option<Element>, starred: usize) -> Child {
     let Some(chat) = core::chat(id) else {
         return Child::None;
     };
@@ -2348,7 +2352,8 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>) -> Child {
             let (id, md) = (id.clone(), md.clone());
             spawn(async move {
                 let grid = media_grid(&id).await;
-                md.scoped(|| replace(&md.body(), group_body(&id, &md, grid)));
+                let starred = core::starred_in(&id).await.len();
+                md.scoped(|| replace(&md.body(), group_body(&id, &md, grid, starred)));
             })
         })
     };
@@ -2606,6 +2611,7 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>) -> Child {
         )
         .child(
             h("div.info-section.actions")
+                .child(starred_button(id, starred))
                 .child(
                     h("button.btn.ghost")
                         .attr("type", "button")
@@ -2641,10 +2647,11 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>) -> Child {
 
 async fn group_info(chat: Chat) {
     let grid = media_grid(&chat.id).await;
+    let starred = core::starred_in(&chat.id).await.len();
     let id = chat.id.clone();
     modal(
         "Infos du groupe",
-        move |md| group_body(&id, md, grid),
+        move |md| group_body(&id, md, grid, starred),
         ModalOpts {
             wide: true,
             ..Default::default()
@@ -2707,7 +2714,31 @@ pub fn open_image(src: &str, caption: &str) {
 }
 
 async fn open_starred() {
-    let list = core::starred().await;
+    show_starred(core::starred().await);
+}
+
+/// Les messages favoris d'une discussion (depuis ses infos, comme WhatsApp).
+async fn open_starred_in(chat_id: &str) {
+    show_starred(core::starred_in(chat_id).await);
+}
+
+/// « Messages favoris (n) » dans les infos d'un contact ou d'un groupe, s'il
+/// y en a.
+fn starred_button(chat_id: &str, n: usize) -> Option<El> {
+    let id = chat_id.to_owned();
+    (n > 0).then(|| {
+        h("button.btn.ghost")
+            .attr("type", "button")
+            .child(icon("star"))
+            .text(format!(" Messages favoris ({n})"))
+            .click(move || {
+                let id = id.clone();
+                spawn(async move { open_starred_in(&id).await })
+            })
+    })
+}
+
+fn show_starred(list: Vec<Message>) {
     modal(
         "Messages favoris",
         move |_| {
