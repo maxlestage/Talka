@@ -2914,6 +2914,17 @@ pub async fn pinned_message(chat_id: &str) -> Option<Message> {
         .filter(|m| !m.deleted && m.exp.is_none_or(|e| e > t))
 }
 
+/// Les messages favoris d'une discussion, les plus récents d'abord.
+pub async fn starred_in(chat_id: &str) -> Vec<Message> {
+    let mut list: Vec<Message> = store::messages_of(chat_id, usize::MAX)
+        .await
+        .into_iter()
+        .filter(|m| m.starred)
+        .collect();
+    list.sort_by(|a, b| b.at.total_cmp(&a.at));
+    list
+}
+
 pub async fn starred() -> Vec<Message> {
     let mut list: Vec<Message> = store::all::<Message>("messages")
         .await
