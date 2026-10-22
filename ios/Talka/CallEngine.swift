@@ -175,6 +175,8 @@ final class CallEngine: Identifiable {
     func accept() async {
         timeout?.cancel()
         stopRing()
+        // Nos autres appareils cessent de sonner (v4).
+        engine.callTaken(id)
         phase = .connecting
         status = "Connexion…"
         guard await media() else {
@@ -192,11 +194,20 @@ final class CallEngine: Identifiable {
     }
 
     func hangup() {
-        send(incoming && pc == nil ? "reject" : "end")
+        let reject = incoming && pc == nil
+        send(reject ? "reject" : "end")
+        // Refusé ici : nos autres appareils cessent de sonner (v4).
+        if reject { engine.callTaken(id) }
         end("Appel terminé")
     }
 
-    func end(_ reason: String, missed: Bool = false) {
+    /// Pris ou refusé sur un autre de nos appareils (v4) : on cesse de
+    /// sonner, sans rien dire à l'appelant.
+    func takenElsewhere() {
+        end("Pris sur un autre appareil", elsewhere: true)
+    }
+
+    func end(_ reason: String, missed: Bool = false, elsewhere: Bool = false) {
         guard phase != .ended else { return }
         let wasConnected = pc != nil
         phase = .ended
@@ -212,7 +223,8 @@ final class CallEngine: Identifiable {
         pc = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         let dur = connectedAt.map { Date().timeIntervalSince($0).rounded() } ?? 0
-        engine.logCall(CallEntry(id: id, peer: peer, video: video, incoming: incoming, at: at, dur: dur, missed: missed || (incoming && dur == 0)))
+        let lost = !elsewhere && (missed || (incoming && dur == 0))
+        engine.logCall(CallEntry(id: id, peer: peer, video: video, incoming: incoming, at: at, dur: dur, missed: lost))
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(1400))
             guard let self, let model = self.model, model.call === self else { return }

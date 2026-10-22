@@ -22,6 +22,17 @@ use crate::core;
 use crate::dom::{await_promise, call, get, meta, window};
 use crate::net;
 
+thread_local! {
+    /// L'abonnement Web Push de ce navigateur, tel qu'on le donne au relais
+    /// (aussi avec nos boîtes tournantes, v4).
+    static SUB: std::cell::RefCell<Option<serde_json::Value>> = const { std::cell::RefCell::new(None) };
+}
+
+/// L'abonnement Web Push de ce navigateur, s'il y en a un.
+pub fn subscription() -> Option<serde_json::Value> {
+    SUB.with(|s| s.borrow().clone())
+}
+
 /// Le relais et ce navigateur savent-ils faire des notifications app fermée ?
 pub fn available() -> bool {
     let nav = get(&window(), "navigator");
@@ -74,6 +85,7 @@ async fn apply(want: bool) -> Result<(), JsValue> {
             }
             let _ = await_promise(call(&sub, "unsubscribe", &[])).await;
         }
+        SUB.with(|s| *s.borrow_mut() = None);
         return Ok(());
     }
     let key = B64URL
@@ -101,12 +113,14 @@ async fn apply(want: bool) -> Result<(), JsValue> {
         sub = await_promise(call(&pm, "subscribe", &[opts.into()])).await?;
     }
     if let Some(endpoint) = get(&sub, "endpoint").as_string() {
-        net::push_endpoint(
-            &endpoint,
-            &sub_key(&sub, "p256dh"),
-            &sub_key(&sub, "auth"),
-            true,
-        );
+        let (p256dh, auth) = (sub_key(&sub, "p256dh"), sub_key(&sub, "auth"));
+        net::push_endpoint(&endpoint, &p256dh, &auth, true);
+        let value = serde_json::json!({ "endpoint": endpoint, "p256dh": p256dh, "auth": auth });
+        let changed = SUB.with(|s| s.borrow_mut().replace(value.clone()) != Some(value));
+        // Les boîtes tournantes réveillent aussi ce navigateur.
+        if changed {
+            crate::dom::spawn(core::refresh_boxes());
+        }
     }
     if let Some(nk) = notification_key(&reg).await {
         core::set_nk(nk).await;

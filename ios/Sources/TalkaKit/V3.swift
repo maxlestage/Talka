@@ -54,6 +54,24 @@ public enum V3 {
     /// Ce que signe l'identité Talka pour publier un paquet.
     public static func bundleMessage(_ bundle: Data) -> Data { bundleContext + bundle }
 
+    /// Ce que signe l'identité Talka pour publier le paquet d'un appareil (v4,
+    /// `docs/SECURITE.md` §7.11) : le paquet est lié au code **et** à
+    /// l'appareil.
+    public static func deviceBundleMessage(dev: String, _ bundle: Data) -> Data {
+        Data("talka-v4-appareil:\(dev):".utf8) + bundle
+    }
+
+    /// Le paquet d'un appareil (v4), comme `verifyBundle`.
+    public static func verifyDeviceBundle(code: String, sign: String, dh: String, dev: String,
+                                          bundle: String, sig: String) -> KeyBundle? {
+        guard TalkaV4.isDev(dev), TalkaCrypto.verifyKeys(code: code, sign: sign, dh: dh),
+              bundle.utf8.count <= (maxBundle + 2) / 3 * 4,
+              let bytes = unb64(bundle), bytes.count <= maxBundle,
+              TalkaCrypto.verify(sign: sign, message: deviceBundleMessage(dev: dev, bytes), signature: sig)
+        else { return nil }
+        return try? KeyBundle.fromBytes(Array(bytes))
+    }
+
     /// L'heure du protocole : des secondes Unix (Talka compte en millisecondes).
     public static func secs(_ ms: Double) -> UInt64 { UInt64(max(ms / 1000, 0)) }
 
@@ -240,6 +258,14 @@ public final class V3Engine {
         return sig.isEmpty ? nil : (b64(data), sig)
     }
 
+    /// Le paquet de cet appareil (v4), signé pour lui : (paquet, signature).
+    public func publishedDevice(_ me: Identity, dev: String) -> (bundle: String, sig: String)? {
+        guard let bytes = try? device.bundle().toBytes() else { return nil }
+        let data = Data(bytes)
+        let sig = me.sign(V3.deviceBundleMessage(dev: dev, data))
+        return sig.isEmpty ? nil : (b64(data), sig)
+    }
+
     /// Le paquet courant (les tests).
     public func bundle() -> KeyBundle? { try? device.bundle() }
 
@@ -291,11 +317,18 @@ public final class V3Engine {
     /// texte dépasse ce que porte un jeton v3 (200 Kio : photos, vocaux,
     /// fichiers), l'ancien format.
     public func seal(_ me: Identity, peerCode: String, peerDh: String, bundle: KeyBundle?, plain: String) -> V3.Sealed? {
+        sealTo(me, addr: peerCode, peerCode: peerCode, peerDh: peerDh, bundle: bundle, plain: plain)
+    }
+
+    /// Comme `seal`, pour un appareil d'un compte (v4) : la session est celle
+    /// de son adresse (`addr`, `<code>/<dev>`), l'enveloppe celle du code.
+    public func sealTo(_ me: Identity, addr: String, peerCode: String, peerDh: String, bundle: KeyBundle?,
+                       plain: String) -> V3.Sealed? {
         func legacy() -> V3.Sealed? {
             TalkaCrypto.seal(me, peerCode: peerCode, peerDh: peerDh, plain: plain).map { V3.Sealed(body: $0, v3: false) }
         }
         if plain.utf8.count > Session.maxPlaintext { return legacy() }
-        guard let token = encrypt(peerCode, bundle: bundle, plain: plain) else { return legacy() }
+        guard let token = encrypt(addr, bundle: bundle, plain: plain) else { return legacy() }
         return TalkaCrypto.seal(me, peerCode: peerCode, peerDh: peerDh, plain: token).map { V3.Sealed(body: $0, v3: true) }
     }
 
@@ -325,12 +358,19 @@ public final class V3Engine {
     /// Ouvre une enveloppe reçue de `peerCode` : l'ancien format, ou un jeton
     /// v3 (par sa session, ou un premier message).
     public func open(_ me: Identity, peerCode: String, peerDh: String, body: String, now: UInt64) -> V3.Opened {
+        openFrom(me, addr: peerCode, peerCode: peerCode, peerDh: peerDh, body: body, now: now)
+    }
+
+    /// Comme `open`, d'un appareil d'un compte (v4) : la session est celle de
+    /// son adresse (`addr`, `<code>/<dev>`).
+    public func openFrom(_ me: Identity, addr: String, peerCode: String, peerDh: String, body: String,
+                         now: UInt64) -> V3.Opened {
         guard let plain = TalkaCrypto.open(me, peerCode: peerCode, peerDh: peerDh, body: body) else {
             return .failed(.envelope)
         }
         guard V3.isToken(plain) else { return .legacy(plain) }
         do {
-            switch try decrypt(peerCode, plain, now: now) {
+            switch try decrypt(addr, plain, now: now) {
             case .text(let wire): return .v3(wire)
             // Talka ne se sert pas (encore) des chaînes de groupe.
             case .distribution: return .failed(.v3(.format))
@@ -346,6 +386,21 @@ public final class V3Engine {
         let token = try Token.decode(text)
         guard let id = token.sessionId else { throw Erreur.sessionInconnue }
         let rng = Hasard.system()
+        // v4 : une session ouverte avant de connaître ses appareils est
+        // rangée sous son code ; elle passe à l'adresse de l'appareil
+        // (`<code>/<dev>`) dès qu'un message dit lequel c'est.
+        if let slash = code.firstIndex(of: "/"), peers[code]?.get(id) == nil {
+            let base = String(code[..<slash])
+            if let old = peers[base], let s = old.get(id) {
+                old.sessions.removeAll { $0.sessionId == id }
+                if old.current == id { old.current = nil }
+                dirty.insert(base)
+                let moved = peers[code] ?? V3Peer()
+                moved.put(s)
+                peers[code] = moved
+                dirty.insert(code)
+            }
+        }
         let peer = peers[code] ?? V3Peer()
         peers[code] = peer
         if let s = peer.get(id) {

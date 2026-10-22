@@ -15,6 +15,7 @@ struct WelcomeView: View {
     @State private var backup: Data?
     @State private var password = ""
     @State private var error: String?
+    @State private var linking = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -65,6 +66,8 @@ struct WelcomeView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("J'ai déjà Talka sur un autre appareil") { linking = true }
+                    .font(.callout)
                 Button("Restaurer une sauvegarde") { importing = true }
                     .font(.callout)
                 Label("Tout reste sur cet appareil. Le serveur ne fait que passer des messages chiffrés.", systemImage: "lock.fill")
@@ -78,6 +81,7 @@ struct WelcomeView: View {
             .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
+        .sheet(isPresented: $linking) { LinkWaitView() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data, .json]) { result in
             guard let url = try? result.get() else { return }
             let scoped = url.startAccessingSecurityScopedResource()

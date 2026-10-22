@@ -275,10 +275,12 @@ pub async fn boot() {
         }
         mount();
     } else {
-        welcome().await;
+        let created = welcome().await;
         start_core().await;
         mount();
-        reveal_code().await;
+        if created {
+            reveal_code().await;
+        }
     }
     auto_lock();
     if let Some(code) = invite.filter(|c| *c != core::my_code()) {
@@ -1315,6 +1317,203 @@ fn qr_data_url(link: &str) -> String {
     media::text_data_url(&svg_text, "image/svg+xml")
 }
 
+// ----- Les appareils liés (v4) ---------------------------------------------------
+
+fn devices_summary() -> String {
+    match core::devices().list.len() {
+        0 | 1 => "Seulement cet appareil".into(),
+        n => format!("{n} appareils"),
+    }
+}
+
+/// La liste des appareils du compte : les retirer, en lier un nouveau.
+fn open_devices() {
+    let list = core::devices();
+    let me = core::my_dev();
+    modal(
+        "Appareils liés",
+        move |md| {
+            let rows = list.list.iter().map(|d| {
+                let this = d.dev == me;
+                let since = crate::dom::day_label(d.at);
+                let (dev, md2) = (d.dev.clone(), md.clone());
+                let name = if d.name.is_empty() { "Appareil".to_owned() } else { d.name.clone() };
+                let (n2, md4) = (name.clone(), md.clone());
+                h("div.list-item")
+                    .child(h("span.avatar.action").child(icon("phone")))
+                    .child(
+                        h("div.grow")
+                            .child(h("div.strong").text(&name))
+                            .child(h("small.muted").text(if this {
+                                "Cet appareil".to_owned()
+                            } else {
+                                format!("Lié le {since}")
+                            })),
+                    )
+                    .child(this.then(|| {
+                        h("button.btn.ghost")
+                            .attr("type", "button")
+                            .text("Renommer")
+                            .click(move || {
+                                let (n2, md4) = (n2.clone(), md4.clone());
+                                spawn(async move {
+                                    if let Some(name) = prompt_box("Nom de cet appareil", "Il s'affiche dans la liste de vos appareils.", &n2, "text", "Enregistrer", 40).await {
+                                        core::rename_device(&core::my_dev(), &name).await;
+                                        md4.close();
+                                    }
+                                })
+                            })
+                    }))
+                    .child((!this).then(|| {
+                        h("button.btn.ghost.danger")
+                            .attr("type", "button")
+                            .text("Retirer")
+                            .click(move || {
+                                let (dev, md2) = (dev.clone(), md2.clone());
+                                let name = name.clone();
+                                spawn(async move {
+                                    if confirm_box(
+                                        "Retirer cet appareil ?",
+                                        &format!("« {name} » ne recevra plus vos messages et effacera tout ce qu'il garde de votre compte."),
+                                        "Retirer",
+                                        true,
+                                    )
+                                    .await
+                                    {
+                                        core::unlink_device(&dev).await;
+                                        md2.close();
+                                        toast("Appareil retiré");
+                                    }
+                                })
+                            })
+                    }))
+            });
+            let (md3, md5) = (md.clone(), md.clone());
+            // La caméra et le décodeur de Talka : partout où il y a une caméra.
+            let can_scan = window().navigator().media_devices().is_ok();
+            h("div.stack")
+                .child(h("p.muted.small").text("Votre compte sur plusieurs appareils à la fois (iPhone, iPad, navigateur) : chacun a ses propres clés, et chaque message part chiffré pour chacun. Six appareils au plus."))
+                .child(h("div.list").children(rows))
+                .child(h("p.muted.small").text("Pour en lier un : ouvrez Talka sur le nouvel appareil et choisissez « J'ai déjà Talka sur un autre appareil ». Un QR code s'affiche."))
+                .child(can_scan.then(|| {
+                    h("button.btn.primary")
+                        .attr("type", "button")
+                        .child(icon("qr"))
+                        .text(" Scanner son QR code")
+                        .click(move || {
+                            md3.close();
+                            spawn(link_other_device(true));
+                        })
+                }))
+                .child(
+                    h("button.btn.ghost")
+                        .attr("type", "button")
+                        .text("Coller son code de liaison")
+                        .click(move || {
+                            md5.close();
+                            spawn(link_other_device(false));
+                        }),
+                )
+                .into()
+        },
+        ModalOpts::default(),
+    );
+}
+
+/// Lier un nouvel appareil : lire son QR code (ou coller son code de
+/// liaison), puis comparer le code de vérification.
+async fn link_other_device(camera: bool) {
+    let text = if camera {
+        scan(
+            "Visez le QR code affiché par le nouvel appareil.",
+            Box::new(|raw: &str| {
+                raw.starts_with(crate::crypto::LINK_PREFIX)
+                    .then(|| raw.to_owned())
+            }),
+        )
+        .await
+    } else {
+        prompt_box(
+            "Code de liaison",
+            "Sur le nouvel appareil : « J'ai déjà Talka sur un autre appareil », puis « Copier le code de liaison ».",
+            "",
+            "text",
+            "Lier",
+            400,
+        )
+        .await
+    };
+    let Some(text) = text else { return };
+    toast("Liaison en cours…");
+    match core::link_device(text.trim()).await {
+        Ok(verif) => {
+            let _ = confirm_box(
+                "Appareil lié ✓",
+                &format!("Le nouvel appareil doit afficher le même code de vérification : {verif}. S'il est différent, retirez-le (Réglages → Appareils liés)."),
+                "OK",
+                false,
+            )
+            .await;
+        }
+        Err(e) => toast(e),
+    }
+}
+
+/// Lier ce navigateur à un compte existant : un QR code que l'autre
+/// appareil lit ; `true` quand le compte est arrivé.
+async fn link_this_device() -> bool {
+    let (text, d) = core::start_linking();
+    let cancel = d.sender();
+    let t2 = text.clone();
+    let m = modal(
+        "Lier à un compte existant",
+        move |_| {
+            let t3 = t2.clone();
+            h("div.my-code")
+                .child(h("img.qr").attr("src", qr_data_url(&t2)).attr("alt", "QR code de liaison").attr("width", "240").attr("height", "240"))
+                .child(h("p.muted.small").text("Sur l'appareil où Talka est déjà ouvert (iPhone, iPad, navigateur) : Réglages → Appareils liés → Scanner son QR code, puis visez celui-ci."))
+                .child(
+                    h("button.btn.ghost")
+                        .attr("type", "button")
+                        .child(icon("copy"))
+                        .text(" Copier le code de liaison")
+                        .click(move || {
+                            let t = t3.clone();
+                            spawn(async move { copy(&t, "Code de liaison copié").await })
+                        }),
+                )
+                .child(h("p.muted.small").text("En attente de l'autre appareil…"))
+                .into()
+        },
+        ModalOpts {
+            on_close: Some(Box::new(move || {
+                core::cancel_linking();
+                cancel.send(None);
+            })),
+            ..Default::default()
+        },
+    );
+    match d.wait().await {
+        Some(Ok(verif)) => {
+            m.close();
+            let _ = confirm_box(
+                "Compte lié ✓",
+                &format!("Vérifiez que l'autre appareil affiche le même code : {verif}."),
+                "Continuer",
+                false,
+            )
+            .await;
+            true
+        }
+        Some(Err(e)) => {
+            m.close();
+            toast(e);
+            false
+        }
+        None => false,
+    }
+}
+
 pub fn show_my_code() {
     let me = core::my_code();
     let link = invite_link(&me);
@@ -1495,6 +1694,21 @@ pub fn open_add_contact(prefill: &str, name: &str) {
 
 /// Scanner un QR code Talka avec la caméra (`BarcodeDetector`).
 async fn scan_qr() -> Option<String> {
+    scan(
+        "Visez le QR code de votre ami.",
+        Box::new(|raw: &str| {
+            let tail = raw.rsplit(['/', '=']).next().unwrap_or(raw).to_owned();
+            normalize(&tail).or_else(|| normalize(raw))
+        }),
+    )
+    .await
+}
+
+/// Ce qu'on garde d'un QR code lu (rien : on continue de chercher).
+type Pick = Box<dyn Fn(&str) -> Option<String>>;
+
+/// Scanner un QR code : `pick` dit ce qu'on en garde.
+async fn scan(hint: &'static str, pick: Pick) -> Option<String> {
     let devices = window().navigator().media_devices().ok()?;
     let cons = web_sys::MediaStreamConstraints::new();
     let v = js_sys::Object::new();
@@ -1527,7 +1741,7 @@ async fn scan_qr() -> Option<String> {
         move |_| {
             h("div.stack")
                 .child(v2)
-                .child(h("p.muted.small").text("Visez le QR code de votre ami."))
+                .child(h("p.muted.small").text(hint))
                 .into()
         },
         ModalOpts {
@@ -1540,30 +1754,78 @@ async fn scan_qr() -> Option<String> {
             ..Default::default()
         },
     );
-    let ctor: js_sys::Function = get(&window(), "BarcodeDetector").dyn_into().ok()?;
-    let opts = js_sys::Object::new();
-    set(&opts, "formats", js_sys::Array::of1(&"qr_code".into()));
-    let detector = js_sys::Reflect::construct(&ctor, &js_sys::Array::of1(&opts)).ok()?;
+    // `BarcodeDetector` quand le navigateur l'a ; sinon (Safari, Firefox),
+    // le décodeur de Talka, image par image.
+    let detector = get(&window(), "BarcodeDetector")
+        .dyn_into::<js_sys::Function>()
+        .ok()
+        .and_then(|ctor| {
+            let opts = js_sys::Object::new();
+            set(&opts, "formats", js_sys::Array::of1(&"qr_code".into()));
+            js_sys::Reflect::construct(&ctor, &js_sys::Array::of1(&opts)).ok()
+        });
+    let canvas: web_sys::HtmlCanvasElement =
+        document().create_element("canvas").ok()?.dyn_into().ok()?;
     let found = loop {
         if done.get() {
             break None;
         }
         sleep(300).await;
-        let Ok(codes) = await_promise(call(&detector, "detect", &[video.clone().into()])).await
-        else {
-            continue;
+        let texts: Vec<String> = match &detector {
+            Some(detector) => {
+                let Ok(codes) =
+                    await_promise(call(detector, "detect", &[video.clone().into()])).await
+                else {
+                    continue;
+                };
+                js_sys::Array::from(&codes)
+                    .iter()
+                    .filter_map(|c| get(&c, "rawValue").as_string())
+                    .collect()
+            }
+            None => frame_codes(&video, &canvas),
         };
-        let hit = js_sys::Array::from(&codes).iter().find_map(|c| {
-            let raw = get(&c, "rawValue").as_string()?;
-            let tail = raw.rsplit(['/', '=']).next().unwrap_or(&raw).to_owned();
-            normalize(&tail).or_else(|| normalize(&raw))
-        });
+        let hit = texts.iter().find_map(|raw| pick(raw));
         if hit.is_some() {
             break hit;
         }
     };
     m.close();
     found
+}
+
+/// Les QR codes d'une image de la caméra, lus par Talka (`crate::qr`).
+fn frame_codes(video: &Element, canvas: &web_sys::HtmlCanvasElement) -> Vec<String> {
+    let Some(v) = video.dyn_ref::<web_sys::HtmlVideoElement>() else {
+        return Vec::new();
+    };
+    let (vw, vh) = (v.video_width(), v.video_height());
+    if vw == 0 || vh == 0 {
+        return Vec::new();
+    }
+    // 640 pixels de large au plus : assez pour un QR code, vite lu.
+    let scale = (640.0 / vw as f64).min(1.0);
+    let (w, h) = ((vw as f64 * scale) as u32, (vh as f64 * scale) as u32);
+    canvas.set_width(w);
+    canvas.set_height(h);
+    let Some(ctx) = canvas
+        .get_context("2d")
+        .ok()
+        .flatten()
+        .and_then(|c| c.dyn_into::<web_sys::CanvasRenderingContext2d>().ok())
+    else {
+        return Vec::new();
+    };
+    if ctx
+        .draw_image_with_html_video_element_and_dw_and_dh(v, 0.0, 0.0, w as f64, h as f64)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let Ok(data) = ctx.get_image_data(0.0, 0.0, w as f64, h as f64) else {
+        return Vec::new();
+    };
+    crate::qr::decode_rgba(w as usize, h as usize, &data.data())
 }
 
 fn open_new_chat() {
@@ -3248,6 +3510,7 @@ pub async fn open_settings() {
                 .child(h("div.settings-profile").child(avatar_btn).child(h("div.stack.grow").child(h("label.muted.small").text("Votre nom")).child(name.clone()).child(h("label.muted.small").text("Actu")).child(about.clone())))
                 .child(h("div.settings-group").child(h("h3").text("Mon code")).child(setting("qr", &pretty(&core::my_code()), "Votre identifiant Talka : il remplace le numéro de téléphone", false, show_my_code)))
                 .child(privacy)
+                .child(h("div.settings-group").child(h("h3").text("Appareils")).child(setting("phone", "Appareils liés", &devices_summary(), false, open_devices)))
                 .child(h("div.settings-group").child(h("h3").text("Brocolis 🥦")).child(setting("lock", "Clés Brocolis", &brocolis_summary(), false, crate::brocoli::keys_dialog)))
                 .child(
                     h("div.settings-group")
@@ -3509,16 +3772,21 @@ async fn wipe() {
     {
         return;
     }
+    // Lié à d'autres appareils : il quitte d'abord le compte.
+    core::leave_account().await;
     core::wipe_everything().await;
     let _ = window().location().reload();
 }
 
 // ----- L'accueil -----------------------------------------------------------------------
 
-async fn welcome() {
+/// L'accueil : `true` si un compte a été créé, `false` si cet appareil a
+/// été lié à un compte existant (v4).
+async fn welcome() -> bool {
     let r = root();
     toggle_class(&r, "boot", false);
     let d = Deferred::<bool>::new();
+    let linked = d.sender();
     let pic = Rc::new(RefCell::new(String::new()));
     let pic_btn = h("button.avatar-pick.big")
         .attr("type", "button")
@@ -3595,13 +3863,21 @@ async fn welcome() {
                     .child(name.clone())
                     .child(err.clone())
                     .child(go.clone())
+                    .child(h("button.link").attr("type", "button").text("J'ai déjà Talka sur un autre appareil").click(move || {
+                        let linked = linked.clone();
+                        spawn(async move {
+                            if link_this_device().await {
+                                linked.send(Some(false));
+                            }
+                        })
+                    }))
                     .child(h("button.link").attr("type", "button").text("Restaurer une sauvegarde").click(|| spawn(import_backup())))
                     .child(h("p.muted.tiny").child(icon("lock")).text(" Tout reste sur cet appareil. ").child(h("a").attr("href", asset("confidentialite/")).attr("target", "_blank").text("Confidentialité"))),
             ),
         );
     });
     timer(50, move || focus(&name));
-    d.wait().await;
+    d.wait().await.unwrap_or(true)
 }
 
 /// Juste après la création : le code, à partager.

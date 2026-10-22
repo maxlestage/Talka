@@ -103,6 +103,7 @@ final class AppModel {
 
     func start() {
         guard let url = URL(string: serverString), url.scheme != nil else { return }
+        Engine.deviceName = Self.deviceName
         let e = Engine(store: store, server: url)
         e.onIncoming = { [weak self] chat, message, active in self?.incoming(chat, message, active) }
         e.onReaction = { [weak self] chat, from, emoji in
@@ -113,6 +114,11 @@ final class AppModel {
         }
         e.onCallSignal = { [weak self] from, body, live in self?.callSignal(from, body, live) }
         e.onTooLarge = { [weak self] in self?.show("Message trop lourd : il n'a pas pu partir.") }
+        // Retiré du compte par un autre appareil (v4) : tout est effacé.
+        e.onUnlinked = { [weak self] in
+            self?.wipe()
+            self?.show("Cet appareil a été retiré de votre compte Talka.")
+        }
         e.onKeysMismatch = { [weak self] code in
             self?.show("Attention : les clés de \(TalkaCode.pretty(code)) ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.")
         }
@@ -133,6 +139,35 @@ final class AppModel {
         try Engine.importBackup(store, password: password, file: data)
         locked = store.read("kv", "pin", as: PinHash.self) != nil
         start()
+    }
+
+    /// Ce que montre la liste des appareils du compte (v4).
+    static var deviceName: String {
+        if ProcessInfo.processInfo.isiOSAppOnMac { return "Mac" }
+        return UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+    }
+
+    // ----- Plusieurs appareils (v4) -----
+
+    /// Ce nouvel appareil attend d'être lié : son QR code, et ce qui arrive.
+    func makeDeviceLink() -> DeviceLink? {
+        guard let url = URL(string: serverString), url.scheme != nil else { return nil }
+        return DeviceLink(store: store, server: url)
+    }
+
+    /// Le compte reçu par la liaison est rangé : Talka démarre.
+    func finishLinking() {
+        guard engine == nil, Engine.hasAccount(store) else { return }
+        locked = false
+        start()
+        Task { await finishLoading() }
+    }
+
+    /// « Tout effacer » : cet appareil quitte d'abord le compte (nos autres
+    /// appareils et nos contacts ne lui écrivent plus), puis efface tout.
+    func leaveAndWipe() async {
+        await engine?.leaveAccount()
+        wipe()
     }
 
     func wipe() {
@@ -441,6 +476,11 @@ final class AppModel {
             if UIApplication.shared.applicationState != .active, e.settings.notify {
                 Notifier.message(title: e.displayName(from), body: video ? "📹 Appel vidéo entrant" : "📞 Appel entrant", thread: "call", sound: true)
             }
+            return
+        }
+        // Pris ou refusé sur un autre de nos appareils (v4) : on cesse de sonner.
+        if op == "elsewhere" {
+            if from == e.me.code, let c = call, c.id == callId, c.incoming, c.pc == nil { c.takenElsewhere() }
             return
         }
         guard let c = call, c.id == callId, c.peer == from else { return }

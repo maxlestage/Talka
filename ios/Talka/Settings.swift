@@ -56,6 +56,7 @@ struct SettingsTab: View {
                         Text("Une seconde couche de chiffrement, avec les clés de l'app Brocolis.")
                     }
                     security(e)
+                    devices(e)
                     Section("Apparence") {
                         Picker("Thème", selection: setting(e, \.theme)) {
                             Text("Automatique").tag("auto")
@@ -202,7 +203,9 @@ struct SettingsTab: View {
                     Text("Talka s'ouvrira sans code, et vos messages ne seront plus chiffrés par lui (ils restent chiffrés par l'appareil).")
                 }
                 .confirmationDialog("Tout effacer ?", isPresented: $confirmWipe, titleVisibility: .visible) {
-                    Button("Effacer le code, les contacts et les messages", role: .destructive) { model.wipe() }
+                    Button("Effacer le code, les contacts et les messages", role: .destructive) {
+                        Task { await model.leaveAndWipe() }
+                    }
                 } message: {
                     Text("Votre code sera perdu pour toujours, sauf si vous avez une sauvegarde.")
                 }
@@ -263,6 +266,21 @@ struct SettingsTab: View {
             Text("Verrouillage et sécurité")
         } footer: {
             Text(securityFooter(bio))
+        }
+    }
+
+    /// Les appareils du compte (v4) : iPhone, iPad, navigateur.
+    @ViewBuilder func devices(_ e: Engine) -> some View {
+        Section {
+            NavigationLink {
+                LinkedDevicesView()
+            } label: {
+                LabeledContent("Appareils liés", value: "\(e.devices.list.count)")
+            }
+        } header: {
+            Text("Appareils")
+        } footer: {
+            Text("Votre compte sur votre iPhone, votre iPad et votre ordinateur à la fois : vos messages arrivent partout, chiffrés pour chaque appareil.")
         }
     }
 

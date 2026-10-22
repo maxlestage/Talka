@@ -121,6 +121,86 @@ pub struct Contact {
     /// modifications, suppressions, groupe, appels).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub v3: bool,
+    /// Ses appareils (v4), tels qu'il les annonce : on écrit à chacun.
+    /// Vide : un seul appareil, d'avant la v4.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub devs: Vec<DevInfo>,
+    /// La version de cette liste (la plus grande l'emporte).
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub dv: u64,
+    /// Il lit ses boîtes aux lettres tournantes (v4) : on lui écrit là.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub bx: bool,
+}
+
+/// Un appareil d'un contact (v4) : son identifiant, et sa clé de
+/// notification (l'aperçu de ses notifications lui est chiffré).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DevInfo {
+    pub d: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub nk: String,
+}
+
+/// Un appareil de notre compte (v4, `kv/appareils`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Device {
+    pub dev: String,
+    /// « iPhone », « Chrome sur Mac »…
+    pub name: String,
+    /// Quand il a été lié.
+    pub at: f64,
+    /// Sa clé de notification.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub nk: String,
+}
+
+/// Les appareils de notre compte (v4) : six au plus ; `v` avance à chaque
+/// changement, la plus grande l'emporte.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Devices {
+    pub v: u64,
+    pub list: Vec<Device>,
+}
+
+/// Six appareils au plus par compte.
+pub const MAX_DEVICES: usize = 6;
+
+impl Devices {
+    pub fn has(&self, dev: &str) -> bool {
+        self.list.iter().any(|d| d.dev == dev)
+    }
+
+    /// Ce que voient les contacts (dans le profil).
+    pub fn announced(&self) -> Vec<DevInfo> {
+        self.list
+            .iter()
+            .map(|d| DevInfo {
+                d: d.dev.clone(),
+                nk: d.nk.clone(),
+            })
+            .collect()
+    }
+
+    /// La liste reçue d'un autre de nos appareils : gardée si elle est plus
+    /// récente (et bien formée).
+    pub fn merge(&mut self, other: Devices) -> bool {
+        if other.v <= self.v
+            || other.list.len() > MAX_DEVICES
+            || other.list.iter().any(|d| !crate::crypto::is_dev(&d.dev))
+        {
+            return false;
+        }
+        *self = other;
+        true
+    }
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -342,6 +422,12 @@ pub struct OutItem {
     /// est gardé jusqu'à l'accusé de réception du destinataire, et renvoyé
     /// si le relais a redémarré entre-temps. Vide : pas encore parti.
     pub boot: String,
+    /// v4 : les appareils du destinataire qui l'ont déjà (déposé pour eux).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sent: Vec<String>,
+    /// v4 : ceux qui l'ont reçu (accusé de réception de cet appareil).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub got: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -532,6 +618,9 @@ pub enum Body {
         /// `delivered` ou `read`.
         st: String,
         ids: Vec<String>,
+        /// L'appareil qui a reçu (v4).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        dev: String,
     },
     React {
         id: String,
@@ -563,6 +652,14 @@ pub enum Body {
         /// `Contact::pj`) ; ignoré par les versions qui ne le connaissent pas.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         pj: bool,
+        /// Ses appareils (v4) et la version de cette liste.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        devs: Vec<DevInfo>,
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        dv: u64,
+        /// Il lit ses boîtes aux lettres tournantes (v4).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        bx: bool,
     },
     Group {
         op: String,
@@ -599,6 +696,21 @@ pub enum Body {
         sdp: String,
         #[serde(default)]
         cand: Option<serde_json::Value>,
+    },
+    /// Entre les appareils d'un même compte (v4, `docs/SECURITE.md` §7.11) :
+    /// ce que l'un a fait, que les autres refont. Accepté seulement de nos
+    /// propres appareils.
+    Sync {
+        op: String,
+        /// La discussion concernée.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        c: String,
+        /// Ce que l'appareil a envoyé dans la discussion (`op` = `wire`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        w: Option<Box<Wire>>,
+        /// Le reste (selon `op`).
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        d: serde_json::Value,
     },
 }
 
