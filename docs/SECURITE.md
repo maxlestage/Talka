@@ -656,7 +656,7 @@ relais redémarre.
 | `chat` | l'état d'une discussion : archivée, épinglée, en sourdine, vidée, supprimée (`d`) |
 | `forget` | des messages effacés pour moi (`d.ids`) |
 | `profile` | notre nom, notre actu, notre photo (`d`) |
-| `devices` | la liste des appareils (`d`) ; la plus grande `v` l'emporte |
+| `devices` | la liste des appareils (`d` : `v`, `list`, et `gone`, les appareils retirés) ; la plus grande `v` l'emporte |
 | `status` | une actu publiée (`d`) |
 | `call` | un appel pris ou refusé sur cet appareil (`d.id`) : les autres arrêtent de sonner |
 | `unlink` | cet appareil est retiré : il efface tout |
@@ -666,11 +666,18 @@ relais redémarre.
 boîte de chaque appareil connu du code (connecté ou ayant publié son
 paquet depuis le démarrage du relais), sinon dans la boîte du code.
 `{"t":"unlink","dev"}` (d'un appareil du code) oublie le paquet et la boîte
-de cet appareil, coupe ses connexions et refuse son `hello` jusqu'au
-redémarrage du relais. Les abonnements Web Push sont par appareil.
+de cet appareil, coupe ses connexions et refuse son `hello` : il reçoit
+d'abord `{"t":"unlinked"}`, puis la fermeture 4006. Le relais retient 64
+appareils retirés au plus par code, en mémoire seulement. Les abonnements
+Web Push sont par appareil.
 
 **Retirer un appareil** : il reçoit `sync`/`unlink` et efface tout ; il
-quitte la liste (`v` + 1), annoncée aux contacts. **Limite** : un appareil
+quitte la liste (`v` + 1), annoncée aux contacts, et rejoint ses appareils
+retirés (`gone`, les seize derniers). Le relais ne gardant rien sur disque,
+chacun de nos appareils lui redit `unlink` pour chacun d'eux à chaque
+connexion : retiré pendant qu'il était hors ligne, même avant un
+redémarrage du relais, un appareil apprend son retrait à son retour
+(`unlinked`) et efface tout. **Limite** : un appareil
 lié détient l'identité du compte. Volé avant d'être retiré, il peut
 continuer d'écrire au nom du compte et se réannoncer ; le seul remède sûr
 est alors un nouveau code (comme pour un téléphone volé chez Signal avant

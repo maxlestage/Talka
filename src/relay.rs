@@ -32,7 +32,7 @@
 //! | → | `{"t":"revoke","nonces":[…]}` | les nonces des jetons de remise révoqués par ce code (contacts bloqués) ; la liste remplace la précédente |
 //! | → | `hello` avec `"dev"` | (v4) un appareil du compte : ses messages ont leur boîte (`<code>/<dev>`) ; un envoi peut viser un appareil (`"dev"` dans `send`) ; ce qui est livré dit de quel appareil il vient (`"fd"`) |
 //! | → | `{"t":"publish-bundle","bundle","sig","dev"}` | (v4) le paquet de cet appareil, signé avec `talka-v4-appareil:<dev>:` ; `fetch-bundle` les rend tous (`"devices":[{"dev","bundle","sig"}]`) |
-//! | → | `{"t":"unlink","dev"}` | (v4) retire un appareil du compte : son paquet, sa boîte, ses connexions ; son `hello` est refusé (4006) |
+//! | → | `{"t":"unlink","dev"}` | (v4) retire un appareil du compte : son paquet, sa boîte, ses connexions ; son `hello` reçoit `{"t":"unlinked"}` puis est refusé (4006) |
 //! | → (anonyme) | `{"t":"send","id","boite","body","live","wake","apercu","ttl"}` | (v4) un dépôt dans une boîte aux lettres tournante (ou de liaison) : ni code, ni jeton ; `ttl` : secondes de garde (30 jours au plus) |
 //! | → (anonyme) | `{"t":"boites","list":[…],"push"}` | (v4) s'abonne à des boîtes : ← ce qui attend (`{"t":"msg","n","id","boite","body","ts","sealed":true}`), puis ce qui arrive ; `push` : l'abonnement Web Push à réveiller pour elles ; `got` les oublie |
 //!
@@ -115,6 +115,10 @@ const MAX_WATCH: usize = 2_000;
 const MAX_PUSH: usize = 4;
 /// Les appareils d'un compte (v4) : 6 au plus.
 const MAX_DEVICES: usize = 6;
+/// Appareils retirés retenus par code (les clients en redisent seize au
+/// plus à chaque connexion) : un compte ne peut pas en faire grossir la
+/// liste sans fin.
+const MAX_BANNED: usize = 64;
 /// Les boîtes tournantes suivies par une connexion anonyme, et par demande.
 const MAX_BOITES: usize = 20_000;
 const MAX_BOITES_ASKED: usize = 8_000;
@@ -917,10 +921,10 @@ impl Relay {
             return;
         }
         let mut st = self.lock();
-        st.banned
-            .entry(code.to_owned())
-            .or_default()
-            .insert(dev.to_owned());
+        let banned = st.banned.entry(code.to_owned()).or_default();
+        if banned.len() < MAX_BANNED {
+            banned.insert(dev.to_owned());
+        }
         if let Some(b) = st.bundles.get_mut(code) {
             b.remove(dev);
         }
@@ -1353,7 +1357,11 @@ impl Relay {
             let _ = tx.close(4001, "dev").await;
             return;
         }
+        // Retiré pendant qu'il était hors ligne : il l'apprend d'abord par un
+        // message (les clients ne lisent pas les codes de fermeture), puis il
+        // est coupé ; il efface alors tout.
         if self.is_banned(&me, &dev) {
+            let _ = tx.send(json!({ "t": "unlinked" }).to_string()).await;
             let _ = tx.close(4006, "unlinked").await;
             return;
         }
@@ -1946,6 +1954,15 @@ mod tests {
         assert_eq!(drain(&mut rx2)[0]["t"], "unlinked");
         assert!(relay.is_banned(b, D2));
         assert!(!relay.is_banned(b, D1));
+        // Redit à chaque connexion : une seule fois retenu ; et pas plus de
+        // `MAX_BANNED` par code.
+        relay.unlink(b, D2);
+        assert_eq!(relay.lock().banned[b].len(), 1);
+        for i in 0..100 {
+            relay.unlink(b, &format!("{i:016x}"));
+        }
+        assert_eq!(relay.lock().banned[b].len(), MAX_BANNED);
+        assert!(relay.is_banned(b, D2));
         relay
             .store(None, Dest::Code(b), "m", "x", false, &Wake::No, MAILBOX_TTL)
             .unwrap();

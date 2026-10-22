@@ -167,8 +167,38 @@ final class GroupRulesTests: XCTestCase {
         XCTAssertTrue(c.accepts("B", leave))
         leave.name = "À moi"
         XCTAssertFalse(c.accepts("B", leave))
+        // … sans toucher à la description (absente : inchangée).
+        leave.name = c.name
+        leave.desc = "Mon groupe"
+        XCTAssertFalse(c.accepts("B", leave))
+        leave.desc = nil
+        XCTAssertTrue(c.accepts("B", leave))
         var last = info(c, 6)
         last.members = ["B", "C"]; last.admins = ["B"]
         XCTAssertTrue(c.accepts("A", last))
+    }
+
+    /// La description d'un groupe : envoyée par les admins, gardée telle que
+    /// le navigateur la garde ; absente (un ancien client), elle ne change pas.
+    @MainActor
+    func testGroupDescription() async throws {
+        let e = Engine(store: Store(directory: FileManager.default.temporaryDirectory.appendingPathComponent("desc-\(randomId(4))")), server: URL(string: "http://127.0.0.1:9")!)
+        let admin = "ADMIN00000"
+        var grp = GroupInfo(id: "gd", name: "Sorties", members: [admin, e.me.code], admins: [admin], avatar: "", v: 1,
+                            desc: "  Le samedi matin  ")
+        XCTAssertEqual(e.groupChat(admin, grp, at: 1).chat?.desc, "Le samedi matin")
+        grp.v = 2; grp.name = "Sorties du samedi"; grp.desc = nil
+        XCTAssertTrue(e.groupChat(admin, grp, at: 2).applied)
+        XCTAssertEqual(e.chat("g:gd")?.desc, "Le samedi matin", "absente : inchangée")
+        grp.v = 3; grp.desc = String(repeating: "a", count: 600)
+        _ = e.groupChat(admin, grp, at: 3)
+        XCTAssertEqual(e.chat("g:gd")?.desc.count, maxGroupDesc)
+        grp.v = 4; grp.desc = ""
+        _ = e.groupChat(admin, grp, at: 4)
+        XCTAssertEqual(e.chat("g:gd")?.desc, "")
+        // Ce qui part : la description, même vide (pour qu'on puisse l'effacer).
+        let sent = try XCTUnwrap(JSON.decode([String: JSONValue].self, JSON.encode(e.groupInfo(try XCTUnwrap(e.chat("g:gd"))))))
+        XCTAssertEqual(sent["desc"], .string(""))
+        XCTAssertNil(JSON.decode([String: JSONValue].self, JSON.encode(GroupInfo(id: "g", name: "", members: [], admins: [], avatar: "", v: 1)))?["desc"])
     }
 }

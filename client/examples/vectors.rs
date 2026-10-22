@@ -44,6 +44,7 @@ fn main() {
             admins: vec![a.code.clone()],
             avatar: String::new(),
             v: 3,
+            desc: Some("Les sorties du week-end".into()),
         }),
         g: None,
         ttl: Some(86_400),

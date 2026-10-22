@@ -313,6 +313,7 @@ pub fn on_net(state: State) {
     if state == State::Online {
         watch_contacts();
         publish_v3();
+        unlink_gone();
         spawn(announce_devices());
         spawn(refresh_boxes());
         spawn(flush());
@@ -824,9 +825,17 @@ pub async fn unlink_device(dev: &str) {
     flush().await;
     net::unlink(dev);
     let mut list = devices();
-    list.list.retain(|d| d.dev != dev);
-    list.v += 1;
+    list.remove(dev);
     devices_changed(list, true).await;
+}
+
+/// Les appareils retirés, redits au relais à chaque connexion (il ne garde
+/// rien sur disque) : un appareil retiré pendant qu'il était hors ligne reste
+/// refusé, et efface tout à son retour.
+fn unlink_gone() {
+    for dev in devices().gone {
+        net::unlink(&dev);
+    }
 }
 
 // ----- Les boîtes tournantes (v4, §7.13) --------------------------------------
@@ -2496,6 +2505,7 @@ fn group_info(chat: &Chat) -> GroupInfo {
         admins: chat.admins.clone(),
         avatar: chat.avatar.clone(),
         v: chat.v.max(1),
+        desc: Some(chat.desc.clone()),
     }
 }
 
@@ -3228,6 +3238,7 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool
                 avatar: safe_data("avatar", &grp.avatar),
                 members: grp.members.clone(),
                 admins: grp.admins.clone(),
+                desc: grp.desc.as_deref().map(group_desc).unwrap_or_default(),
                 created_by: from.to_owned(),
                 created_at: now(),
                 last_at: now(),
@@ -3260,6 +3271,9 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool
             c.avatar = safe_data("avatar", &grp.avatar);
             c.members = grp.members.clone();
             c.admins = grp.admins.clone();
+            if let Some(d) = &grp.desc {
+                c.desc = group_desc(d);
+            }
             c.v = grp.v;
             if grp.members.contains(&me) {
                 c.left = false;
@@ -3911,6 +3925,9 @@ async fn apply_own_group(grp: &GroupInfo, left: bool, note: &str) {
     c.avatar = safe_data("avatar", &grp.avatar);
     c.members = grp.members.clone();
     c.admins = grp.admins.clone();
+    if let Some(d) = &grp.desc {
+        c.desc = group_desc(d);
+    }
     c.v = grp.v;
     c.left = left;
     save_chat(c).await;

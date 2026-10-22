@@ -15,7 +15,7 @@ use crate::crypto::{normalize, pretty, safety_number};
 use crate::dom::*;
 use crate::lock;
 use crate::media;
-use crate::model::{Chat, Message, StatusItem, fold};
+use crate::model::{Chat, MAX_GROUP_DESC, Message, StatusItem, fold, group_desc};
 use crate::net::{self, State};
 use crate::sounds;
 use crate::store;
@@ -2311,6 +2311,7 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>) -> Child {
     };
     let admin_row = is_admin.then(|| {
         let (c1, c2, r1, r2) = (chat.clone(), chat.clone(), refresh.clone(), refresh.clone());
+        let (c3, r3) = (chat.clone(), refresh.clone());
         h("div.row.center")
             .child(
                 h("button.btn.ghost")
@@ -2357,6 +2358,37 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>) -> Child {
                                 .await;
                                 r();
                             }
+                        })
+                    }),
+            )
+            .child(
+                h("button.btn.ghost")
+                    .attr("type", "button")
+                    .child(icon("text"))
+                    .text(" Description")
+                    .click(move || {
+                        let (c, r) = (c3.clone(), r3.clone());
+                        spawn(async move {
+                            let Some(d) = prompt_box(
+                                "Description du groupe",
+                                "Visible par tous les membres.",
+                                &c.desc,
+                                "text",
+                                "OK",
+                                MAX_GROUP_DESC as u32,
+                            )
+                            .await
+                            .map(|d| group_desc(&d))
+                            .filter(|d| *d != c.desc) else {
+                                return;
+                            };
+                            let note = if d.is_empty() {
+                                "Vous avez supprimé la description du groupe."
+                            } else {
+                                "Vous avez changé la description du groupe."
+                            };
+                            core::update_group(&c.id, |x| x.desc = d, note).await;
+                            r();
                         })
                     }),
             )
@@ -2497,6 +2529,7 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>) -> Child {
                     "Groupe · {n} membre{}",
                     if n > 1 { "s" } else { "" }
                 )))
+                .child((!chat.desc.is_empty()).then(|| h("p.group-desc").text(&chat.desc)))
                 .child(admin_row),
         )
         .child(grid)
