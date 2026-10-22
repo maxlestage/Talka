@@ -22,6 +22,7 @@ use crate::dom::{self, now, spawn};
 use crate::jetons;
 use crate::model::*;
 use crate::net::{self, Ack, State};
+use crate::pq6;
 use crate::store;
 use crate::v3::{self, Engine, Failure, KeyBundle, Opened, Protection};
 
@@ -471,7 +472,10 @@ fn with_v3<T>(f: impl FnOnce(&mut Engine) -> T) -> Option<T> {
 /// faire v3.
 async fn start_v3() {
     let device = store::get_raw("kv", v3::DEVICE_KEY).await;
-    let engine = Engine::start(device.as_deref(), v3::secs(now()));
+    let mut engine = Engine::start(device.as_deref(), v3::secs(now()));
+    // Le cliquet post-quantique (v6, §7.17).
+    let pq = store::get_raw("kv", pq6::KEYS).await;
+    engine.start_pq(pq.as_deref(), v3::secs(now()));
     V3.with(|v| *v.borrow_mut() = Some(engine));
     save_v3().await;
 }
@@ -489,6 +493,9 @@ async fn save_v3() {
     };
     if let Some(device) = dirty.device {
         write_json(v3::DEVICE_KEY, &device).await;
+    }
+    if let Some(keys) = dirty.pq {
+        write_json(pq6::KEYS, &keys).await;
     }
     for (code, json) in dirty.peers {
         let key = format!("{}{code}", v3::SESSION_PREFIX);
@@ -569,6 +576,11 @@ async fn bundle_for(peer: &Contact, dev: &str) -> Option<KeyBundle> {
     }
     BUNDLES.with(|b| b.borrow_mut().insert(addr, (bundle.clone(), t)));
     bundle
+}
+
+/// Le cliquet post-quantique (v6) est-il en place avec l'un de ses appareils ?
+pub fn post_quantum_ratchet(code: &str) -> bool {
+    with_v3(|e| e.pq_with_any(code)).unwrap_or(false)
 }
 
 /// La protection de la discussion avec un contact (fiche du contact).
@@ -940,6 +952,7 @@ fn device_only(key: &str) -> bool {
         key,
         "dev" | "nk" | "pin" | "appareils" | "boites_jour" | "brocolis_sealed" | "couverture"
     ) || key == v3::DEVICE_KEY
+        || key == pq6::KEYS
         || key.starts_with(v3::SESSION_PREFIX)
 }
 
@@ -2389,6 +2402,7 @@ async fn send_one(
     let v3 = ratchet
         .then(|| {
             with_v3(|e| {
+                e.maintain_pq(v3::secs(now()));
                 e.seal_to(
                     &me(),
                     &addr,
@@ -4338,7 +4352,7 @@ pub async fn export_backup(password: &str) -> Option<String> {
         kv.retain(|r| {
             r.get(0)
                 .and_then(Value::as_str)
-                .is_none_or(|k| !k.starts_with(v3::SESSION_PREFIX))
+                .is_none_or(|k| !k.starts_with(v3::SESSION_PREFIX) && k != pq6::KEYS)
         });
     }
     let data = serde_json::json!({ "app": "talka", "at": now(), "data": dump });
