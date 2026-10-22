@@ -365,7 +365,11 @@ pub fn event(e: Ev) {
         return;
     }
     match e {
-        Ev::Chats | Ev::Profile => queue_side(),
+        Ev::Chats => queue_side(),
+        Ev::Profile => {
+            queue_side();
+            refresh_devices_row();
+        }
         Ev::Contacts(code) => {
             queue_side();
             spawn(crate::push::contacts_changed());
@@ -1326,6 +1330,17 @@ fn devices_summary() -> String {
     }
 }
 
+/// La ligne « Appareils liés » des réglages, s'ils sont ouverts : la liste a
+/// changé (une liaison, un retrait, ou un autre de nos appareils).
+fn refresh_devices_row() {
+    let Some(root) = document().document_element() else {
+        return;
+    };
+    for el in query_all_in(&root, ".devices-row small") {
+        el.set_text_content(Some(&devices_summary()));
+    }
+}
+
 /// La liste des appareils du compte : les retirer, en lier un nouveau.
 fn open_devices() {
     let list = core::devices();
@@ -1454,6 +1469,8 @@ async fn link_other_device(camera: bool) {
                 false,
             )
             .await;
+            // La liste, avec le nouveau venu (comme WhatsApp).
+            open_devices();
         }
         Err(e) => toast(e),
     }
@@ -3543,7 +3560,7 @@ pub async fn open_settings() {
                 .child(h("div.settings-profile").child(avatar_btn).child(h("div.stack.grow").child(h("label.muted.small").text("Votre nom")).child(name.clone()).child(h("label.muted.small").text("Actu")).child(about.clone())))
                 .child(h("div.settings-group").child(h("h3").text("Mon code")).child(setting("qr", &pretty(&core::my_code()), "Votre identifiant Talka : il remplace le numéro de téléphone", false, show_my_code)))
                 .child(privacy)
-                .child(h("div.settings-group").child(h("h3").text("Appareils")).child(setting("phone", "Appareils liés", &devices_summary(), false, open_devices)))
+                .child(h("div.settings-group").child(h("h3").text("Appareils")).child(setting("phone", "Appareils liés", &devices_summary(), false, open_devices).class("devices-row")))
                 .child(h("div.settings-group").child(h("h3").text("Brocolis 🥦")).child(setting("lock", "Clés Brocolis", &brocolis_summary(), false, crate::brocoli::keys_dialog)))
                 .child(
                     h("div.settings-group")
