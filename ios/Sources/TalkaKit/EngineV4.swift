@@ -503,7 +503,7 @@ extension Engine {
     /// cet appareil-ci.
     nonisolated static func deviceOnly(_ key: String) -> Bool {
         ["dev", "nk", "pin", "appareils", "boites_jour", "brocolis_sealed", "couverture"].contains(key)
-            || key == V3.deviceKey || key.hasPrefix(V3.sessionPrefix)
+            || key == V3.deviceKey || key == Pq6.keysKey || key.hasPrefix(V3.sessionPrefix)
     }
 
     /// Lie un nouvel appareil (son code de liaison, lu dans son QR code) : il

@@ -15,6 +15,7 @@
 pub mod crypto;
 pub mod jetons;
 pub mod model;
+pub mod pq6;
 pub mod qr;
 pub mod rows;
 pub mod v3;
