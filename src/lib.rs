@@ -17,6 +17,7 @@ pub mod code;
 pub mod export;
 pub mod push;
 pub mod relay;
+pub mod serverkey;
 pub mod site;
 
 use paquets::prelude::*;
