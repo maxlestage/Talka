@@ -5,7 +5,7 @@
 //
 // Le navigateur et l'iPhone s'échangent leurs codes par deux fichiers.
 
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,8 +70,9 @@ await until("lu par l'iPhone", async () => (await page.getAttribute(".msg-row.ou
 console.log("• ✓✓ bleus : l'iPhone a lu");
 // La fiche de l'iPhone : une session à double cliquet, post-quantique (v3).
 await page.click(".conv-title");
-await page.waitForSelector("text=Session à double cliquet (post-quantique)", { timeout: 15000 });
-console.log("• fiche de l'iPhone : 🔐 session à double cliquet (post-quantique)");
+// (v6 : et le cliquet post-quantique, tous deux sachant ML-KEM.)
+await page.waitForSelector("text=/Session à double cliquet \\(post-quantique\\)|cliquet post-quantique \\(v6\\)/", { timeout: 15000 });
+console.log("• fiche de l'iPhone : 🔐 double cliquet post-quantique");
 await page.click('.modal button[aria-label="Fermer"]');
 // Le groupe créé sur l'iPhone.
 await page.click('button[aria-label="Retour"]').catch(() => {});
@@ -126,7 +127,27 @@ await page2.click(".send-btn");
 await page.waitForSelector("text=Envoyé du navigateur lié", { timeout: 60000 });
 console.log("• le navigateur 2 écrit : l'ordinateur le reçoit (et l'iPhone l'affiche)");
 
-const status = await Promise.race([swiftDone, sleep(120000).then(() => "délai")]);
+// Le navigateur 2 se ferme ; l'iPhone écrit, puis se met en veille ; le
+// relais redémarre (TALKA_RESTART : la commande qui le relance, s'il y en a
+// une) ; tout le monde revient : le message arrive partout.
+await page2.close();
+writeFileSync(join(dir, "b2.closed"), "");
+await until("l'iPhone a écrit et dort", () => existsSync(join(dir, "swift.away")), 120000);
+if (process.env.TALKA_RESTART) {
+  execSync(process.env.TALKA_RESTART);
+  console.log("• relais redémarré (ses boîtes aux lettres, en mémoire, sont perdues)");
+}
+writeFileSync(join(dir, "relay.restarted"), "");
+await page.waitForSelector("text=Pendant l'absence du navigateur 2", { timeout: 120000 });
+console.log("• l'ordinateur reçoit le message écrit avant le redémarrage");
+const page2b = await ctx2.newPage();
+await page2b.goto(`${SERVER}/app`);
+await page2b.click(".chat-item:has-text('Navigateur')", { timeout: 60000 });
+await page2b.waitForSelector("text=Pendant l'absence du navigateur 2", { timeout: 120000 });
+console.log("• le navigateur 2, rouvert, l'affiche aussi");
+writeFileSync(join(dir, "b2.got"), "");
+
+const status = await Promise.race([swiftDone, sleep(180000).then(() => "délai")]);
 await browser.close();
 const ok = status === 0 && existsSync(join(dir, "swift.done"));
 console.log(log.split("\n").filter((l) => /error|Executed|passed|failed/.test(l)).slice(-6).join("\n"));
