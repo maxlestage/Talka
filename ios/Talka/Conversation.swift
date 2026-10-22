@@ -744,6 +744,34 @@ struct UnreadSeparator: View {
     }
 }
 
+/// La forme d'une bulle, comme le navigateur et WhatsApp : coins de 8 points,
+/// et pour la première d'une suite une pointe en haut, du côté de qui écrit.
+/// La place de la pointe (8 points) est gardée sur toutes les bulles : elles
+/// restent alignées.
+struct BubbleShape: Shape {
+    static let tail: CGFloat = 8
+    var mine: Bool
+    var first: Bool
+
+    func path(in r: CGRect) -> Path {
+        let t = Self.tail
+        let body = CGRect(x: mine ? r.minX : r.minX + t, y: r.minY, width: max(0, r.width - t), height: r.height)
+        var p = Path()
+        let corners = UnevenRoundedRectangle(
+            topLeadingRadius: first && !mine ? 0 : 8, bottomLeadingRadius: 8,
+            bottomTrailingRadius: 8, topTrailingRadius: first && mine ? 0 : 8)
+        p.addPath(corners.path(in: body))
+        if first {
+            let edge = mine ? body.maxX : body.minX
+            p.move(to: CGPoint(x: edge, y: body.minY))
+            p.addLine(to: CGPoint(x: mine ? r.maxX : r.minX, y: r.minY))
+            p.addLine(to: CGPoint(x: edge, y: body.minY + min(13, body.height)))
+            p.closeSubpath()
+        }
+        return p
+    }
+}
+
 /// Les lignes d'une bulle : sa largeur est celle de la plus large (sans
 /// dépasser la place proposée), le contenu à gauche, la dernière ligne (l'heure
 /// et les coches) à droite. Une pile ordinaire s'étirerait sur toute la place.
@@ -930,11 +958,13 @@ struct MessageRow: View {
         // Une photo : un cadre de verre fin autour, pas un grand aplat.
         .padding(.horizontal, m.kind == "image" ? 4 : 9)
         .padding(.vertical, m.kind == "image" ? 4 : 6)
+        // La place de la pointe, du côté de qui écrit.
+        .padding(mine ? .trailing : .leading, BubbleShape.tail)
         .fixedSize(horizontal: false, vertical: true)
         // Du verre, teinté de la couleur de la bulle : le fond d'écran se
         // voit à travers (comme la barre de saisie et le navigateur, y
         // compris autour d'un émoji seul).
-        .bubbleGlass(mine ? Color.bubbleOut : Color.bubbleIn, in: .rect(cornerRadius: 8))
+        .bubbleGlass(mine ? Color.bubbleOut : Color.bubbleIn, in: BubbleShape(mine: mine, first: first))
         // Au plus 520 points (280 pour une photo), du côté de qui l'a écrit :
         // les vôtres à droite, les autres à gauche.
         .frame(maxWidth: m.kind == "image" ? 280 : 520, alignment: mine ? .trailing : .leading)
