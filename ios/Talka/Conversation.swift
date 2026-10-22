@@ -294,7 +294,8 @@ struct ConversationView: View {
             }
             .sheet(item: $forwarding) { m in
                 ContactPicker(title: "Transférer à") {
-                    let groups = e.chats.values.filter { $0.group && !$0.left }
+                    // Seulement là où l'on peut écrire (pas un groupe réservé aux admins).
+                    let groups = e.chats.values.filter { $0.group && $0.canWrite(e.me.code) }
                     if !groups.isEmpty {
                         Section("Groupes") {
                             ForEach(groups) { g in
