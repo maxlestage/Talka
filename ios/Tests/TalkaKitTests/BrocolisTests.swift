@@ -95,7 +95,7 @@ final class BrocolisEngineTests: XCTestCase {
         return Engine(store: store, server: URL(string: "http://localhost:1")!)
     }
 
-    func testFingerprintMatchesTheBrowser() throws {
+    func testFingerprintMatchesTheBrowser() async throws {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "vectors", withExtension: "json"))
         let all = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let v = try XCTUnwrap(all["brocolis"] as? [String: Any])

@@ -124,9 +124,9 @@ public final class Engine {
             let was = self.presence[code]?.online == true
             self.presence[code] = (online, seen)
             // Il revient : il a republié son paquet v3 ; ce qui l'attendait
-            // (un contact qui refuse l'ancien format) part maintenant.
-            if online, !was, let cached = self.bundleCache[code], cached.bundle == nil {
-                self.bundleCache[code] = nil
+            // (un contact qui refuse l'ancien format) part maintenant. À son
+            // code comme à chacun de ses appareils (v4).
+            if online, !was, self.forgetMissingBundles(code) {
                 Task { await self.flush() }
             }
         }
@@ -857,7 +857,7 @@ public final class Engine {
         if bumpChat, var c = chats[m.chat] {
             c.last = lastOf(m)
             c.lastAt = max(c.lastAt, m.at)
-            if c.archived, m.from != me.code, !c.muted { c.archived = false }
+            if c.unarchivesOn(m.from, me: me.code, keepArchived: settings.keepArchived) { c.archived = false }
             if m.exp != nil { c.hasExp = true }
             saveChat(c)
         }
