@@ -17,6 +17,28 @@ struct ChatsTab: View {
 
     enum Filter: String, CaseIterable { case all = "Toutes", unread = "Non lues", groups = "Groupes", archived = "Archivées" }
 
+    /// La liste vide : selon le filtre (pas « Ajoutez un contact » quand il
+    /// n'y a simplement rien de non lu).
+    var emptyTitle: String {
+        if !query.isEmpty { return "Aucun résultat" }
+        switch filter {
+        case .all: return "Aucune discussion"
+        case .unread: return "Aucune discussion non lue"
+        case .groups: return "Aucun groupe"
+        case .archived: return "Aucune discussion archivée"
+        }
+    }
+
+    var emptyHint: String {
+        guard query.isEmpty else { return "" }
+        switch filter {
+        case .all: return "Ajoutez un contact avec son code Talka pour commencer."
+        case .unread: return "Tout est lu."
+        case .groups: return "Créez-en un depuis « Nouvelle discussion »."
+        case .archived: return "Balayez une discussion vers la gauche pour l'archiver."
+        }
+    }
+
     enum Sheet: Identifiable {
         case newChat, add(String), group, myCode, starred
         var id: String {
@@ -79,9 +101,9 @@ struct ChatsTab: View {
             .overlay {
                 if chats(e).isEmpty && e.searchMessages(query).isEmpty {
                     ContentUnavailableView {
-                        Label(query.isEmpty ? "Aucune discussion" : "Aucun résultat", systemImage: "bubble.left.and.bubble.right")
+                        Label(emptyTitle, systemImage: "bubble.left.and.bubble.right")
                     } description: {
-                        Text(query.isEmpty ? "Ajoutez un contact avec son code Talka pour commencer." : "")
+                        Text(emptyHint)
                     } actions: {
                         if query.isEmpty, filter == .all {
                             Button("Nouvelle discussion") { sheet = .newChat }.buttonStyle(.borderedProminent)
