@@ -67,7 +67,7 @@ struct ConversationView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 2) {
-                            Label("Les messages sont chiffrés de bout en bout. Personne d'autre, pas même le serveur, ne peut les lire.",
+                            Label("Les messages sont chiffrés de bout en bout. Personne d'autre, pas même Talka, ne peut les lire.",
                                   systemImage: "lock.fill")
                                 .font(.caption)
                                 .multilineTextAlignment(.center)
@@ -166,39 +166,43 @@ struct ConversationView: View {
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
-            // Une barre opaque : le nom reste lisible sur une photo de fond.
+            // L'en-tête du navigateur : vert, le nom et les boutons en blanc
+            // (opaque : le nom reste lisible sur une photo de fond).
             .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarBackground(Color(.systemBackground), for: .navigationBar)
+            .toolbarBackground(Color.talkaHead, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
+                let calls = !chat.group && !e.blocked(chatId)
                 ToolbarItem(placement: .principal) {
                     Button { showInfo = true } label: {
                         HStack(spacing: 8) {
                             e.presenceAvatar(chatId, size: 34)
                             VStack(alignment: .leading, spacing: 0) {
-                                Text(e.title(chat)).font(.headline).lineLimit(1)
-                                Text(subtitle(e, chat)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(e.title(chat)).font(.headline).foregroundStyle(.white).lineLimit(1)
+                                Text(subtitle(e, chat)).font(.caption).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
                             }
                             .fixedSize(horizontal: false, vertical: true)
                         }
-                        // Toute la place entre le bouton retour et « ⋯ » (le titre
-                        // est centré : 75 points de chaque côté pour eux), sans
-                        // passer dessous.
-                        .frame(width: max(160, (width > 0 ? width : UIScreen.main.bounds.width) - 150), alignment: .leading)
+                        // Toute la place entre le bouton retour et les boutons
+                        // de droite (le titre est centré : la place de chaque
+                        // côté est celle du plus large), sans passer dessous.
+                        .frame(width: max(140, (width > 0 ? width : UIScreen.main.bounds.width) - (calls ? 270 : 150)), alignment: .leading)
                     }
-                    .foregroundStyle(.primary)
                     .accessibilityLabel("Infos de \(e.title(chat))")
                 }
-                // Un seul bouton « ⋯ » : le nom garde toute la place.
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        if !chat.group, !e.blocked(chatId) {
-                            Button { Task { await model.startCall(chatId, video: true) } } label: {
-                                Label("Appel vidéo", systemImage: "video")
-                            }
-                            Button { Task { await model.startCall(chatId, video: false) } } label: {
-                                Label("Appel audio", systemImage: "phone")
-                            }
+                // Appel vidéo, appel audio et le menu, comme le navigateur.
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if calls {
+                        Button { Task { await model.startCall(chatId, video: true) } } label: {
+                            Image(systemName: "video.fill")
                         }
+                        .accessibilityLabel("Appel vidéo")
+                        Button { Task { await model.startCall(chatId, video: false) } } label: {
+                            Image(systemName: "phone.fill")
+                        }
+                        .accessibilityLabel("Appel audio")
+                    }
+                    Menu {
                         Button {
                             withAnimation { search = search == nil ? "" : nil }
                             searchFocused = search != nil
@@ -222,6 +226,7 @@ struct ConversationView: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis")
+                            .rotationEffect(.degrees(90))
                     }
                     .accessibilityLabel("Plus d'options")
                 }
@@ -401,15 +406,17 @@ struct ConversationView: View {
         if !typing.isEmpty {
             return chat.group ? "\(typing.map(e.displayName).joined(separator: ", ")) écrit…" : "écrit…"
         }
+        // Les mêmes mots que le navigateur (`subtitle`, client/src/conv.rs).
         if chat.group {
-            let names = chat.members.filter { $0 != e.me.code }.map(e.displayName).sorted()
-            return (names + ["Vous"]).joined(separator: ", ")
+            if chat.left { return "Vous ne faites plus partie de ce groupe" }
+            return chat.members.map { $0 == e.me.code ? "Vous" : e.displayName($0) }.joined(separator: ", ")
         }
+        if e.blocked(chat.id) { return "Bloqué" }
         if let p = e.presence[chat.id] {
             if p.online { return "en ligne" }
             if let seen = p.seen { return Dates.lastSeen(seen) }
         }
-        return "touchez pour les infos"
+        return TalkaCode.pretty(chat.id)
     }
 
     /// Le fond : une photo de la galerie (couvre la zone, avec un léger
@@ -535,7 +542,7 @@ struct ConversationView: View {
                 HStack(alignment: .bottom, spacing: 8) {
                     if recorder.recording {
                         Button { recorder.cancel() } label: { Image(systemName: "trash").font(.title3).foregroundStyle(.red) }
-                            .frame(width: 38, height: 38)
+                            .frame(width: 44, height: 44)
                             .frosted(in: .circle)
                             .accessibilityLabel("Annuler l'enregistrement")
                         TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
@@ -545,48 +552,44 @@ struct ConversationView: View {
                                 Spacer()
                             }
                         }
-                        .frame(height: 38)
+                        .frame(height: 44)
                         // Lisible sur le fond, comme le champ de saisie qu'il remplace.
                         .padding(.horizontal, 12)
                         .frosted(in: .rect(cornerRadius: 20))
                     } else {
-                        Menu {
-                            Button { pickingPhotos = true } label: { Label("Galerie photos", systemImage: "photo.on.rectangle") }
-                            if CameraPicker.available {
-                                Button { takingPhoto = true } label: { Label("Appareil photo", systemImage: "camera") }
+                        // Une seule pastille, comme le navigateur : le champ,
+                        // puis le trombone « Joindre » (le même menu).
+                        HStack(alignment: .bottom, spacing: 0) {
+                            TextField(chat.brocolis.isEmpty ? "Message" : "Message chiffré par Brocolis 🥦", text: $text, axis: .vertical)
+                                .lineLimit(1...6)
+                                .focused($focused)
+                                .padding(.leading, 14)
+                                .padding(.vertical, 11)
+                                .onChange(of: text) { _, t in
+                                    if editing == nil { e.setTyping(chatId, !t.isEmpty) }
+                                }
+                                // Un clavier (iPad, Mac) : Entrée envoie, Maj + Entrée va à la
+                                // ligne (Réglages → Entrée pour envoyer, comme le navigateur).
+                                .onKeyPress(keys: [.return]) { press in
+                                    guard e.settings.enterSends, !press.modifiers.contains(.shift) else { return .ignored }
+                                    submit(e)
+                                    return .handled
+                                }
+                            Menu {
+                                Button { pickingPhotos = true } label: { Label("Galerie photos", systemImage: "photo.on.rectangle") }
+                                if CameraPicker.available {
+                                    Button { takingPhoto = true } label: { Label("Appareil photo", systemImage: "camera") }
+                                }
+                                Button { importingFile = true } label: { Label("Document", systemImage: "doc") }
+                                Button { sharingContact = true } label: { Label("Contact", systemImage: "person.crop.circle") }
+                                Button { composingCapsule = true } label: { Label("Capsule temporelle", systemImage: "hourglass") }
+                            } label: {
+                                Image(systemName: "paperclip").font(.title3).foregroundStyle(.secondary)
+                                    .frame(width: 44, height: 44)
                             }
-                            Button { importingFile = true } label: { Label("Document", systemImage: "doc") }
-                            Button { sharingContact = true } label: { Label("Contact", systemImage: "person.crop.circle") }
-                            Button { composingCapsule = true } label: { Label("Capsule temporelle", systemImage: "hourglass") }
-                        } label: {
-                            Image(systemName: "plus").font(.title3.weight(.semibold)).frame(width: 38, height: 38)
-                                .frosted(in: .circle)
+                            .accessibilityLabel("Joindre")
                         }
-                        .accessibilityLabel("Joindre")
-                        TextField(chat.brocolis.isEmpty ? "Message" : "Message chiffré par Brocolis 🥦", text: $text, axis: .vertical)
-                            .lineLimit(1...6)
-                            .focused($focused)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .frosted(in: .rect(cornerRadius: 20))
-                            .onChange(of: text) { _, t in
-                                if editing == nil { e.setTyping(chatId, !t.isEmpty) }
-                            }
-                            // Un clavier (iPad, Mac) : Entrée envoie, Maj + Entrée va à la
-                            // ligne (Réglages → Entrée pour envoyer, comme le navigateur).
-                            .onKeyPress(keys: [.return]) { press in
-                                guard e.settings.enterSends, !press.modifiers.contains(.shift) else { return .ignored }
-                                submit(e)
-                                return .handled
-                            }
-                        // La galerie à portée de pouce, comme WhatsApp.
-                        if text.isEmpty && editing == nil {
-                            Button { pickingPhotos = true } label: {
-                                Image(systemName: "photo.on.rectangle").font(.body).frame(width: 38, height: 38)
-                                    .frosted(in: .circle)
-                            }
-                            .accessibilityLabel("Envoyer une photo de la galerie")
-                        }
+                        .frosted(in: .rect(cornerRadius: 22))
                     }
                     if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && editing == nil {
                         Button {
@@ -604,7 +607,7 @@ struct ConversationView: View {
                             Image(systemName: recorder.recording ? "arrow.up" : "mic.fill")
                                 .font(.headline)
                                 .foregroundStyle(.white)
-                                .frame(width: 38, height: 38)
+                                .frame(width: 44, height: 44)
                                 .background(Color.talkaGreen, in: .circle)
                         }
                         .accessibilityLabel(recorder.recording ? "Envoyer le message vocal" : "Message vocal")
@@ -613,7 +616,7 @@ struct ConversationView: View {
                             Image(systemName: editing != nil ? "checkmark" : "arrow.up")
                                 .font(.headline)
                                 .foregroundStyle(.white)
-                                .frame(width: 38, height: 38)
+                                .frame(width: 44, height: 44)
                                 .background(Color.talkaGreen, in: .circle)
                         }
                         .accessibilityLabel("Envoyer")
