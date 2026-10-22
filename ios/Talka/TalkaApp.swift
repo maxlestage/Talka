@@ -55,6 +55,8 @@ extension Color {
     static let talkaAccent = Color(red: 0.1451, green: 0.8275, blue: 0.4)
     static let tickBlue = Color(red: 0.3255, green: 0.7412, blue: 0.9216)
     static let bubbleOut = Color(light: .init(red: 0.851, green: 0.9922, blue: 0.8275, alpha: 1), dark: .init(red: 0, green: 0.3608, blue: 0.2941, alpha: 1))
+    /// L'en-tête d'une discussion : vert (sombre la nuit), comme le navigateur.
+    static let talkaHead = Color(light: .init(red: 0, green: 0.502, blue: 0.4118, alpha: 1), dark: .init(red: 0.1255, green: 0.1725, blue: 0.2, alpha: 1))
     static let bubbleIn = Color(light: .white, dark: .init(red: 0.1255, green: 0.1725, blue: 0.2, alpha: 1))
     static let chatBackground = Color(light: .init(red: 0.9373, green: 0.9176, blue: 0.8863, alpha: 1), dark: .init(red: 0.0431, green: 0.0784, blue: 0.102, alpha: 1))
 
