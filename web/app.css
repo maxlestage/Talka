@@ -597,6 +597,10 @@ select.field {
   color: var(--green-2);
 }
 
+.archived-row .badge {
+  flex: 0 0 auto;
+}
+
 .chat-list,
 .list {
   display: flex;
