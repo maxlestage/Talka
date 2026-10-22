@@ -47,7 +47,15 @@ final class InteropTests: XCTestCase {
         // réponse a confirmé une session).
         let protection = await e.protection(browser)
         XCTAssertEqual(protection, .ratchet(pq: V3.postQuantum))
-        XCTAssertTrue(e.v3?.peers[browser]?.sessions.contains { $0.isConfirmed } ?? false, "le navigateur répond par v3")
+        // (v4 : la session est à l'adresse de l'appareil du navigateur,
+        // `<code>/<dev>`.)
+        let confirmed = e.v3?.peers.contains { key, peer in
+            (key == browser || key.hasPrefix(browser + "/")) && peer.sessions.contains { $0.isConfirmed }
+        } ?? false
+        XCTAssertTrue(confirmed, "le navigateur répond par v3")
+        // v4 : le navigateur annonce son appareil, et lit ses boîtes tournantes.
+        XCTAssertEqual(e.contact(browser)?.devs.count, 1)
+        XCTAssertTrue(e.contact(browser)?.bx ?? false)
         e.markRead(browser)
         e.react(browser, reply.id, "👍")
         // Un groupe créé sur l'iPhone, où le navigateur écrit.
@@ -62,6 +70,24 @@ final class InteropTests: XCTestCase {
         try await wait("document du navigateur", 60) { e.messages(browser).contains { $0.kind == "file" && $0.name == "interop.bin" } }
         let doc = try XCTUnwrap(e.messages(browser).first { $0.name == "interop.bin" })
         XCTAssertGreaterThan(doc.data.count, 400_000, "le document est arrivé entier")
+
+        // v4 : un second navigateur devient un appareil de ce compte (le code
+        // de liaison de son QR code) ; ce qui part d'ici s'y affiche, et
+        // inversement.
+        var linkText = ""
+        try await wait("code de liaison du navigateur 2", 180) {
+            linkText = (try? String(contentsOfFile: "\(dir)/link.text", encoding: .utf8)) ?? ""
+            return !linkText.isEmpty
+        }
+        let verif = try await e.linkDevice(linkText)
+        try verif.write(toFile: "\(dir)/swift.verif", atomically: true, encoding: .utf8)
+        try await wait("le navigateur 2 a pris son nom", 90) {
+            e.devices.list.count == 2 && !e.devices.list.contains { $0.name == Engine.newDeviceName }
+        }
+        e.send(browser, Content(text: "Pour tous mes appareils"))
+        try await wait("message du navigateur 2", 90) {
+            e.messages(browser).contains { $0.text == "Envoyé du navigateur lié" && $0.from == e.me.code }
+        }
         try "fini".write(toFile: "\(dir)/swift.done", atomically: true, encoding: .utf8)
         try await Task.sleep(nanoseconds: 2_000_000_000)
     }

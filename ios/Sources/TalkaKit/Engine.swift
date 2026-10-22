@@ -28,7 +28,7 @@ public let capsuleMaxMs: Double = 10 * 366 * dayMs
 @Observable
 public final class Engine {
     public private(set) var me: Identity
-    public private(set) var profile: Profile
+    public internal(set) var profile: Profile
     public private(set) var settings: Settings
     public private(set) var contacts: [String: Contact] = [:]
     public private(set) var chats: [String: Chat] = [:]
@@ -41,7 +41,7 @@ public final class Engine {
     public private(set) var netState: Relay.State = .offline
     /// Augmente à chaque changement des messages d'une discussion.
     public private(set) var revisions: [String: Int] = [:]
-    public private(set) var statusRevision = 0
+    public internal(set) var statusRevision = 0
     public private(set) var callRevision = 0
     /// La discussion à l'écran (ses messages arrivent lus).
     public var activeChat: String?
@@ -76,6 +76,21 @@ public final class Engine {
     /// Les réparations de session v3 récentes (une toutes les cinq minutes
     /// par contact au plus).
     @ObservationIgnored var repairs: [String: Double] = [:]
+    /// Cet appareil (v4) : son identifiant, tiré une fois, jamais sauvegardé
+    /// ailleurs.
+    public internal(set) var dev = ""
+    /// Les appareils de notre compte (v4).
+    public internal(set) var devices = Devices()
+    /// Nos boîtes tournantes suivies (v4) : boîte → le contact qui y écrit ;
+    /// et le jour pour lequel elles ont été calculées.
+    @ObservationIgnored var boxMap: [String: String] = [:]
+    @ObservationIgnored var boxDay = -1
+    @ObservationIgnored var boxRefresh: Task<Void, Never>?
+    /// Cet appareil a été retiré du compte (v4) : tout vient d'être effacé.
+    @ObservationIgnored public var onUnlinked: (() -> Void)?
+    /// Le nom de cet appareil dans la liste des appareils du compte (v4) :
+    /// l'application le donne (« iPhone », « iPad »).
+    public static var deviceName = "iPhone"
 
     // ----- Le compte -----
 
@@ -115,7 +130,10 @@ public final class Engine {
                 Task { await self.flush() }
             }
         }
+        relay.onBoxEnvelope = { [weak self] e in self?.onBoxEnvelope(e) }
+        relay.onUnlinked = { [weak self] in self?.unlinked() }
         startV3()
+        ensureDevice()
     }
 
     public func start() {
@@ -142,6 +160,8 @@ public final class Engine {
         if s == .online {
             watchContacts()
             publishV3()
+            announceDevices()
+            refreshBoxes()
             Task { await flush() }
             Task { await refreshMissingKeys() }
             if relay.sealed { shareJeton() }
@@ -154,7 +174,7 @@ public final class Engine {
     func profileBody(for code: String) -> Body {
         let c = contacts[code]
         let jeton = c.map { !$0.blocked } == true ? me.jeton(for: code, epoch: c?.jetonEpoch ?? 0) : ""
-        return .profile(profile, jeton: jeton, nk: "", pj: true)
+        return .profile(profile, jeton: jeton, nk: "", pj: true, devs: devices.announced, dv: devices.v, bx: true)
     }
 
     /// Notre jeton de remise, pour les contacts qui n'ont pas encore le leur
@@ -210,6 +230,8 @@ public final class Engine {
 
     public func sweep() {
         let t = nowMs()
+        // Un nouveau jour : de nouvelles boîtes tournantes à lire (v4).
+        if boxDay != TalkaV4.day(relay.now()) { refreshBoxes() }
         // Les sourdines pour un temps qui arrivent à leur terme.
         for chat in chats.values where chat.muted && (chat.muteUntil ?? .infinity) <= t {
             updateChat(chat.id) { $0.muted = false; $0.muteUntil = nil }
@@ -266,6 +288,12 @@ public final class Engine {
         f(&profile)
         profile.v += 1
         store.write("kv", "profile", profile)
+        sync("profile", d: jsonValue(profile))
+        announceProfile()
+    }
+
+    /// Notre profil à tous nos contacts.
+    func announceProfile() {
         for c in contacts.values where c.saved && !c.blocked {
             enqueue(c.code, Wire(profileBody(for: c.code)))
         }
@@ -307,8 +335,12 @@ public final class Engine {
     // ----- Contacts -----
 
     func saveContact(_ c: Contact) {
+        let before = contacts[c.code]
         contacts[c.code] = c
         store.write("contacts", c.code, c)
+        // Un correspondant dont on connaît les clés (ou qu'on débloque) : ses
+        // boîtes tournantes sont à lire (v4).
+        if !c.dh.isEmpty, before?.dh != c.dh || before?.blocked != c.blocked { scheduleBoxRefresh() }
     }
 
     /// Les clés d'un code, vérifiées : le code doit être leur empreinte.
@@ -396,13 +428,16 @@ public final class Engine {
         }
         enqueue(code, Wire(profileBody(for: code)))
         Task { await flush() }
+        if let c = contacts[code] { syncContact(c) }
         return reachable
     }
 
     public func updateContact(_ code: String, _ f: (inout Contact) -> Void) {
         guard var c = contacts[code] else { return }
+        let before = c
         f(&c)
         saveContact(c)
+        if before.name != c.name || before.saved != c.saved || before.blocked != c.blocked { syncContact(c) }
     }
 
     public func setBlocked(_ code: String, _ blocked: Bool) {
@@ -416,9 +451,11 @@ public final class Engine {
             sendRevoked()
         }
         let unblocked = !blocked && c.blocked
+        let changed = c.blocked != blocked
         c.blocked = blocked
         saveContact(c)
         if unblocked, relay.sealed { shareJeton() }
+        if changed { syncContact(c) }
     }
 
     // ----- Discussions -----
@@ -439,8 +476,12 @@ public final class Engine {
 
     public func updateChat(_ id: String, _ f: (inout Chat) -> Void) {
         guard var c = chats[id] else { return }
+        let before = ChatState(c)
         f(&c)
         saveChat(c)
+        // Archivée, épinglée, en sourdine… : pareil sur nos autres appareils.
+        let after = ChatState(c)
+        if before != after { sync("chat", c: id, d: jsonValue(after)) }
     }
 
     // ----- Brocolis 🥦 -----
@@ -713,6 +754,11 @@ public final class Engine {
     }
 
     public func deleteChat(_ id: String) {
+        dropChat(id)
+        sync("chat", c: id, d: .object(["deleted": .bool(true)]))
+    }
+
+    func dropChat(_ id: String) {
         buryAll(id)
         store.deleteMessages(of: id)
         store.remove("chats", id)
@@ -721,9 +767,17 @@ public final class Engine {
     }
 
     public func clearChat(_ id: String) {
+        emptyChat(id)
+        sync("chat", c: id, d: .object(["cleared": .bool(true)]))
+    }
+
+    func emptyChat(_ id: String) {
         buryAll(id)
         store.deleteMessages(of: id)
-        updateChat(id) { $0.last = nil; $0.unread = 0; $0.mentioned = false }
+        if var c = chats[id] {
+            c.last = nil; c.unread = 0; c.mentioned = false
+            saveChat(c)
+        }
         bump(id)
     }
 
@@ -819,23 +873,62 @@ public final class Engine {
             id: "\(msgId.isEmpty ? randomId(10) : msgId):\(to)", to: to, payload: wire.json(),
             chat: chat, msgId: msgId, seq: nowMs() * 1000 + Double(seq % 1000))
         if live {
-            Task { _ = await sendNow(item, live: true) }
+            Task {
+                var once = item
+                _ = await sendNow(&once, live: true)
+            }
             return
         }
         store.write("outbox", item.id, item)
         Task { await flush() }
     }
 
-    func sendNow(_ item: OutItem, live: Bool) async -> Relay.Ack {
-        guard let peer = await keys(for: item.to) else { return .failed("unknown") }
-        loadV3(peer.code)
+    /// Comme `enqueue`, pour un seul appareil du destinataire (v4) : les
+    /// autres sont marqués comme déjà servis.
+    func enqueueTo(_ to: String, dev d: String, _ wire: Wire) {
+        let item = OutItem(id: "\(randomId(10)):\(to)", to: to, payload: wire.json(), chat: "", msgId: "",
+                           seq: nowMs() * 1000, sent: targets(to).filter { $0 != d })
+        store.write("outbox", item.id, item)
+        Task { await flush() }
+    }
+
+    /// Envoie un élément de la boîte d'envoi : une copie par appareil du
+    /// destinataire (v4), chacune chiffrée par sa propre session. Les
+    /// appareils déjà servis (`item.sent`) ne la reçoivent pas deux fois.
+    func sendNow(_ item: inout OutItem, live: Bool) async -> Relay.Ack {
+        let mine = item.to == me.code
+        let peer: Contact
+        if mine {
+            peer = selfContact
+        } else {
+            guard let found = await keys(for: item.to) else { return .failed("unknown") }
+            peer = found
+        }
+        var failure: Relay.Ack?
+        for d in targets(item.to) where !item.sent.contains(d) {
+            let ack = await sendOne(item, peer: peer, dev: d, mine: mine, live: live)
+            switch ack {
+            // Le relais ne connaît plus cet appareil (retiré) : on n'insiste pas.
+            case .ok, .failed("dev"):
+                item.sent.append(d)
+            default:
+                if failure == nil { failure = ack }
+            }
+        }
+        return failure ?? .ok
+    }
+
+    /// Une copie, pour un appareil (`d` vide : le code, avant la v4).
+    func sendOne(_ item: OutItem, peer: Contact, dev d: String, mine: Bool, live: Bool) async -> Relay.Ack {
+        let addr = TalkaV4.address(peer.code, d)
+        loadV3(addr)
         // « écrit… » et les signaux d'appel ne sont remis qu'à un destinataire
         // en ligne : hors ligne, le relais les jette, et chacun laisserait chez
         // lui une clé sautée dans la session. Ils gardent alors l'ancien format.
-        let ratchet = !live || presence[peer.code]?.online == true
-        // Sans session, le paquet du contact en ouvre une (s'il en a publié un).
+        let ratchet = !live || mine || presence[peer.code]?.online == true
+        // Sans session, le paquet de l'appareil en ouvre une (s'il en a publié un).
         var bundle: KeyBundle?
-        if ratchet, let v3, !v3.hasSession(peer.code) { bundle = await bundleFor(peer) }
+        if ratchet, let v3, !v3.hasSession(addr) { bundle = await bundleFor(peer, dev: d) }
         // Chiffré au moment de partir : un nouvel essai chiffre à nouveau (un
         // autre numéro de message) ; le destinataire range par identifiant.
         // Une pièce jointe trop grosse pour un jeton v3, vers un contact dont
@@ -846,7 +939,7 @@ public final class Engine {
             payload = split.small
             blob = split.blob
         }
-        let sealed = (ratchet ? v3?.seal(me, peerCode: peer.code, peerDh: peer.dh, bundle: bundle, plain: payload) : nil)
+        let sealed = (ratchet ? v3?.sealTo(me, addr: addr, peerCode: peer.code, peerDh: peer.dh, bundle: bundle, plain: payload) : nil)
             ?? TalkaCrypto.seal(me, peerCode: peer.code, peerDh: peer.dh, plain: payload).map { V3.Sealed(body: $0, v3: false) }
         guard var sealed else { return .failed("crypto") }
         // Un contact qui refuse l'ancien format : sans session ni paquet, on
@@ -856,25 +949,39 @@ public final class Engine {
         // La session a avancé : rien ne part avant qu'elle soit écrite (une clé
         // de message ne doit jamais servir deux fois).
         if sealed.v3 { saveV3() }
+        // Un identifiant par copie (le relais répond copie par copie).
+        let id = d.isEmpty ? item.id : "\(item.id)#\(d)"
+        // Nos propres appareils : le relais sait déjà qui nous sommes.
+        if mine { return await relay.send(id: id, to: peer.code, dev: d, body: sealed.body, live: live) }
         let wake = !live && !item.msgId.isEmpty
-        // Et, s'il a donné sa clé de notification, avec un aperçu chiffré pour
-        // elle : le relais le transmet sans pouvoir le lire.
-        let apercu = wake && !peer.nk.isEmpty
+        // Et, s'il a donné sa clé de notification (celle de cet appareil en
+        // v4), avec un aperçu chiffré pour elle : le relais le transmet sans
+        // pouvoir le lire.
+        let nk = d.isEmpty ? peer.nk : (peer.devs.first { $0.d == d }?.nk ?? "")
+        let apercu = wake && !nk.isEmpty
             ? JSON.decode(Wire.self, item.payload).flatMap { Self.apercu(me: me.code, name: profile.name, wire: $0) }
-                .flatMap { TalkaCrypto.sealApercu(me, nk: peer.nk, plain: $0) }
+                .flatMap { TalkaCrypto.sealApercu(me, nk: nk, plain: $0) }
             : nil
+        // Une boîte tournante (v4) : le relais ne sait ni qui écrit, ni à qui.
+        if peer.bx, !d.isEmpty, relay.sealed {
+            guard let key = TalkaV4.boitesKey(me, peerCode: peer.code, peerDh: peer.dh),
+                  let outer = TalkaCrypto.sealSender(from: me.code, fd: dev, to: peer.code, toDh: peer.dh, body: sealed.body)
+            else { return .failed("crypto") }
+            let boite = TalkaV4.boite(key: key, to: peer.code, dev: d, day: TalkaV4.day(relay.now()))
+            return await relay.sendBoite(id: id, boite: boite, body: outer, live: live, wake: wake, apercu: apercu)
+        }
         // L'expéditeur scellé : le relais ne sait pas qui écrit (une connexion
         // anonyme, et le jeton de remise du destinataire).
         if !peer.jeton.isEmpty, relay.sealed {
-            guard let outer = TalkaCrypto.sealSender(from: me.code, to: peer.code, toDh: peer.dh, body: sealed.body)
+            guard let outer = TalkaCrypto.sealSender(from: me.code, fd: dev, to: peer.code, toDh: peer.dh, body: sealed.body)
             else { return .failed("crypto") }
-            let ack = await relay.sendSealed(id: item.id, peer: peer, body: outer, live: live, wake: wake, apercu: apercu)
+            let ack = await relay.sendSealed(id: id, peer: peer, dev: d, body: outer, live: live, wake: wake, apercu: apercu)
             // Son jeton ne vaut plus : on l'oublie, et cet envoi part comme
             // avant. Sinon pas de repli : l'envoi réessaiera, toujours scellé.
             guard ack == .failed("jeton") else { return ack }
             updateContact(peer.code) { $0.jeton = "" }
         }
-        return await relay.send(id: item.id, to: item.to, body: sealed.body, live: live, wake: wake, apercu: apercu)
+        return await relay.send(id: id, to: item.to, dev: d, body: sealed.body, live: live, wake: wake, apercu: apercu)
     }
 
     /// L'aperçu d'une notification pour le destinataire, en JSON : qui écrit
@@ -916,19 +1023,33 @@ public final class Engine {
                         continue
                     }
                     if item.boot == boot || boot.isEmpty { continue }
+                    // Le relais a redémarré : ce qui n'a pas été reçu repart
+                    // (seulement vers les appareils qui ne l'ont pas).
+                    let got = item.got
+                    item.sent = item.sent.filter { got.contains($0) }
                 }
-                switch await sendNow(item, live: false) {
+                let before = item.sent.count
+                let ack = await sendNow(&item, live: false)
+                // Les accusés arrivés pendant l'envoi (v4 : appareil par appareil).
+                for g in store.read("outbox", item.id, as: OutItem.self)?.got ?? [] where !item.got.contains(g) {
+                    item.got.append(g)
+                }
+                // Les appareils déjà servis sont retenus, même si un autre attend.
+                if ack != .ok, item.sent.count != before { store.write("outbox", item.id, item) }
+                // Nos autres appareils ne comptent pas dans les coches.
+                let toOthers = item.to != me.code
+                switch ack {
                 case .ok:
                     if !item.msgId.isEmpty, !boot.isEmpty {
                         item.boot = boot
-                        store.write("outbox", item.id, item)
+                        if stillUnconfirmed(item) { store.write("outbox", item.id, item) } else { store.remove("outbox", item.id) }
                     } else {
                         store.remove("outbox", item.id)
                     }
-                    if !item.msgId.isEmpty { markSent(item.chat, item.msgId, item.to) }
+                    if !item.msgId.isEmpty, toOthers { markSent(item.chat, item.msgId, item.to) }
                 case .failed(let e) where e == "size" || e == "code":
                     store.remove("outbox", item.id)
-                    if !item.msgId.isEmpty {
+                    if !item.msgId.isEmpty, toOthers {
                         markFailed(item.chat, item.msgId)
                         if e == "size" { onTooLarge?() }
                     }
@@ -947,8 +1068,13 @@ public final class Engine {
     /// de ce destinataire ? Au-delà de 30 jours (la durée des boîtes aux
     /// lettres), on n'insiste plus.
     func stillUnconfirmed(_ item: OutItem) -> Bool {
-        guard let m = store.message(item.chat, item.msgId) else { return false }
-        return !m.deleted && !m.deliveredTo.contains(item.to) && nowMs() - m.at < 30 * dayMs
+        guard let m = store.message(item.chat, item.msgId), !m.deleted, nowMs() - m.at < 30 * dayMs else { return false }
+        // Pour nos autres appareils : chacun dit l'avoir reçu (`sync`/`got`).
+        if item.to == me.code { return siblings.contains { !item.got.contains($0) } }
+        // v4 : chaque appareil du destinataire doit l'avoir reçu.
+        let devs = targets(item.to).filter { !$0.isEmpty }
+        if devs.isEmpty { return !m.deliveredTo.contains(item.to) }
+        return devs.contains { !item.got.contains($0) }
     }
 
     func markSent(_ chat: String, _ id: String, _ to: String) {
@@ -997,6 +1123,12 @@ public final class Engine {
         // vous connaît pas voit « ~Nom » plutôt qu'un code.
         let wire = envelope(c, .msg(id: id, at: at, pn: profile.name, content: sealed))
         for code in to { enqueue(code, wire, chat: chatId, msgId: id) }
+        // Nos autres appareils l'affichent aussi (v4) : gardé, comme pour un
+        // destinataire, jusqu'à ce que chacun l'ait (et renvoyé si le relais
+        // redémarre entre-temps).
+        if !siblings.isEmpty {
+            enqueue(me.code, Wire(.sync(op: "wire", c: chatId, w: wire)), chat: chatId, msgId: id)
+        }
         if !(chats[chatId]?.draft.isEmpty ?? true) { updateChat(chatId) { $0.draft = "" } }
         return m
     }
@@ -1004,6 +1136,12 @@ public final class Engine {
     func broadcast(_ c: Chat, _ body: Body, live: Bool = false) {
         let wire = envelope(c, body)
         for code in recipients(c) where !blocked(code) { enqueue(code, wire, live: live) }
+        // Ce qui change la discussion (réaction, modification, suppression,
+        // minuterie) : refait sur nos autres appareils (v4).
+        switch body {
+        case .typing, .group: break
+        default: if !live { sync("wire", c: c.id, w: wire) }
+        }
     }
 
     public func react(_ chat: String, _ id: String, _ emoji: String) {
@@ -1037,6 +1175,7 @@ public final class Engine {
         } else {
             store.removeMessage(chat, id)
             bury(chat, [(m.id, m.at)])
+            sync("forget", c: chat, d: .object(["ids": .array([.string(m.id)])]))
         }
         refreshLast(chat)
         bump(chat)
@@ -1047,10 +1186,12 @@ public final class Engine {
         m.starred.toggle()
         store.writeMessage(m)
         bump(chat)
+        sync("star", c: chat, d: .object(["id": .string(id), "on": .bool(m.starred)]))
     }
 
     /// Épingle un message en haut de sa discussion ("" : retire l'épingle).
-    /// Gardé sur l'appareil, pas envoyé aux autres (comme le navigateur).
+    /// Pour soi : pas envoyé aux correspondants, seulement à nos autres
+    /// appareils (comme le navigateur).
     public func setPin(_ chat: String, _ id: String) {
         updateChat(chat) { $0.pinMsg = id }
     }
@@ -1134,6 +1275,7 @@ public final class Engine {
         saveChat(c)
         systemMessage(c.id, "Vous avez créé le groupe « \(c.name) ».")
         broadcast(c, .group(op: "create", note: ""))
+        syncGroup(c, note: "Vous avez créé le groupe « \(c.name) ».")
         return c
     }
 
@@ -1145,6 +1287,7 @@ public final class Engine {
         saveChat(next)
         if !note.isEmpty { systemMessage(id, note) }
         broadcast(next, .group(op: "update", note: note))
+        syncGroup(next, note: note)
         // Les membres retirés l'apprennent aussi.
         for code in before.members where !next.members.contains(code) && code != me.code {
             enqueue(code, Wire(.group(op: "update", note: note), grp: groupInfo(next)))
@@ -1161,6 +1304,7 @@ public final class Engine {
         for code in c.members { enqueue(code, Wire(.group(op: "leave", note: ""), grp: groupInfo(c))) }
         saveChat(c)
         systemMessage(id, "Vous avez quitté le groupe.")
+        syncGroup(c, note: "Vous avez quitté le groupe.")
     }
 
     // ----- Réception -----
@@ -1177,7 +1321,8 @@ public final class Engine {
                 let parts = key.split(separator: "|", maxSplits: 2).map(String.init)
                 guard parts.count == 3 else { continue }
                 let chat = parts[2]
-                self.enqueue(parts[0], Wire(.receipt(st: parts[1], ids: Array(ids)), g: self.isGroup(chat) ? String(chat.dropFirst(2)) : nil))
+                let body = Body.receipt(st: parts[1], ids: Array(ids), dev: self.dev)
+                self.enqueue(parts[0], Wire(body, g: self.isGroup(chat) ? String(chat.dropFirst(2)) : nil))
             }
         }
     }
@@ -1200,12 +1345,31 @@ public final class Engine {
             store.writeMessage(m)
             bySender[m.from, default: []].append(m.id)
         }
+        let fresh = !bySender.isEmpty
         if settings.readReceipts {
             for (code, ids) in bySender { queueReceipt(code, chat, ids, "read") }
         }
         if c.unread > 0 || c.markedUnread || c.mentioned {
             updateChat(chat) { $0.unread = 0; $0.markedUnread = false; $0.mentioned = false }
         }
+        // Lu ici : lu sur nos autres appareils (sans nouvel accusé).
+        if fresh { sync("read", c: chat, d: .object(["at": .number(relay.now())])) }
+    }
+
+    /// Lu sur un autre de nos appareils : jusqu'à `at`, sans accusé.
+    func readHere(_ chat: String, at: Double) {
+        guard var c = chats[chat] else { return }
+        for var m in store.messagesOf(chat, limit: 300)
+        where m.from != me.code && m.from != "system" && !m.readByMe && m.at <= at + 60_000 {
+            m.readByMe = true
+            store.writeMessage(m)
+        }
+        if c.unread > 0 || c.mentioned {
+            c.unread = 0
+            c.mentioned = false
+            saveChat(c)
+        }
+        bump(chat)
     }
 
     func onEnvelope(_ env: [String: Any]) {
@@ -1216,28 +1380,60 @@ public final class Engine {
         }
     }
 
-    func receive(_ env: [String: Any]) async {
+    /// Une enveloppe arrive d'une boîte tournante (v4) : elle doit venir du
+    /// contact à qui est cette boîte.
+    func onBoxEnvelope(_ env: [String: Any]) {
+        let n = env["n"] as? Int
+        let boite = env["boite"] as? String ?? ""
+        Task { @MainActor in
+            if let contact = boxMap[boite] { await receive(env, boite: contact) }
+            if let n { relay.boxes.got([n]) }
+        }
+    }
+
+    /// `boite` : le contact dont c'est la boîte tournante (l'enveloppe doit
+    /// venir de lui).
+    func receive(_ env: [String: Any], boite: String? = nil) async {
         // Scellé : l'expéditeur est dans l'enveloppe, que nous seuls ouvrons ;
         // l'enveloppe intérieure le prouve ensuite (sa clé de paire).
         var from = env["from"] as? String ?? ""
+        var fd = (env["fd"] as? String).flatMap { TalkaV4.isDev($0) ? $0 : nil } ?? ""
         var body = env["body"] as? String ?? ""
         if env["sealed"] as? Bool == true {
-            guard let opened = TalkaCrypto.openSealed(me, body) else { return }
-            (from, body) = (opened.from, opened.body)
+            guard let opened = TalkaCrypto.openSealedFrom(me, body) else { return }
+            from = opened.from
+            fd = opened.fd
+            body = opened.body
         }
-        guard !from.isEmpty, !blocked(from), let peer = await fetchKeys(from) else { return }
+        guard !from.isEmpty, !blocked(from) else { return }
+        if let boite, boite != from { return }
+        // De nous-mêmes : seulement d'un autre de nos appareils.
+        let mine = from == me.code
+        if mine, fd.isEmpty || fd == dev || !devices.has(fd) { return }
+        let peer: Contact
+        if mine {
+            peer = selfContact
+        } else {
+            guard let found = await fetchKeys(from) else { return }
+            peer = found
+        }
         // Une pièce jointe chiffrée à part : `<enveloppe>|<pièce>`.
         var blob: Data?
         if let bar = body.firstIndex(of: "|") {
             blob = unb64(String(body[body.index(after: bar)...]))
             body = String(body[..<bar])
         }
+        let addr = TalkaV4.address(from, fd)
+        loadV3(addr)
+        // Une session ouverte avant de connaître ses appareils (à son code).
         loadV3(from)
         var repair = false
+        // Ouvert en v3 : son appareil a publié son paquet.
+        var openedV3 = false
         // Le message, et l'état de session qui l'a ouvert : une seule
         // transaction SQLite (le relais ne l'oublie qu'après, par `got`).
         let device: String? = store.transaction {
-            let opened = v3?.open(me, peerCode: peer.code, peerDh: peer.dh, body: body, now: V3.secs(nowMs()))
+            let opened = v3?.openFrom(me, addr: addr, peerCode: peer.code, peerDh: peer.dh, body: body, now: V3.secs(nowMs()))
                 ?? TalkaCrypto.open(me, peerCode: peer.code, peerDh: peer.dh, body: body).map { .legacy($0) }
                 ?? .failed(.envelope)
             let device = saveV3Sessions()
@@ -1245,6 +1441,15 @@ public final class Engine {
             case .legacy(let plain), .v3(let plain):
                 let legacy: Bool
                 if case .legacy = opened { legacy = true } else { legacy = false }
+                openedV3 = !legacy
+                // De nos appareils : seulement de la synchronisation, en v3.
+                if mine {
+                    if !legacy, let wire = Wire.parse(Attachment.join(plain, blob: blob)),
+                       case let .sync(op, chat, w, d) = wire.body {
+                        handleSync(fd, op, chat, w, d)
+                    }
+                    return device
+                }
                 // Prouvé : ses clés sont gardées (s'il est nouveau), et son
                 // passage en v3.
                 let known = contacts[from]
@@ -1277,7 +1482,7 @@ public final class Engine {
             case .replay, .failed(.envelope):
                 break
             case .failed(.v3(let e)):
-                v3Log("v3 : message de \(from) illisible (\(e))")
+                v3Log("v3 : message de \(addr) illisible (\(e))")
                 // Seulement une session perdue : un vieux message rejoué ne
                 // la fait jamais tomber.
                 repair = V3.needsRepair(e)
@@ -1287,7 +1492,14 @@ public final class Engine {
         // L'appareil (sa mémoire des premiers messages) après le message : un
         // premier message rangé sans elle se relirait comme un doublon.
         if let device { saveV3Device(device) }
-        if repair { repairV3(from) }
+        if repair { repairV3(from, dev: fd) }
+        // Un appareil dont le relais n'avait pas de paquet (un appareil
+        // qu'on vient de lier) : il en a un maintenant, et une session est
+        // peut-être ouverte. Ce qui l'attendait part.
+        if openedV3, let cached = bundleCache[addr], cached.bundle == nil {
+            bundleCache[addr] = nil
+            Task { await flush() }
+        }
     }
 
     /// La discussion d'un groupe, créée ou mise à jour par `grp` ; `applied` :
@@ -1318,7 +1530,7 @@ public final class Engine {
 
     func handle(_ from: String, _ wire: Wire, ts: Double, live: Bool) {
         switch wire.body {
-        case let .profile(p, jeton, nk, pj):
+        case let .profile(p, jeton, nk, pj, devs, dv, bx):
             var c = contacts[from] ?? Contact(code: from)
             // Sa version chiffre tout en v3 (une fois su, ça ne se perd pas).
             if pj, !c.pj {
@@ -1334,6 +1546,21 @@ public final class Engine {
             if jeton != c.jeton, !jeton.isEmpty,
                TalkaCrypto.verifyJeton(to: from, sign: c.sign, dh: c.dh, jeton: jeton) {
                 c.jeton = jeton
+                saveContact(c)
+            }
+            // Ses appareils (v4) : la liste la plus récente, bien formée.
+            if dv > c.dv, devs.count <= maxDevices,
+               devs.allSatisfy({ TalkaV4.isDev($0.d) && ($0.nk.isEmpty || TalkaCrypto.validNk($0.nk)) }) {
+                c.devs = devs
+                c.dv = dv
+                saveContact(c)
+                // Un nouvel appareil : on vérifie son paquet au prochain envoi.
+                bundleCache = bundleCache.filter { !$0.key.hasPrefix("\(from)/") }
+                scheduleBoxRefresh()
+            }
+            // Il lit ses boîtes tournantes (v4).
+            if bx != c.bx {
+                c.bx = bx
                 saveContact(c)
             }
             if p.v >= c.profileV {
@@ -1456,6 +1683,8 @@ public final class Engine {
             storeMessage(m)
             queueReceipt(from, c.id, [id], "delivered")
             if active, settings.readReceipts { queueReceipt(from, c.id, [id], "read") }
+            // Lu ici, sous nos yeux : lu sur nos autres appareils aussi.
+            if active { sync("read", c: c.id, d: .object(["at": .number(m.at)])) }
             // Votre profil, pour qui ne l'a pas encore.
             if var sender = contacts[from], !sender.blocked,
                sender.sentProfileV < profile.v || (!sender.jetonPerso && relay.sealed) {
@@ -1466,14 +1695,15 @@ public final class Engine {
             }
             typing[c.id]?.remove(from)
             onIncoming?(chats[c.id] ?? c, m, active)
-        case let .receipt(st, ids):
+        case let .receipt(st, ids, rdev):
             for id in ids {
                 guard var m = store.message(c.id, id), m.from == me.code else { continue }
                 if !m.deliveredTo.contains(from) { m.deliveredTo.append(from) }
                 if st == "read", !m.readBy.contains(from) { m.readBy.append(from) }
                 store.writeMessage(m)
-                // Bien arrivé : plus besoin de le garder pour un renvoi.
-                store.remove("outbox", "\(id):\(from)")
+                // Bien arrivé : plus besoin de le garder pour un renvoi (v4 :
+                // quand chacun de ses appareils l'a).
+                gotBy("\(id):\(from)", rdev)
             }
             bump(c.id)
         case let .react(id, emoji):
@@ -1523,6 +1753,7 @@ public final class Engine {
         st.seen = true
         store.write("statuses", st.key, st)
         statusRevision += 1
+        sync("status", d: jsonValue(st))
         for c in contacts.values where c.saved && !c.blocked {
             enqueue(c.code, Wire(.status(id: id, kind: kind, text: text, bg: bg, data: data, at: at)))
         }
@@ -1531,6 +1762,7 @@ public final class Engine {
     public func deleteStatus(_ id: String) {
         store.remove("statuses", "\(me.code)|\(id)")
         statusRevision += 1
+        sync("status", d: .object(["deleted": .string(id)]))
         for c in contacts.values where c.saved && !c.blocked { enqueue(c.code, Wire(.statusDelete(id: id))) }
     }
 
@@ -1552,6 +1784,12 @@ public final class Engine {
 
     public func sendCallSignal(_ code: String, _ body: Body) {
         enqueue(code, Wire(body), live: true)
+    }
+
+    /// Un appel entrant pris ou refusé ici : nos autres appareils cessent de
+    /// sonner (v4).
+    public func callTaken(_ id: String) {
+        sync("call", d: .object(["id": .string(id)]))
     }
 
     public func logCall(_ entry: CallEntry) {

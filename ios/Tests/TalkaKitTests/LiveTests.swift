@@ -54,7 +54,9 @@ final class LiveTests: XCTestCase {
         let protection = await b.protection(a.me.code)
         let v3 = a.relay.relayV3 == true
         XCTAssertEqual(protection, v3 ? .ratchet(pq: V3.postQuantum) : .legacy)
-        XCTAssertEqual(a.v3?.hasSession(b.me.code), v3)
+        // (Rangée sous son code, ou déjà passée à l'adresse de son appareil, v4.)
+        let session = a.v3?.hasSession(b.me.code) == true || a.v3?.hasSession(TalkaV4.address(b.me.code, b.dev)) == true
+        XCTAssertEqual(session, v3)
 
         // L'expéditeur scellé : chacun a reçu le jeton de l'autre ; ensuite,
         // tout part par la connexion anonyme (le relais ne sait plus qui écrit).
@@ -136,5 +138,160 @@ final class LiveTests: XCTestCase {
         try await wait("message renvoyé puis reçu", timeout: 30) { b.messages(a.me.code).contains { $0.text == "Pendant ton absence" } }
         try await wait("accusé de réception", timeout: 15) { a.store.message(b.me.code, sent.id)?.deliveredTo.contains(b.me.code) == true }
         XCTAssertNil(a.store.read("outbox", "\(sent.id):\(b.me.code)", as: OutItem.self))
+    }
+
+    /// Un iPad lié à `a1` par le code de son QR code, et connecté.
+    func linkIPad(to a1: Engine, _ url: URL) async throws -> (Engine, DeviceLink) {
+        // Le nouvel appareil attend, le QR code à l'écran.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-ipad-\(randomId(4))")
+        let store = Store(directory: dir)
+        let link = DeviceLink(store: store, server: url)
+        var result: Result<String, LinkError>?
+        link.onDone = { result = $0 }
+        link.start()
+        try await wait("boîte de liaison écoutée") { link.socket.ready }
+        let verif = try await a1.linkDevice(link.text)
+        try await wait("liaison reçue", timeout: 20) { result != nil }
+        XCTAssertEqual(try result?.get(), verif, "le même code de vérification des deux côtés")
+        XCTAssertTrue(a1.devices.has(link.dev))
+        Engine.deviceName = "iPad"
+        let a2 = Engine(store: store, server: url)
+        Engine.deviceName = "iPhone"
+        a2.start()
+        try await wait("l'iPad connecté") { a2.netState == .online }
+        return (a2, link)
+    }
+
+    /// v4 : le relais redémarre pendant que l'iPad d'Alice est absent ; Bob
+    /// ne renvoie qu'à lui (l'iPhone avait accusé réception).
+    func testResendToTheMissingDeviceAfterRelayRestart() async throws {
+        let url = try server()
+        guard let flag = ProcessInfo.processInfo.environment["TALKA_RESTART_FILE"] else {
+            throw XCTSkip("TALKA_RESTART_FILE n'est pas défini")
+        }
+        let a1 = phone("Alice", url), b = phone("Bob", url)
+        defer { a1.stop(); b.stop() }
+        try await wait("connexion") { a1.netState == .online && b.netState == .online }
+        let (a2, _) = try await linkIPad(to: a1, url)
+        defer { a2.stop() }
+        _ = try await a1.addContact(b.me.code, name: "Bob")
+        _ = try await b.addContact(a1.me.code, name: "Alice")
+        try await wait("Bob connaît les deux appareils d'Alice") { b.contact(a1.me.code)?.devs.count == 2 }
+        try await wait("les boîtes de Bob suivies") { a2.boxMap.values.contains(b.me.code) }
+
+        a2.relay.stop()
+        b.ensureDirectChat(a1.me.code)
+        let before = b.relay.boot
+        let m = try XCTUnwrap(b.send(a1.me.code, Content(text: "Pendant l'absence de l'iPad")))
+        let key = "\(m.id):\(a1.me.code)"
+        try await wait("reçu sur l'iPhone") { a1.messages(b.me.code).contains { $0.id == m.id } }
+        try await wait("accusé de l'iPhone seul", timeout: 15) { b.store.read("outbox", key, as: OutItem.self)?.got == [a1.dev] }
+        XCTAssertEqual(Set(b.store.read("outbox", key, as: OutItem.self)?.sent ?? []), [a1.dev, a2.dev])
+
+        // Le relais redémarre : la boîte de l'iPad est perdue.
+        let boxed = b.relay.boxSent
+        FileManager.default.createFile(atPath: flag, contents: Data())
+        try await wait("Bob reconnecté au nouveau relais", timeout: 40) { b.netState == .online && b.relay.boot != before }
+        try await wait("Alice reconnectée", timeout: 40) { a1.netState == .online }
+        try await wait("renvoyé à l'iPad seul", timeout: 20) { b.store.read("outbox", key, as: OutItem.self)?.boot == b.relay.boot }
+        XCTAssertEqual(b.relay.boxSent - boxed, 1, "une seule copie : l'iPhone l'a déjà")
+        a2.relay.start()
+        try await wait("reçu sur l'iPad", timeout: 30) { a2.messages(b.me.code).contains { $0.id == m.id } }
+        try await wait("plus rien n'attend", timeout: 15) { b.store.read("outbox", key, as: OutItem.self) == nil }
+        XCTAssertEqual(a1.messages(b.me.code).filter { $0.id == m.id }.count, 1)
+    }
+
+    /// v4 : deux appareils d'un même compte (Alice sur iPhone et iPad) et un
+    /// contact (Bob). L'iPad est lié par le code du QR code ; les deux
+    /// reçoivent ce que Bob écrit (dans leurs boîtes tournantes) ; ce que
+    /// l'iPad envoie apparaît sur l'iPhone ; puis l'iPad est retiré.
+    func testTwoDevicesOfOneAccount() async throws {
+        let url = try server()
+        let a1 = phone("Alice", url), b = phone("Bob", url)
+        defer { a1.stop(); b.stop() }
+        try await wait("connexion") { a1.netState == .online && b.netState == .online }
+
+        let (a2, link) = try await linkIPad(to: a1, url)
+        defer { a2.stop() }
+        // Un code de liaison déjà servi, ou qui n'en est pas un : refusé.
+        do {
+            _ = try await a1.linkDevice(link.text)
+            XCTFail("lié deux fois")
+        } catch let e as LinkError { XCTAssertEqual(e, .alreadyLinked) }
+        do {
+            _ = try await a1.linkDevice(b.me.code)
+            XCTFail("pas un code de liaison")
+        } catch let e as LinkError { XCTAssertEqual(e, .notALink) }
+        XCTAssertEqual(a2.me, a1.me)
+        XCTAssertEqual(a2.dev, link.dev)
+        XCTAssertNotEqual(a2.dev, a1.dev)
+        XCTAssertEqual(a2.siblings, [a1.dev])
+        // L'iPad prend son vrai nom, et l'iPhone l'apprend.
+        try await wait("le nom de l'iPad") { a1.devices.list.first { $0.dev == a2.dev }?.name == "iPad" }
+
+        // Alice ajoute Bob (sur l'iPhone : l'iPad l'apprend), Bob ajoute Alice.
+        _ = try await a1.addContact(b.me.code, name: "Bob")
+        try await wait("contact synchronisé") { a2.contact(b.me.code)?.saved == true && a2.contact(b.me.code)?.name == "Bob" }
+        _ = try await b.addContact(a1.me.code, name: "Alice")
+        try await wait("Bob connaît les deux appareils d'Alice") {
+            Set(b.contact(a1.me.code)?.devs.map(\.d) ?? []) == [a1.dev, a2.dev] && b.contact(a1.me.code)?.bx == true
+        }
+        try await wait("les boîtes de Bob suivies") {
+            a1.boxMap.values.contains(b.me.code) && a2.boxMap.values.contains(b.me.code)
+        }
+
+        // Bob écrit : les deux appareils d'Alice le reçoivent, par leurs
+        // boîtes tournantes (le relais ne sait ni qui écrit, ni à qui).
+        b.ensureDirectChat(a1.me.code)
+        let boxed = b.relay.boxSent
+        let hello = try XCTUnwrap(b.send(a1.me.code, Content(text: "Salut Alice")))
+        try await wait("reçu sur l'iPhone") { a1.messages(b.me.code).contains { $0.id == hello.id } }
+        try await wait("reçu sur l'iPad") { a2.messages(b.me.code).contains { $0.id == hello.id } }
+        XCTAssertGreaterThanOrEqual(b.relay.boxSent - boxed, 2, "une copie par appareil, chacune dans sa boîte")
+        XCTAssertEqual(a2.messages(b.me.code).first { $0.id == hello.id }?.text, "Salut Alice")
+        // Chacun accuse réception : le message n'attend plus personne.
+        try await wait("accusés des deux appareils", timeout: 15) {
+            b.store.read("outbox", "\(hello.id):\(a1.me.code)", as: OutItem.self) == nil
+                && b.store.message(a1.me.code, hello.id)?.tick == .delivered
+        }
+
+        // L'iPad écrit : Bob le reçoit, l'iPhone l'affiche comme envoyé.
+        a2.ensureDirectChat(b.me.code)
+        let reply = try XCTUnwrap(a2.send(b.me.code, Content(text: "Envoyé de l'iPad")))
+        try await wait("reçu par Bob") { b.messages(a1.me.code).contains { $0.id == reply.id } }
+        try await wait("synchronisé sur l'iPhone") { a1.messages(b.me.code).contains { $0.id == reply.id } }
+        let mirrored = try XCTUnwrap(a1.messages(b.me.code).first { $0.id == reply.id })
+        XCTAssertEqual(mirrored.from, a1.me.code)
+        XCTAssertEqual(mirrored.text, "Envoyé de l'iPad")
+        // L'iPhone a dit l'avoir (`sync`/`got`) : l'iPad n'attend plus.
+        try await wait("sync/got", timeout: 15) {
+            a2.store.read("outbox", "\(reply.id):\(a1.me.code)", as: OutItem.self) == nil
+        }
+
+        // Lu sur l'iPad : lu sur l'iPhone.
+        XCTAssertGreaterThan(a1.chat(b.me.code)?.unread ?? 0, 0)
+        a2.markRead(b.me.code)
+        try await wait("lu partout") { a1.chat(b.me.code)?.unread == 0 }
+        // Épinglée sur l'iPhone : épinglée sur l'iPad.
+        a1.updateChat(b.me.code) { $0.pinned = true }
+        try await wait("état de la discussion") { a2.chat(b.me.code)?.pinned == true }
+
+        // Un appel pris sur l'iPhone : l'iPad cesse de sonner.
+        var elsewhere: String?
+        a2.onCallSignal = { from, body, _ in
+            if from == a2.me.code, case let .call(op, callId, _, _, _) = body, op == "elsewhere" { elsewhere = callId }
+        }
+        a1.callTaken("appel-1")
+        try await wait("pris ailleurs") { elsewhere == "appel-1" }
+
+        // L'iPhone retire l'iPad : il efface tout ; Bob ne lui écrit plus.
+        var gone = false
+        a2.onUnlinked = { gone = true }
+        await a1.unlinkDevice(a2.dev)
+        try await wait("l'iPad retiré", timeout: 15) { gone }
+        XCTAssertEqual(a1.devices.list.map(\.dev), [a1.dev])
+        try await wait("Bob l'apprend") { b.contact(a1.me.code)?.devs.map(\.d) == [a1.dev] }
+        let after = try XCTUnwrap(b.send(a1.me.code, Content(text: "Encore là ?")))
+        try await wait("toujours reçu sur l'iPhone") { a1.messages(b.me.code).contains { $0.id == after.id } }
     }
 }

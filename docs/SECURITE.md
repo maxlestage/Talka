@@ -597,7 +597,166 @@ jours est refusé d'office (le relais ne garde rien plus de 30 jours : c'est
 un rejeu). Une offre d'appel déjà vue (les 200 dernières) ne fait pas
 sonner une seconde fois.
 
-### 7.11 Hygiène
+### 7.11 Plusieurs appareils (v4)
+
+But : le même compte (le même code) sur l'iPhone, l'iPad et un navigateur
+en même temps, chaque appareil avec **ses propres clés de session**, chaque
+message chiffré pour chacun.
+
+**Ce qui est commun, ce qui est propre.** L'identité Talka (clés P-256 de
+signature et d'échange, donc le code) est la même sur tous les appareils
+du compte, comme la clé d'identité chez Signal : elle signe, elle ouvre
+l'ancien format et l'expéditeur scellé. Chaque appareil a en plus :
+
+- un identifiant `dev`, 8 octets aléatoires en hexadécimal (16 caractères),
+  tiré à la création du compte, à la liaison ou à la restauration d'une
+  sauvegarde (jamais copié : `kv/dev` ne part pas dans la sauvegarde) ;
+- son appareil v3 (§4.1 : IK, SPK, PQPK), donc ses propres sessions à
+  double cliquet ; son adresse est `<code>/<dev>` (l'adresse d'un appareil
+  d'avant la v4 reste `<code>`) ;
+- sa clé de notification (§7.8) et son abonnement Web Push.
+
+**La liste des appareils** (`kv/appareils`) : `{"v", "list":[{"dev",
+"name", "at", "nk"}]}`, six appareils au plus. Elle change à la liaison et
+au retrait d'un appareil (`v` + 1), passe aux autres appareils du compte
+(`sync`, ci-dessous) et aux contacts, dans le profil chiffré :
+`{"k":"profile",…,"devs":[{"d":<dev>,"nk":<clé>}],"dv":<v>}`. Un contact
+garde la liste de plus grand `dv`. Un ancien client l'ignore.
+
+**Les paquets, appareil par appareil.** Chaque appareil publie son paquet
+v3 avec son `dev` ; la signature ECDSA de l'identité porte alors sur
+`talka-v4-appareil:<dev>:` ‖ paquet, ce qui lie le paquet à cet appareil.
+Le relais en garde six par code et les rend tous (`fetch-bundle` →
+`"devices":[{"dev","bundle","sig"}]`), en plus du champ habituel pour les
+anciens clients. Un relais ne peut pas ajouter d'appareil (il n'a pas
+l'identité) ; il peut en cacher un, ou en rejouer un retiré : l'expéditeur
+n'écrit qu'aux appareils de la dernière liste annoncée par le compte
+(`devs`), dont il a un paquet bien signé.
+
+**Les envois.** À un contact qui annonce sa liste : une copie par appareil,
+chiffrée par la session v3 de cet appareil (`<code>/<dev>`), déposée pour
+lui (`"dev"` dans `send`, scellé ou non). Sinon, comme avant. Aux autres
+appareils du compte : une copie `sync` (ci-dessous), par la session v3
+entre les deux appareils. L'enveloppe scellée (§7.9) dit en plus de quel
+appareil elle vient : `{"from","fd","body"}` ; une enveloppe présentée le
+porte dans `"fd"`, ajouté par le relais. Les accusés de réception disent
+quel appareil a reçu (`"dev"`) : un message attend dans la boîte d'envoi
+tant qu'un appareil de la liste ne l'a pas reçu, et repart vers lui si le
+relais redémarre.
+
+**La synchronisation entre ses appareils** :
+`{"k":"sync","op","c","w","d"}`, accepté seulement d'un appareil du compte
+(`from` = notre code, `fd` dans notre liste) :
+
+| `op` | Effet |
+|---|---|
+| `wire` | `w` (un `Wire` que l'appareil a envoyé dans la discussion `c` : message, réaction, modification, suppression, groupe, minuterie, épingle), appliqué comme venant de nous |
+| `read` | la discussion `c` est lue jusqu'à `d.at` (pas de nouvel accusé) |
+| `contact` | un contact ajouté, renommé, bloqué (`d`) |
+| `chat` | l'état d'une discussion : archivée, épinglée, en sourdine, vidée, supprimée (`d`) |
+| `forget` | des messages effacés pour moi (`d.ids`) |
+| `profile` | notre nom, notre actu, notre photo (`d`) |
+| `devices` | la liste des appareils (`d`) ; la plus grande `v` l'emporte |
+| `status` | une actu publiée (`d`) |
+| `call` | un appel pris ou refusé sur cet appareil (`d.id`) : les autres arrêtent de sonner |
+| `unlink` | cet appareil est retiré : il efface tout |
+
+**Le relais.** `hello` porte `"dev"` ; les boîtes sont par appareil
+(`<code>/<dev>`). Un envoi sans `dev` (un ancien client) est copié dans la
+boîte de chaque appareil connu du code (connecté ou ayant publié son
+paquet depuis le démarrage du relais), sinon dans la boîte du code.
+`{"t":"unlink","dev"}` (d'un appareil du code) oublie le paquet et la boîte
+de cet appareil, coupe ses connexions et refuse son `hello` jusqu'au
+redémarrage du relais. Les abonnements Web Push sont par appareil.
+
+**Retirer un appareil** : il reçoit `sync`/`unlink` et efface tout ; il
+quitte la liste (`v` + 1), annoncée aux contacts. **Limite** : un appareil
+lié détient l'identité du compte. Volé avant d'être retiré, il peut
+continuer d'écrire au nom du compte et se réannoncer ; le seul remède sûr
+est alors un nouveau code (comme pour un téléphone volé chez Signal avant
+la déconnexion de ses appareils).
+
+**Compatibilité.** Un appareil v4 publie aussi un paquet sans `dev` (pour
+les anciens clients, qui l'utilisent comme avant) et lit l'ancien format et
+les envois sans `dev`. Une session ouverte avant de connaître les appareils
+d'un contact (à son code) passe à l'adresse de l'appareil dès qu'un message
+dit lequel c'est. Le temps que tous aient la mise à jour, un ancien client
+qui écrit à un compte à plusieurs appareils n'est lu que par l'un d'eux ;
+les autres le signalent et réparent la session.
+
+**Robustesse.** Un message envoyé reste dans la boîte d'envoi tant qu'un
+appareil du destinataire (ou un autre de nos appareils, `sync`/`got`) ne
+l'a pas reçu, et repart vers lui seul si le relais redémarre.
+
+### 7.12 La liaison par QR code (v4)
+
+1. Le **nouvel appareil** N tire `dev`, un identifiant de liaison `lid`
+   (16 octets) et une clé P-256 éphémère `lk`. Il montre
+   `talka-lien:<base64url(0x01 ‖ dev (8) ‖ lid (16) ‖ lk_pub (65))>`, en QR
+   code et en texte, et attend (connexion anonyme) dans la boîte
+   `base64url(SHA-256("talka-lien:" ‖ lid)[0..16])`.
+2. L'**appareil du compte** E lit le QR code (ou colle le texte), tire une
+   clé éphémère `ek`, et calcule
+   `K = HKDF-SHA256(sel = lid, ikm = ECDH(ek, lk_pub),
+   info = "talka-lien-v1:" ‖ ek_pub ‖ lk_pub, 32)`.
+3. E chiffre ce que N doit savoir : l'identité, la liste des appareils
+   (avec N), le profil, les contacts, les discussions et leurs messages
+   (les pièces jointes de plus de 512 Kio en sont retirées, 32 Mio en
+   tout) ; jamais son appareil v3, ses sessions, son `dev` ni sa clé de
+   notification. Le JSON est coupé en morceaux de 2 Mio :
+   `{"e":ek_pub,"i","n","c":base64(iv ‖ AES-256-GCM(K, iv, morceau,
+   ad = "talka-lien:" ‖ lid ‖ ":<i>/<n>"))}`, déposés dans la boîte de
+   liaison.
+4. Les deux appareils affichent un **code de vérification** à 6 chiffres,
+   `u32(SHA-256("talka-lien-verif:" ‖ ek_pub ‖ lk_pub)[0..4]) mod 10⁶`, à
+   comparer ; N ne garde le compte qu'après avoir tout ouvert.
+5. N range tout, publie son paquet ; E annonce la nouvelle liste à ses
+   autres appareils et aux contacts.
+
+Seul qui voit le QR code peut répondre à N : la clé `lk` ne sort pas
+d'ailleurs. Le relais ne voit qu'une boîte anonyme et des morceaux
+illisibles ; il les oublie au bout d'une heure.
+
+### 7.13 Boîtes aux lettres tournantes (v4)
+
+But : entre contacts, le relais ne voit plus **à qui** un message est
+adressé, seulement une boîte pseudonyme qui change chaque jour.
+
+**Liées au relais.** Talka n'a plus qu'un relais (`OFFICIAL`) : son
+adresse entre dans la dérivation, et les boîtes ne valent que pour lui.
+
+    k_paire = HKDF-SHA256(sel = "talka-boites-v1:" ‖ <relais>,
+                          ikm = ECDH(dh_A, dh_B) (32 octets),
+                          info = min(A, B) ‖ ":" ‖ max(A, B), 32)
+    boîte(A → B/dev, jour) = base64url(HMAC-SHA256(k_paire,
+                          "talka-boite:" ‖ B ‖ "/" ‖ dev ‖ ":" ‖ jour)[0..16])
+    jour = ⌊ms Unix / 86 400 000⌋ (UTC)
+
+Seuls A et B savent calculer `k_paire` ; une boîte par sens, par appareil
+destinataire et par jour. `<relais>` est l'adresse du relais officiel,
+`https://talka-maxlestage-e497dd868a8c.herokuapp.com`.
+
+**Envoi.** Vers un appareil d'un contact qui l'annonce (`"bx":true` dans
+le profil) : l'enveloppe scellée (§7.9), déposée par la connexion anonyme
+dans `{"t":"send","id","boite","body","live","wake","apercu"}` — ni code,
+ni jeton : connaître la boîte prouve qu'on est le contact.
+
+**Réception.** Chaque appareil ouvre une connexion anonyme qui s'abonne à
+ses boîtes : `{"t":"boites","list":[…],"push"?}`, pour chaque contact et
+chaque jour depuis la dernière réception (un jour de marge, 30 au plus)
+jusqu'à demain ; puis chaque jour. Le relais rend ce qui attend
+(`{"t":"msg","n","boite","body","ts","sealed":true}`) puis ce qui arrive ;
+`got` l'oublie. Un message n'est accepté que si l'enveloppe scellée vient
+bien du contact de cette boîte.
+
+**Ce que le relais voit encore** : l'adresse IP des connexions (la
+connexion anonyme vient de la même adresse que celle qui se présente, et
+peut leur être rapprochée) ; l'abonnement Web Push donné avec les boîtes
+(pour réveiller un navigateur fermé), le même que celui de la connexion
+présentée ; le premier message à un inconnu, et les anciens clients, qui
+restent adressés au code.
+
+### 7.14 Hygiène
 
 Comparaisons de secrets en temps constant (tags GCM, identifiants dérivés
 d'une clé partagée), secrets effacés (`zeroize`), aucune panique sur une

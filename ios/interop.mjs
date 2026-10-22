@@ -6,7 +6,7 @@
 // Le navigateur et l'iPhone s'échangent leurs codes par deux fichiers.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -95,6 +95,36 @@ const [chooser] = await Promise.all([
 ]);
 await chooser.setFiles(join(dir, "interop.bin"));
 console.log("• document envoyé à l'iPhone");
+
+// v4 : un second navigateur devient un appareil du compte de l'iPhone (le
+// code de liaison de son QR code, que l'iPhone lit).
+const ctx2 = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+await ctx2.addInitScript(() => {
+  if (navigator.clipboard) navigator.clipboard.writeText = async (t) => { window.__copied = t; };
+});
+const page2 = await ctx2.newPage();
+page2.on("pageerror", (e) => console.log("navigateur 2 :", e.message));
+await page2.goto(`${SERVER}/app`);
+await page2.click("text=J'ai déjà Talka sur un autre appareil");
+await page2.click("text=Copier le code de liaison");
+await until("code de liaison copié", async () => !!(await page2.evaluate(() => window.__copied)));
+writeFileSync(join(dir, "link.tmp"), await page2.evaluate(() => window.__copied));
+renameSync(join(dir, "link.tmp"), join(dir, "link.text"));
+console.log("• navigateur 2 : code de liaison montré");
+await until("code de vérification de l'iPhone", () => existsSync(join(dir, "swift.verif")), 120000);
+const verif = readFileSync(join(dir, "swift.verif"), "utf8").trim();
+await page2.waitForSelector(`text=${verif}`, { timeout: 60000 });
+console.log(`• liaison faite : le même code de vérification (${verif}) des deux côtés`);
+await page2.click("text=Continuer");
+await page2.waitForSelector(".chat-item:has-text('Navigateur')", { timeout: 60000 });
+console.log("• navigateur 2 : le compte de l'iPhone est arrivé, discussions comprises");
+await page2.click(".chat-item:has-text('Navigateur')");
+await page2.waitForSelector("text=Pour tous mes appareils", { timeout: 90000 });
+console.log("• envoyé de l'iPhone : affiché aussi sur le navigateur 2");
+await page2.fill(".conv textarea", "Envoyé du navigateur lié");
+await page2.click(".send-btn");
+await page.waitForSelector("text=Envoyé du navigateur lié", { timeout: 60000 });
+console.log("• le navigateur 2 écrit : l'ordinateur le reçoit (et l'iPhone l'affiche)");
 
 const status = await Promise.race([swiftDone, sleep(120000).then(() => "délai")]);
 await browser.close();

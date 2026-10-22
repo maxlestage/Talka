@@ -33,9 +33,23 @@ public final class Relay {
     public var onState: ((State) -> Void)?
     public var onEnvelope: (([String: Any]) -> Void)?
     public var onPresence: ((String, Bool, Double?) -> Void)?
+    /// Une enveloppe arrive d'une boîte tournante (v4).
+    public var onBoxEnvelope: (([String: Any]) -> Void)? {
+        get { boxes.onEnvelope }
+        set { boxes.onEnvelope = newValue }
+    }
+    /// Cet appareil a été retiré du compte (v4).
+    public var onUnlinked: (() -> Void)?
 
     let identity: Identity
+    /// Cet appareil (v4) : sa boîte chez le relais est `<code>/<dev>`.
+    public var dev = ""
+    /// La connexion anonyme qui lit nos boîtes tournantes (v4).
+    public let boxes: BoxSocket
     var task: Socket?
+    /// Ce qui attend de partir sur `task`, dans l'ordre.
+    var outgoing: [String] = []
+    var sendingOn: ObjectIdentifier?
     var retry = 0
     var stopped = false
     var reconnect: Task<Void, Never>?
@@ -60,6 +74,8 @@ public final class Relay {
     var anonPending: [String: CheckedContinuation<Ack, Never>] = [:]
     /// Les envois partis scellés (et acceptés), depuis le lancement.
     public private(set) var sealedSent = 0
+    /// Ceux d'entre eux déposés dans une boîte tournante (v4).
+    public private(set) var boxSent = 0
     /// L'identifiant du démarrage du relais connecté (vide : relais ancien).
     public private(set) var boot = ""
     /// L'heure du relais moins la nôtre.
@@ -68,12 +84,16 @@ public final class Relay {
     public init(identity: Identity, server: URL) {
         self.identity = identity
         self.server = server
+        boxes = BoxSocket(url: Self.wsURL(server))
     }
 
     /// L'heure du relais, en millisecondes (les horodatages des messages).
     public func now() -> Double { nowMs() + skew }
 
-    var wsURL: URL {
+    var wsURL: URL { Self.wsURL(server) }
+
+    /// La WebSocket d'un serveur (`https://…` → `wss://…/ws`).
+    public nonisolated static func wsURL(_ server: URL) -> URL {
         var c = URLComponents(url: server, resolvingAgainstBaseURL: false)!
         c.scheme = c.scheme == "http" ? "ws" : "wss"
         c.path = (c.path.hasSuffix("/") ? String(c.path.dropLast()) : c.path) + "/ws"
@@ -91,6 +111,7 @@ public final class Relay {
         task?.close()
         task = nil
         anon?.close()
+        boxes.close()
         state = .offline
     }
 
@@ -107,6 +128,7 @@ public final class Relay {
         guard !stopped, task == nil else { return }
         let t = openSocket(wsURL)
         task = t
+        outgoing = []
         state = .connecting
         listen(t)
         ping(t)
@@ -169,9 +191,25 @@ public final class Relay {
         return true
     }
 
+    /// Les messages partent dans l'ordre où ils ont été écrits (une seule
+    /// file par connexion) : le `ping` qui suit une publication ne la double
+    /// jamais.
     func transmit(_ t: Socket, _ text: String) {
+        guard task === t else { return }
+        outgoing.append(text)
+        let id = ObjectIdentifier(t)
+        guard sendingOn != id else { return }
+        sendingOn = id
         Task { @MainActor [weak self] in
-            do { try await t.send(text) } catch { self?.closed(t) }
+            while let self, self.task === t, !self.outgoing.isEmpty {
+                let next = self.outgoing.removeFirst()
+                do { try await t.send(next) } catch {
+                    if self.sendingOn == id { self.sendingOn = nil }
+                    self.closed(t)
+                    return
+                }
+            }
+            if self?.sendingOn == id { self?.sendingOn = nil }
         }
     }
 
@@ -181,10 +219,11 @@ public final class Relay {
         case "challenge":
             if let t = msg["time"] as? Double { skew = t - nowMs() }
             let nonce = msg["nonce"] as? String ?? ""
-            let hello: [String: Any] = [
+            var hello: [String: Any] = [
                 "t": "hello", "sign": identity.sign, "dh": identity.dh,
                 "sig": identity.signChallenge(nonce), "hidden": hidden,
             ]
+            if !dev.isEmpty { hello["dev"] = dev }
             if let data = try? JSONSerialization.data(withJSONObject: hello),
                let s = String(data: data, encoding: .utf8), let task {
                 transmit(task, s)
@@ -230,6 +269,9 @@ public final class Relay {
             }
         case "presence":
             onPresence?(msg["code"] as? String ?? "", msg["online"] as? Bool ?? false, msg["seen"] as? Double)
+        // Cet appareil a été retiré du compte (v4).
+        case "unlinked":
+            onUnlinked?()
         default:
             break
         }
@@ -311,12 +353,30 @@ public final class Relay {
         }
     }
 
-    /// Dépose une enveloppe scellée pour `peer`, avec son jeton de remise.
-    public func sendSealed(id: String, peer: Contact, body: String, live: Bool, wake: Bool,
+    /// Dépose une enveloppe scellée pour `peer` (son appareil `dev` en v4),
+    /// avec son jeton de remise.
+    public func sendSealed(id: String, peer: Contact, dev: String = "", body: String, live: Bool, wake: Bool,
                            apercu: String? = nil) async -> Ack {
-        guard await anonConnected(), let anon else { return .failed("offline") }
         var msg: [String: Any] = ["t": "send", "id": id, "to": peer.code, "sign": peer.sign, "dh": peer.dh,
                                   "jeton": peer.jeton, "body": body, "live": live]
+        if !dev.isEmpty { msg["dev"] = dev }
+        return await anonSend(id: id, msg, wake: wake, apercu: apercu)
+    }
+
+    /// Dépose une enveloppe scellée dans une boîte tournante (v4) : ni code,
+    /// ni jeton. `ttl` : combien de temps le relais la garde (secondes).
+    public func sendBoite(id: String, boite: String, body: String, live: Bool, wake: Bool,
+                          apercu: String? = nil, ttl: Int? = nil) async -> Ack {
+        var msg: [String: Any] = ["t": "send", "id": id, "boite": boite, "body": body, "live": live]
+        if let ttl { msg["ttl"] = ttl }
+        let ack = await anonSend(id: id, msg, wake: wake, apercu: apercu)
+        if ack == .ok { boxSent += 1 }
+        return ack
+    }
+
+    func anonSend(id: String, _ message: [String: Any], wake: Bool, apercu: String?) async -> Ack {
+        guard await anonConnected(), let anon else { return .failed("offline") }
+        var msg = message
         if wake {
             msg["wake"] = true
             if let apercu { msg["apercu"] = apercu }
@@ -339,9 +399,10 @@ public final class Relay {
     /// message, qui réveille un destinataire hors ligne (notifications du
     /// navigateur) ; pas un accusé de lecture, une réaction ou un profil.
     /// `apercu` : ce que la notification affiche, chiffré pour le destinataire.
-    public func send(id: String, to: String, body: String, live: Bool, wake: Bool = false,
+    public func send(id: String, to: String, dev: String = "", body: String, live: Bool, wake: Bool = false,
                      apercu: String? = nil) async -> Ack {
         var msg: [String: Any] = ["t": "send", "id": id, "to": to, "body": body, "live": live]
+        if !dev.isEmpty { msg["dev"] = dev }
         if wake {
             msg["wake"] = true
             if let apercu { msg["apercu"] = apercu }
@@ -376,10 +437,13 @@ public final class Relay {
     }
 
     /// Publie le paquet de clés v3 (base64) et sa signature par la clé du
-    /// code. Le `ping` qui suit dit si le relais connaît v3.
+    /// code ; `dev` : celui de cet appareil (v4), sinon celui des anciens
+    /// clients. Le `ping` qui suit dit si le relais connaît v3.
     @discardableResult
-    public func publishBundle(_ bundle: String, sig: String) -> Bool {
-        guard raw(["t": "publish-bundle", "bundle": bundle, "sig": sig]), sendPing() else { return false }
+    public func publishBundle(_ bundle: String, sig: String, dev: String = "") -> Bool {
+        var msg: [String: Any] = ["t": "publish-bundle", "bundle": bundle, "sig": sig]
+        if !dev.isEmpty { msg["dev"] = dev }
+        guard raw(msg), sendPing() else { return false }
         if relayV3 == nil { publishPing = pings }
         return true
     }
@@ -417,6 +481,138 @@ public final class Relay {
     public func watch(_ codes: [String]) {
         let fresh = codes.filter { watched.insert($0).inserted }
         if !fresh.isEmpty { raw(["t": "watch", "codes": fresh]) }
+    }
+
+    /// Retire un appareil de notre compte (v4).
+    @discardableResult
+    public func unlink(_ dev: String) -> Bool {
+        raw(["t": "unlink", "dev": dev])
+    }
+}
+
+// ----- Les boîtes tournantes (v4) ----------------------------------------------
+//
+// Une troisième WebSocket, anonyme elle aussi, qui ne fait que lire : elle
+// s'abonne à nos boîtes (`{"t":"boites"}`) et reçoit ce qui y arrive. Rien ne
+// la relie à notre code, sauf l'adresse IP (`docs/SECURITE.md` §7.13). Le
+// nouvel appareil s'en sert aussi, avant d'avoir un compte, pour attendre la
+// liaison.
+
+@MainActor
+public final class BoxSocket {
+    let url: URL
+    var socket: Socket?
+    var ready = false
+    var list: [String] = []
+    var reopen: Task<Void, Never>?
+    /// Ce qui arrive dans une boîte : `{"t":"msg","n","id","boite","body","ts","sealed"}`.
+    public var onEnvelope: (([String: Any]) -> Void)?
+
+    public init(url: URL) {
+        self.url = url
+    }
+
+    /// Les boîtes suivies.
+    public var boxes: [String] { list }
+
+    /// Les boîtes à lire (elles remplacent les précédentes) ; aucune : la
+    /// connexion se ferme.
+    public func listen(_ boxes: [String]) {
+        let changed = boxes != list
+        list = boxes
+        if list.isEmpty {
+            close()
+            return
+        }
+        if socket == nil {
+            open()
+        } else if changed, ready {
+            subscribe()
+        }
+    }
+
+    /// Ferme la connexion (elle ne se rouvre pas d'elle-même).
+    public func close() {
+        reopen?.cancel()
+        reopen = nil
+        let t = socket
+        socket = nil
+        ready = false
+        t?.close()
+    }
+
+    /// Les messages rangés : le relais les oublie.
+    public func got(_ numbers: [Int]) {
+        guard !numbers.isEmpty, let socket, ready else { return }
+        send(socket, ["t": "got", "n": numbers])
+    }
+
+    func send(_ t: Socket, _ obj: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: obj),
+              let text = String(data: data, encoding: .utf8) else { return }
+        Task { try? await t.send(text) }
+    }
+
+    func subscribe() {
+        guard let socket else { return }
+        // Par paquets de 4 000 (le relais en prend 8 000 par demande).
+        var start = 0
+        while start < list.count {
+            let part = Array(list[start..<min(start + 4_000, list.count)])
+            send(socket, ["t": "boites", "list": part])
+            start += 4_000
+        }
+    }
+
+    func open() {
+        let t = openSocket(url)
+        socket = t
+        ready = false
+        Task { @MainActor [weak self] in
+            while true {
+                let text: String
+                do { text = try await t.receive() } catch {
+                    self?.closed(t)
+                    return
+                }
+                guard let self, self.socket === t else { return }
+                guard let msg = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else { continue }
+                switch msg["t"] as? String ?? "" {
+                case "challenge":
+                    Task { try? await t.send(#"{"t":"anon"}"#) }
+                case "ready":
+                    self.ready = msg["boites"] as? Bool ?? false
+                    if self.ready { self.subscribe() }
+                case "msg":
+                    self.onEnvelope?(msg)
+                default:
+                    break
+                }
+            }
+        }
+        // Le relais ferme une connexion silencieuse : un ping régulier.
+        Task { @MainActor [weak self] in
+            while let self, self.socket === t {
+                try? await Task.sleep(nanoseconds: 25_000_000_000)
+                guard self.socket === t else { return }
+                Task { try? await t.send(#"{"t":"ping"}"#) }
+            }
+        }
+    }
+
+    func closed(_ t: Socket) {
+        guard socket === t else { return }
+        t.close()
+        socket = nil
+        ready = false
+        // Elle se rouvre tant qu'il y a des boîtes à lire.
+        guard !list.isEmpty else { return }
+        reopen?.cancel()
+        reopen = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Double.random(in: 2...5) * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.socket == nil, !self.list.isEmpty else { return }
+            self.open()
+        }
     }
 }
 
