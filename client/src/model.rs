@@ -427,7 +427,7 @@ impl Message {
     /// partir de son ouverture (sinon elle partirait avant de s'ouvrir).
     pub fn too_old(&self, keep_days: u32, now: f64) -> bool {
         let since = self.at.max(self.open_at);
-        keep_days > 0 && !self.starred && since < now - f64::from(keep_days) * DAY_MS
+        keep_days > 0 && !self.is_starred() && since < now - f64::from(keep_days) * DAY_MS
     }
 
     /// Une capsule temporelle (scellée ou déjà ouverte).
@@ -1148,6 +1148,12 @@ mod tests {
         );
         assert!(!m(4000.0, false).too_old(0, now), "0 : pour toujours");
         assert!(m(31.0, false).too_old(30, now));
+        // Une étoile restée sur un message supprimé pour tous ne le garde pas.
+        let gone = Message {
+            deleted: true,
+            ..m(400.0, true)
+        };
+        assert!(gone.too_old(KEEP_DAYS, now));
         // Une capsule écrite il y a 4 mois, qui s'ouvre dans un mois : gardée,
         // puis comptée à partir de son ouverture.
         let capsule = |opens_in_days: f64| Message {

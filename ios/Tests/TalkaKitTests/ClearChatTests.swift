@@ -52,4 +52,16 @@ final class ClearChatTests: XCTestCase {
         e.clearChat(c.id, keepStarred: true)
         XCTAssertEqual(e.messages(c.id).map(\.id), [a.id])
     }
+
+    /// Les vieux messages s'effacent sauf les importants ; une étoile restée
+    /// sur un message supprimé pour tous (une version d'avant) ne le garde pas.
+    func testOldDeletedMessagesGoEvenIfStarred() async {
+        let now = 1_800_000_000_000.0
+        var m = Message(chat: "c", id: "m", from: "WGSEAJNSZJ", at: now - 400 * 86_400_000, content: Content(text: "Vieux"))
+        XCTAssertTrue(m.tooOld(keepDays: keepDaysDefault, now: now))
+        m.starred = true
+        XCTAssertFalse(m.tooOld(keepDays: keepDaysDefault, now: now))
+        m.deleted = true
+        XCTAssertTrue(m.tooOld(keepDays: keepDaysDefault, now: now))
+    }
 }
