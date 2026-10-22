@@ -538,7 +538,7 @@ fn render_side() {
                 vec![
                     item("group", "Nouveau groupe", || spawn(open_new_group())),
                     item("person", "Ajouter un contact", || open_add_contact("", "")),
-                    item("star", "Messages favoris", || spawn(open_starred())),
+                    item("star", "Messages importants", || spawn(open_starred())),
                     if core::chats()
                         .iter()
                         .any(|c| c.unread > 0 || c.marked_unread)
@@ -2722,7 +2722,7 @@ async fn open_starred_in(chat_id: &str) {
     show_starred(core::starred_in(chat_id).await);
 }
 
-/// « Messages favoris (n) » dans les infos d'un contact ou d'un groupe, s'il
+/// « Messages importants (n) » dans les infos d'un contact ou d'un groupe, s'il
 /// y en a.
 fn starred_button(chat_id: &str, n: usize) -> Option<El> {
     let id = chat_id.to_owned();
@@ -2730,7 +2730,7 @@ fn starred_button(chat_id: &str, n: usize) -> Option<El> {
         h("button.btn.ghost")
             .attr("type", "button")
             .child(icon("star"))
-            .text(format!(" Messages favoris ({n})"))
+            .text(format!(" Messages importants ({n})"))
             .click(move || {
                 let id = id.clone();
                 spawn(async move { open_starred_in(&id).await })
@@ -2740,28 +2740,32 @@ fn starred_button(chat_id: &str, n: usize) -> Option<El> {
 
 fn show_starred(list: Vec<Message>) {
     modal(
-        "Messages favoris",
+        "Messages importants",
         move |_| {
             if list.is_empty() {
-                return h("p.muted").text("Ouvrez le menu d'un message (ou appuyez longuement) pour le mettre en favori.").into();
+                return h("p.muted").text("Aucun message important. Ouvrez le menu d'un message (ou appuyez longuement) puis « Important ».").into();
             }
-            h("div.list")
+            let items = h("div.list")
                 .children(list.iter().map(|m| {
                     let (chat, id) = (m.chat.clone(), m.id.clone());
                     let title = core::chat(&m.chat)
                         .map(|c| core::chat_title(&c))
                         .unwrap_or_default();
+                    let who = core::display_name(&m.from);
+                    let text = core::readable(m);
                     h("button.list-item")
                         .attr("type", "button")
+                        // Ce que la recherche regarde : le texte, qui l'a
+                        // écrit, la discussion.
+                        .attr("data-q", fold(&format!("{text} {who} {title}")))
                         .child(avatar(&m.from, 36))
                         .child(
                             h("div.grow")
-                                .child(h("small.muted").text(format!(
-                                    "{} · {title} · {}",
-                                    core::display_name(&m.from),
-                                    list_time(m.at)
-                                )))
-                                .child(h("div.ellipsis").text(core::readable(m))),
+                                .child(
+                                    h("small.muted")
+                                        .text(format!("{who} · {title} · {}", list_time(m.at))),
+                                )
+                                .child(h("div.ellipsis").text(text)),
                         )
                         // La discussion s'ouvre sur le message, comme WhatsApp.
                         .click(move || {
@@ -2772,6 +2776,30 @@ fn show_starred(list: Vec<Message>) {
                             })
                         })
                 }))
+                .el();
+            let none = h("p.muted.hidden").text("Aucun résultat").el();
+            // Chercher parmi eux (accents et majuscules ignorés), comme
+            // WhatsApp.
+            let search = h("input.field")
+                .attr("type", "search")
+                .attr("placeholder", "Rechercher")
+                .attr("aria-label", "Rechercher dans les messages importants")
+                .el();
+            let (s2, list_el, none2) = (search.clone(), items.clone(), none.clone());
+            listen(&search, "input", move |_| {
+                let q = fold(value(&s2).trim());
+                let mut shown = 0;
+                for item in query_all_in(&list_el, ".list-item") {
+                    let hit = item.get_attribute("data-q").is_some_and(|t| t.contains(&q));
+                    toggle_class(&item, "hidden", !hit);
+                    shown += usize::from(hit);
+                }
+                toggle_class(&none2, "hidden", shown > 0);
+            });
+            h("div")
+                .child((list.len() > 3).then_some(search))
+                .child(items)
+                .child(none)
                 .into()
         },
         ModalOpts::default(),
