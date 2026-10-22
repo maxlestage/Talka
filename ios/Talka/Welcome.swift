@@ -92,6 +92,8 @@ struct WelcomeView: View {
             SecureField("Mot de passe", text: $password)
             Button("Restaurer", action: restore)
             Button("Annuler", role: .cancel) { password = "" }
+        } message: {
+            Text("Cet appareil remplacera celui d'où vient la sauvegarde : s'il sert encore, il sera retiré du compte. Pour ajouter un appareil, liez-le plutôt par son QR code.")
         }
     }
 
