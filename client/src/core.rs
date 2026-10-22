@@ -2505,6 +2505,7 @@ fn group_info(chat: &Chat) -> GroupInfo {
         admins: chat.admins.clone(),
         avatar: chat.avatar.clone(),
         v: chat.v.max(1),
+        desc: Some(chat.desc.clone()),
     }
 }
 
@@ -3237,6 +3238,7 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool
                 avatar: safe_data("avatar", &grp.avatar),
                 members: grp.members.clone(),
                 admins: grp.admins.clone(),
+                desc: grp.desc.as_deref().map(group_desc).unwrap_or_default(),
                 created_by: from.to_owned(),
                 created_at: now(),
                 last_at: now(),
@@ -3269,6 +3271,9 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool
             c.avatar = safe_data("avatar", &grp.avatar);
             c.members = grp.members.clone();
             c.admins = grp.admins.clone();
+            if let Some(d) = &grp.desc {
+                c.desc = group_desc(d);
+            }
             c.v = grp.v;
             if grp.members.contains(&me) {
                 c.left = false;
@@ -3920,6 +3925,9 @@ async fn apply_own_group(grp: &GroupInfo, left: bool, note: &str) {
     c.avatar = safe_data("avatar", &grp.avatar);
     c.members = grp.members.clone();
     c.admins = grp.admins.clone();
+    if let Some(d) = &grp.desc {
+        c.desc = group_desc(d);
+    }
     c.v = grp.v;
     c.left = left;
     save_chat(c).await;
