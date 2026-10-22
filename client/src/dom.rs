@@ -1022,6 +1022,55 @@ pub async fn confirm_box(title: &str, text: &str, ok: &str, danger: bool) -> boo
     d.wait().await.unwrap_or(false)
 }
 
+/// Oui ou non, avec une case à cocher : `Some(cochée)` si oui, `None` sinon.
+pub async fn confirm_check(
+    title: &str,
+    text: &str,
+    check: &str,
+    checked_first: bool,
+    ok: &str,
+) -> Option<bool> {
+    let d = Deferred::<bool>::new();
+    let s1 = d.sender();
+    let s2 = d.sender();
+    let s3 = d.sender();
+    let text = text.to_owned();
+    let label = check.to_owned();
+    let input = h("input")
+        .attr("type", "checkbox")
+        .prop("checked", checked_first)
+        .el();
+    let read = input.clone();
+    modal(
+        title,
+        move |_| {
+            h("div")
+                .child(h("p").text(&text))
+                .child(
+                    h("label.check-line")
+                        .child(input)
+                        .child(h("span").text(&label)),
+                )
+                .into()
+        },
+        ModalOpts {
+            actions: vec![
+                action("Annuler", "ghost", move |m| {
+                    s1.send(None);
+                    m.close();
+                }),
+                action(ok, "danger", move |m| {
+                    s2.send(Some(checked(&read)));
+                    m.close();
+                }),
+            ],
+            on_close: Some(Box::new(move || s3.send(None))),
+            ..Default::default()
+        },
+    );
+    d.wait().await
+}
+
 /// Une ligne de texte à saisir (`None` : annulé).
 pub async fn prompt_box(
     title: &str,
