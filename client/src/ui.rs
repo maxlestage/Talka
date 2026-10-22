@@ -538,7 +538,7 @@ fn render_side() {
                 vec![
                     item("group", "Nouveau groupe", || spawn(open_new_group())),
                     item("person", "Ajouter un contact", || open_add_contact("", "")),
-                    item("star", "Messages favoris", || spawn(open_starred())),
+                    item("star", "Messages importants", || spawn(open_starred())),
                     if core::chats()
                         .iter()
                         .any(|c| c.unread > 0 || c.marked_unread)
@@ -2722,7 +2722,7 @@ async fn open_starred_in(chat_id: &str) {
     show_starred(core::starred_in(chat_id).await);
 }
 
-/// « Messages favoris (n) » dans les infos d'un contact ou d'un groupe, s'il
+/// « Messages importants (n) » dans les infos d'un contact ou d'un groupe, s'il
 /// y en a.
 fn starred_button(chat_id: &str, n: usize) -> Option<El> {
     let id = chat_id.to_owned();
@@ -2730,7 +2730,7 @@ fn starred_button(chat_id: &str, n: usize) -> Option<El> {
         h("button.btn.ghost")
             .attr("type", "button")
             .child(icon("star"))
-            .text(format!(" Messages favoris ({n})"))
+            .text(format!(" Messages importants ({n})"))
             .click(move || {
                 let id = id.clone();
                 spawn(async move { open_starred_in(&id).await })
@@ -2740,10 +2740,10 @@ fn starred_button(chat_id: &str, n: usize) -> Option<El> {
 
 fn show_starred(list: Vec<Message>) {
     modal(
-        "Messages favoris",
+        "Messages importants",
         move |_| {
             if list.is_empty() {
-                return h("p.muted").text("Ouvrez le menu d'un message (ou appuyez longuement) pour le mettre en favori.").into();
+                return h("p.muted").text("Aucun message important. Ouvrez le menu d'un message (ou appuyez longuement) puis « Important ».").into();
             }
             h("div.list")
                 .children(list.iter().map(|m| {
