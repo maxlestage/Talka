@@ -2105,7 +2105,7 @@ pub async fn has_starred(id: &str) -> bool {
     store::messages_of(id, usize::MAX)
         .await
         .iter()
-        .any(|m| m.starred)
+        .any(Message::is_starred)
 }
 
 /// Efface tout sauf les messages favoris.
@@ -2113,7 +2113,7 @@ async fn empty_chat_but_starred(id: &str) {
     let t = now();
     let mut gone = Vec::new();
     for m in store::messages_of(id, usize::MAX).await {
-        if !m.starred {
+        if !m.is_starred() {
             store::remove("messages", &m.key()).await;
             if t - m.at < TOMB_WINDOW {
                 gone.push((m.id.clone(), m.at));
@@ -2856,6 +2856,7 @@ pub async fn delete_message(chat_id: &str, msg_id: &str, for_everyone: bool) {
         m.text.clear();
         m.data.clear();
         m.reactions.clear();
+        m.starred = false;
         store::write_message(&m).await;
         broadcast(
             &c,
@@ -2914,11 +2915,22 @@ pub async fn pinned_message(chat_id: &str) -> Option<Message> {
         .filter(|m| !m.deleted && m.exp.is_none_or(|e| e > t))
 }
 
+/// Les messages favoris d'une discussion, les plus récents d'abord.
+pub async fn starred_in(chat_id: &str) -> Vec<Message> {
+    let mut list: Vec<Message> = store::messages_of(chat_id, usize::MAX)
+        .await
+        .into_iter()
+        .filter(Message::is_starred)
+        .collect();
+    list.sort_by(|a, b| b.at.total_cmp(&a.at));
+    list
+}
+
 pub async fn starred() -> Vec<Message> {
     let mut list: Vec<Message> = store::all::<Message>("messages")
         .await
         .into_iter()
-        .filter(|m| m.starred)
+        .filter(Message::is_starred)
         .collect();
     list.sort_by(|a, b| b.at.total_cmp(&a.at));
     list
@@ -3873,6 +3885,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             m.text.clear();
             m.data.clear();
             m.reactions.clear();
+            m.starred = false;
             store::write_message(&m).await;
             refresh_last(&c.id).await;
             emit(Ev::Messages(c.id.clone()));
@@ -4239,6 +4252,7 @@ async fn apply_own_wire(chat_id: &str, wire: Wire) {
                 m.text.clear();
                 m.data.clear();
                 m.reactions.clear();
+                m.starred = false;
                 store::write_message(&m).await;
                 refresh_last(&c.id).await;
                 emit(Ev::Messages(c.id.clone()));

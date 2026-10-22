@@ -872,7 +872,7 @@ struct MessageRow: View {
             }
             HStack(spacing: 3) {
                 Spacer(minLength: 0)
-                if m.starred { Image(systemName: "star.fill").font(.caption2) }
+                if m.isStarred { Image(systemName: "star.fill").font(.caption2) }
                 if m.bro, !m.deleted { Text("🥦").font(.caption2).accessibilityLabel("Chiffré aussi par Brocolis") }
                 if m.exp != nil { Image(systemName: "timer").font(.caption2) }
                 if m.edited, !m.deleted { Text("modifié").font(.caption2) }

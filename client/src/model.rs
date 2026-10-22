@@ -416,6 +416,12 @@ pub const KEEP_DAYS: u32 = 90;
 const DAY_MS: f64 = 86_400_000.0;
 
 impl Message {
+    /// En favori, et pas supprimé pour tous (un message supprimé n'a plus
+    /// rien à garder, comme WhatsApp).
+    pub fn is_starred(&self) -> bool {
+        self.starred && !self.deleted
+    }
+
     /// Trop vieux pour être gardé (`keep_days` jours, 0 : jamais) ? Les
     /// messages importants (⭐) restent ; une capsule temporelle compte à
     /// partir de son ouverture (sinon elle partirait avant de s'ouvrir).
@@ -1113,6 +1119,17 @@ mod tests {
         assert!(!mine.merge(bad));
         assert!(mine.merge(list.clone()));
         assert_eq!(mine.gone, list.gone);
+    }
+
+    #[test]
+    fn a_deleted_message_is_no_longer_starred() {
+        let m = Message {
+            starred: true,
+            ..Default::default()
+        };
+        assert!(m.is_starred());
+        let gone = Message { deleted: true, ..m };
+        assert!(!gone.is_starred());
     }
 
     #[test]
