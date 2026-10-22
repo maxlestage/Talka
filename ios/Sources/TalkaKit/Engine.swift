@@ -1242,6 +1242,17 @@ public final class Engine {
         store.messagesOf(chat).filter(\.isStarred).sorted { $0.at > $1.at }
     }
 
+    /// Ceux qui parlent de `query` (le texte, qui l'a écrit, la discussion ;
+    /// accents et majuscules ignorés), comme la recherche du navigateur.
+    public func starred(_ list: [Message], matching query: String) -> [Message] {
+        let q = Mentions.fold(query.trimmingCharacters(in: .whitespaces))
+        guard !q.isEmpty else { return list }
+        return list.filter { m in
+            let title = chats[m.chat].map(title) ?? ""
+            return Mentions.fold("\(readable(m)) \(displayName(m.from)) \(title)").contains(q)
+        }
+    }
+
     public func starred() -> [Message] {
         store.allMessages().filter(\.isStarred).sorted { $0.at > $1.at }
     }
