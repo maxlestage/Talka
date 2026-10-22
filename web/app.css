@@ -2224,6 +2224,13 @@ label.list-item {
   color: var(--green-2);
 }
 
+.info-head .group-desc {
+  max-width: 36em;
+  margin: 2px 0 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .info-head .row {
   justify-content: center;
 }
