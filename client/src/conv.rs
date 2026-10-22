@@ -1875,6 +1875,21 @@ fn refresh_mention_list(
     replace(list, items);
 }
 
+/// Le droit d'écrire a changé (un admin réserve l'envoi aux admins, ou le
+/// rend à tous) : la saisie suit, sans toucher à un texte en cours sinon.
+pub fn refresh_composer_rights() {
+    let (Some(id), Some(host)) = (current(), el(|c| c.composer.clone())) else {
+        return;
+    };
+    let Some(chat) = core::chat(&id) else { return };
+    let off = query_in(&host, ".composer-off").is_some();
+    let should_be_off =
+        !chat.can_write(&core::my_code()) || (!chat.group && core::blocked(&chat.id));
+    if off != should_be_off {
+        render_composer(false);
+    }
+}
+
 pub fn render_composer(focus_it: bool) {
     let (Some(id), Some(host)) = (current(), el(|c| c.composer.clone())) else {
         return;
@@ -1886,6 +1901,13 @@ pub fn render_composer(focus_it: bool) {
                 &host,
                 h("div.composer-off")
                     .text("Vous ne pouvez plus envoyer de messages dans ce groupe."),
+            );
+            return;
+        }
+        if !chat.can_write(&core::my_code()) {
+            replace(
+                &host,
+                h("div.composer-off").text("Seuls les admins peuvent envoyer des messages."),
             );
             return;
         }

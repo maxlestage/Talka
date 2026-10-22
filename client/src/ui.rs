@@ -382,6 +382,7 @@ pub fn event(e: Ev) {
         Ev::Messages(id) => {
             if conv::current().as_deref() == Some(id.as_str()) {
                 conv::queue_render();
+                conv::refresh_composer_rights();
             }
             // Une recherche affichée retrouve aussi ce qui vient d'arriver
             // (ou ne montre plus ce qui vient d'être supprimé).
@@ -2460,6 +2461,27 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>) -> Child {
                 })
             })
     });
+    // Qui peut écrire : les admins le choisissent (comme WhatsApp).
+    let writers_row = is_admin.then(|| {
+        let (c, r) = (chat.clone(), refresh.clone());
+        toggle(
+            "Seuls les admins peuvent écrire",
+            "Les autres membres lisent sans pouvoir répondre",
+            chat.admins_only,
+            move |on| {
+                let (c, r) = (c.clone(), r.clone());
+                spawn(async move {
+                    let note = if on {
+                        "Vous avez réservé l'envoi de messages aux admins."
+                    } else {
+                        "Vous avez permis à tous les membres d'écrire."
+                    };
+                    core::update_group(&c.id, |x| x.admins_only = on, note).await;
+                    r();
+                })
+            },
+        )
+    });
     let rows: Vec<El> = members
         .iter()
         .map(|code| {
@@ -2571,6 +2593,7 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>) -> Child {
         .child(
             h("div.info-section")
                 .child(h("h3").text(format!("{n} membres")))
+                .child(writers_row)
                 .child(add_row)
                 .children(rows),
         )
