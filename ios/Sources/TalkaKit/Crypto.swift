@@ -295,8 +295,10 @@ public enum TalkaCrypto {
         /// L'appareil de l'expéditeur (v4) ; absent d'un ancien client.
         var fd = ""
         var body: String
+        /// Du remplissage (v6) : l'enveloppe a la taille d'un palier.
+        var p = ""
 
-        enum CodingKeys: String, CodingKey { case from, fd, body }
+        enum CodingKeys: String, CodingKey { case from, fd, body, p }
 
         init(from: String, fd: String, body: String) {
             self.from = from; self.fd = fd; self.body = body
@@ -314,7 +316,32 @@ public enum TalkaCrypto {
             try c.encode(from, forKey: .from)
             if !fd.isEmpty { try c.encode(fd, forKey: .fd) }
             try c.encode(body, forKey: .body)
+            if !p.isEmpty { try c.encode(p, forKey: .p) }
         }
+    }
+
+    /// Les paliers de taille des enveloppes scellées (v6, docs/SECURITE.md
+    /// §7.15) : 1 Kio, 2, 4… 256 Kio, puis des multiples de 256 Kio, sans
+    /// dépasser 5 Mio. Comme `sealed_bucket` du navigateur.
+    public static func sealedBucket(_ n: Int) -> Int {
+        let step = 256 * 1024, max = 5 * 1024 * 1024
+        var b = 1024
+        if n <= step {
+            while b < n { b *= 2 }
+        } else {
+            b = (n + step - 1) / step * step
+        }
+        return b > max ? n : b
+    }
+
+    /// Le clair d'une enveloppe scellée, rempli jusqu'à son palier.
+    static func sealedPlain(from: String, fd: String, body: String) -> Data? {
+        var s = SealedSender(from: from, fd: fd, body: body)
+        guard let base = try? JSONEncoder().encode(s) else { return nil }
+        // `,"p":""` : 7 octets, puis autant de « 0 » qu'il faut (un au moins).
+        let target = sealedBucket(base.count + 8)
+        s.p = String(repeating: "0", count: target - base.count - 7)
+        return try? JSONEncoder().encode(s)
     }
 
     private static func sealedKey(_ secret: SharedSecret, eph: Data, toDh: Data, to: String) -> SymmetricKey {
@@ -396,7 +423,7 @@ public enum TalkaCrypto {
         let eph = P256.KeyAgreement.PrivateKey()
         let ephRaw = eph.publicKey.x963Representation
         guard let secret = try? eph.sharedSecretFromKeyAgreement(with: pub),
-              let plain = try? JSONEncoder().encode(SealedSender(from: from, fd: fd, body: body)),
+              let plain = sealedPlain(from: from, fd: fd, body: body),
               let box = try? AES.GCM.seal(plain, using: sealedKey(secret, eph: ephRaw, toDh: toRaw, to: to),
                                           nonce: AES.GCM.Nonce(), authenticating: Data("talka-scelle:\(to)".utf8)),
               let combined = box.combined
@@ -670,6 +697,13 @@ public enum TalkaV4 {
 
     /// La boîte de `day` où l'on écrit à l'appareil `dev` de `to` :
     /// base64url(HMAC-SHA256(clé, "talka-boite:<to>/<dev>:<jour>")[0..16]).
+    /// Une boîte de couverture (v6, §7.15) : à nous seuls, indiscernable
+    /// d'une boîte tournante. Comme `cover_box` du navigateur.
+    public static func coverBox(secret: Data, day: Int, i: Int) -> String {
+        let mac = HMAC<SHA256>.authenticationCode(for: Data("talka-couverture:\(day):\(i)".utf8), using: SymmetricKey(data: secret))
+        return b64url(Data(mac).prefix(16))
+    }
+
     public static func boite(key: Data, to: String, dev: String, day: Int) -> String {
         let mac = HMAC<SHA256>.authenticationCode(for: Data("talka-boite:\(to)/\(dev):\(day)".utf8), using: SymmetricKey(data: key))
         return b64url(Data(mac).prefix(16))
