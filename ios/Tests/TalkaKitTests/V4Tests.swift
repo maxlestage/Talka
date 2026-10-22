@@ -37,6 +37,33 @@ final class V4Tests: XCTestCase {
         XCTAssertEqual(first.map { Set($0.keys) }, ["dev", "name", "at"])
         XCTAssertEqual(JSON.decode(Devices.self, #"{"v":4,"list":[{"dev":"00000000000000b1","name":"Chrome sur Mac","at":1.5,"nk":"x"}]}"#)?.list.first?.nk, "x")
         XCTAssertEqual(JSON.decode(Devices.self, "{}"), Devices())
+        XCTAssertNil(obj?["gone"], "sans appareil retiré, le JSON est celui d'avant")
+    }
+
+    /// Les appareils retirés sont retenus (seize au plus), comme dans le
+    /// navigateur : chaque appareil les redit au relais à chaque connexion.
+    func testRemovedDevicesAreRemembered() {
+        var list = Devices(v: 3, list: [device("00000000000000a1"), device("00000000000000a2")])
+        list.remove("00000000000000a2")
+        XCTAssertEqual(list.v, 4)
+        XCTAssertFalse(list.has("00000000000000a2"))
+        XCTAssertEqual(list.gone, ["00000000000000a2"])
+        list.remove("00000000000000a2")
+        XCTAssertEqual(list.gone.count, 1)
+        for i in 0..<20 { list.remove(String(format: "%016x", i)) }
+        XCTAssertEqual(list.gone.count, maxGone)
+        XCTAssertEqual(list.gone.first, String(format: "%016x", 19))
+        // Le JSON du navigateur, dans les deux sens.
+        let back = JSON.decode(Devices.self, JSON.encode(list))
+        XCTAssertEqual(back?.gone, list.gone)
+        XCTAssertEqual(JSON.decode(Devices.self, #"{"v":2,"list":[],"gone":["00000000000000c1"]}"#)?.gone, ["00000000000000c1"])
+        // Reçue avec des retirés mal formés, ou trop : refusée.
+        var mine = Devices()
+        var bad = list
+        bad.gone.append("pas-un-appareil")
+        XCTAssertFalse(mine.merge(bad))
+        XCTAssertTrue(mine.merge(list))
+        XCTAssertEqual(mine.gone, list.gone)
     }
 
     final class Side {
