@@ -3781,7 +3781,7 @@ async fn import_backup() {
     };
     let Some(pw) = prompt_box(
         "Mot de passe de la sauvegarde",
-        "",
+        "Cet appareil remplacera celui d'où vient la sauvegarde : s'il sert encore, il sera retiré du compte. Pour ajouter un appareil, liez-le plutôt par son QR code.",
         "",
         "password",
         "Restaurer",
