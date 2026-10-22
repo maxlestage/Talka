@@ -668,6 +668,8 @@ struct StarredSheet: View {
                 List(list, id: \.key) { m in
                     Button {
                         dismiss()
+                        // La discussion s'ouvre sur le message, comme WhatsApp.
+                        model.reveal = m.id
                         model.openChat(m.chat)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {

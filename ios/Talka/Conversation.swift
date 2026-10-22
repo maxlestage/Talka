@@ -235,6 +235,17 @@ struct ConversationView: View {
             .navigationDestination(isPresented: $showInfo) {
                 if chat.group { GroupInfoView(chatId: chatId) } else { ContactInfoView(code: chatId) }
             }
+            // Un message de cette discussion choisi depuis ses infos (ses
+            // messages importants) : retour au fil, sur le message.
+            .onChange(of: model.reveal) { _, id in
+                guard let id, e.store.message(chatId, id) != nil else { return }
+                model.reveal = nil
+                showInfo = false
+                Task {
+                    try? await Task.sleep(for: .milliseconds(450))
+                    jumpTo = id
+                }
+            }
             .onAppear {
                 e.activeChat = chatId
                 e.markRead(chatId)
