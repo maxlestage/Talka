@@ -159,7 +159,8 @@ en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
   changement de caméra, historique ; serveurs TURN avec `TALKA_ICE_SERVERS`
 - 🎙️ vocaux avec forme d'onde et vitesse 1×/1,5×/2× ; 📷 photos réduites
   avant l'envoi ; 📄 fichiers (3 Mo) ; 👤 cartes de contact
-- ⭕ statuts (texte coloré ou photo) pendant 24 heures, avec « vu par »
+- ⭕ statuts (texte coloré ou photo) pendant 24 heures, avec « vu par » ;
+  les actus d'un contact peuvent être masquées
 - ⏳ messages éphémères (24 h, 7 j, 90 j) ; 📌 épingler, archiver (et, au
   choix, garder archivées les discussions où arrive un message), sourdine,
   non lu ; 🚫 bloquer
