@@ -173,9 +173,39 @@ final class GroupRulesTests: XCTestCase {
         XCTAssertFalse(c.accepts("B", leave))
         leave.desc = nil
         XCTAssertTrue(c.accepts("B", leave))
+        // … ni à qui peut écrire.
+        leave.adminsOnly = true
+        XCTAssertFalse(c.accepts("B", leave))
+        leave.adminsOnly = nil
+        XCTAssertTrue(c.accepts("B", leave))
         var last = info(c, 6)
         last.members = ["B", "C"]; last.admins = ["B"]
         XCTAssertTrue(c.accepts("A", last))
+    }
+
+    /// « Seuls les admins peuvent écrire » : comme `only_admins_write_when_asked`
+    /// du navigateur ; reçu d'un admin, gardé ; absent, inchangé.
+    @MainActor
+    func testOnlyAdminsWrite() async throws {
+        var g = group(["A", "B"], ["A"])
+        XCTAssertTrue(g.canWrite("B"))
+        g.adminsOnly = true
+        XCTAssertTrue(g.canWrite("A"))
+        XCTAssertFalse(g.canWrite("B"))
+        g.left = true
+        XCTAssertFalse(g.canWrite("A"))
+        XCTAssertTrue(Chat(id: "X").canWrite("B"))
+        let e = Engine(store: Store(directory: FileManager.default.temporaryDirectory.appendingPathComponent("ecrire-\(randomId(4))")), server: URL(string: "http://127.0.0.1:9")!)
+        let admin = "ADMIN00000"
+        var grp = GroupInfo(id: "ga", name: "Annonces", members: [admin, e.me.code], admins: [admin], avatar: "", v: 1, adminsOnly: true)
+        XCTAssertEqual(e.groupChat(admin, grp, at: 1).chat?.canWrite(e.me.code), false)
+        grp.v = 2; grp.adminsOnly = nil
+        _ = e.groupChat(admin, grp, at: 2)
+        XCTAssertEqual(e.chat("g:ga")?.adminsOnly, true, "absent : inchangé")
+        grp.v = 3; grp.adminsOnly = false
+        _ = e.groupChat(admin, grp, at: 3)
+        XCTAssertEqual(e.chat("g:ga")?.canWrite(e.me.code), true)
+        XCTAssertTrue(JSON.encode(e.groupInfo(try XCTUnwrap(e.chat("g:ga")))).contains("\"admins_only\":false"))
     }
 
     /// « Garder les discussions archivées » : un message reçu la laisse dans
