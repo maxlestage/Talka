@@ -67,6 +67,9 @@ public final class Relay {
     var publishPing: Int?
     /// Le relais sait-il livrer en expéditeur scellé (`ready.sealed`) ?
     public private(set) var sealed = false
+    /// Le léger délai au hasard avant un dépôt anonyme (v6) ; coupé par
+    /// les tests qui comptent les millisecondes.
+    public var jitter = true
     /// La connexion anonyme (expéditeur scellé), ouverte à la demande.
     var anon: Socket?
     var anonReady = false
@@ -375,6 +378,12 @@ public final class Relay {
     }
 
     func anonSend(id: String, _ message: [String: Any], wake: Bool, apercu: String?) async -> Ack {
+        // Un léger délai au hasard (v6, §7.15) : l'heure du dépôt ne colle
+        // plus à la frappe. Pas pour ce qui est en direct, ni pour la liaison
+        // d'un appareil (`ttl`).
+        if message["live"] as? Bool != true, message["ttl"] == nil, jitter {
+            try? await Task.sleep(nanoseconds: UInt64.random(in: 200_000_000...2_000_000_000))
+        }
         guard await anonConnected(), let anon else { return .failed("offline") }
         var msg = message
         if wake {

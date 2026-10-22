@@ -330,7 +330,22 @@ fn main() {
             "clair": "{\"talka\":\"lien\"}",
         },
     });
+    // v6 (§7.15) : une boîte de couverture, et les paliers des enveloppes
+    // scellées (la taille du clair, pour quelques messages).
+    let cover_secret = [7u8; 32];
+    let v6 = json!({
+        "couverture": {
+            "secret": crypto::b64(&cover_secret),
+            "jour": 20_383,
+            "i": 2,
+            "boite": crypto::cover_box(&cover_secret, 20_383, 2),
+        },
+        "paliers": [[10, crypto::sealed_bucket(10)], [1_025, crypto::sealed_bucket(1_025)],
+                    [300_000, crypto::sealed_bucket(300_000)], [6_000_000, crypto::sealed_bucket(6_000_000)]],
+        "scelle_rempli": crypto::seal_sender_from(&a.code, "", &b.code, &b.dh, "x").unwrap(),
+    });
     let vectors = json!({
+        "v6": v6,
         "v4": v4,
         "brocolis": brocolis,
         "code_of_empty": crypto::code_of(&[], &[]),
