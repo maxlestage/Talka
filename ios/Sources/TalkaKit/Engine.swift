@@ -1094,7 +1094,8 @@ public final class Engine {
     }
 
     func groupInfo(_ c: Chat) -> GroupInfo {
-        GroupInfo(id: String(c.id.dropFirst(2)), name: c.name, members: c.members, admins: c.admins, avatar: c.avatar, v: max(c.v, 1), desc: c.desc)
+        GroupInfo(id: String(c.id.dropFirst(2)), name: c.name, members: c.members, admins: c.admins, avatar: c.avatar, v: max(c.v, 1), desc: c.desc,
+                  adminsOnly: c.adminsOnly)
     }
 
     /// Ce qui accompagne chaque envoi : le groupe, la durée de vie des
@@ -1516,6 +1517,7 @@ public final class Engine {
             c.group = true
             c.name = grp.name; c.avatar = grp.avatar; c.members = grp.members; c.admins = grp.admins
             c.desc = groupDesc(grp.desc ?? "")
+            c.adminsOnly = grp.adminsOnly ?? false
             c.createdBy = from; c.v = grp.v
             saveChat(c)
             systemMessage(id, "\(displayName(from)) vous a ajouté au groupe « \(grp.name) ».", at: at)
@@ -1526,6 +1528,7 @@ public final class Engine {
         let wasIn = c.members.contains(me.code)
         c.name = grp.name; c.avatar = grp.avatar; c.members = grp.members; c.admins = grp.admins; c.v = grp.v
         if let d = grp.desc { c.desc = groupDesc(d) }
+        if let a = grp.adminsOnly { c.adminsOnly = a }
         if grp.members.contains(me.code) { c.left = false } else if wasIn { c.left = true }
         saveChat(c)
         return (c, true)

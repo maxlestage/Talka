@@ -498,6 +498,10 @@ struct ConversationView: View {
             Text("Vous ne faites plus partie de ce groupe.")
                 .font(.footnote).foregroundStyle(.secondary).padding().frame(maxWidth: .infinity)
                 .background(.bar)
+        } else if !chat.canWrite(e.me.code) {
+            Text("Seuls les admins peuvent envoyer des messages.")
+                .font(.footnote).foregroundStyle(.secondary).padding().frame(maxWidth: .infinity)
+                .background(.bar)
         } else if !chat.group && e.blocked(chatId) {
             Button("Vous avez bloqué ce contact. Toucher pour débloquer.") { e.setBlocked(chatId, false) }
                 .font(.footnote).padding().frame(maxWidth: .infinity)

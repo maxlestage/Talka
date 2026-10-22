@@ -270,6 +270,9 @@ pub struct Chat {
     /// La description d'un groupe (ce qu'en disent ses admins).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub desc: String,
+    /// Dans ce groupe, seuls les admins envoient des messages.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub admins_only: bool,
     pub created_by: String,
     pub created_at: f64,
     pub last_at: f64,
@@ -523,6 +526,9 @@ pub struct GroupInfo {
     /// Sa description ; absente (un client d'avant elle) : inchangée.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
+    /// Seuls les admins écrivent ; absent (un client d'avant) : inchangé.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admins_only: Option<bool>,
 }
 
 /// Une description de groupe : 500 caractères au plus.
@@ -654,6 +660,13 @@ impl Chat {
             && grp.name == self.name
             && grp.avatar == self.avatar
             && grp.desc.as_ref().is_none_or(|d| group_desc(d) == self.desc)
+            && grp.admins_only.is_none_or(|a| a == self.admins_only)
+    }
+
+    /// `me` peut-il écrire ici ? Pas dans un groupe quitté, ni, quand seuls
+    /// les admins écrivent, sans en être un.
+    pub fn can_write(&self, me: &str) -> bool {
+        !self.group || (!self.left && (!self.admins_only || self.admins.iter().any(|a| a == me)))
     }
 }
 
@@ -976,6 +989,27 @@ mod tests {
     }
 
     #[test]
+    fn only_admins_write_when_asked() {
+        let mut g = Chat {
+            group: true,
+            members: vec!["A".into(), "B".into()],
+            admins: vec!["A".into()],
+            ..Default::default()
+        };
+        assert!(g.can_write("A") && g.can_write("B"));
+        g.admins_only = true;
+        assert!(g.can_write("A"));
+        assert!(!g.can_write("B"));
+        g.left = true;
+        assert!(!g.can_write("A"));
+        // Une discussion à deux : toujours.
+        assert!(Chat::default().can_write("B"));
+        // Absent des anciennes discussions : non.
+        let old: Chat = serde_json::from_str(r#"{"id":"g:x","group":true}"#).unwrap();
+        assert!(!old.admins_only);
+    }
+
+    #[test]
     fn archived_chats_come_back_unless_kept() {
         let chat = Chat {
             archived: true,
@@ -1287,6 +1321,7 @@ mod tests {
             avatar: c.avatar.clone(),
             v,
             desc: Some(c.desc.clone()),
+            admins_only: Some(c.admins_only),
         }
     }
 
@@ -1322,6 +1357,14 @@ mod tests {
         assert!(!c.accepts("B", &leave));
         leave.desc = None;
         assert!(c.accepts("B", &leave));
+        // … ni à qui peut écrire.
+        leave.admins_only = Some(true);
+        assert!(!c.accepts("B", &leave));
+        leave.admins_only = None;
+        assert!(c.accepts("B", &leave));
+        let mut only = info(&c, 6);
+        only.admins_only = Some(true);
+        assert!(c.accepts("A", &only));
         // Le dernier admin part : le premier membre restant le devient.
         let mut last = info(&c, 6);
         last.members = vec!["B".into(), "C".into()];

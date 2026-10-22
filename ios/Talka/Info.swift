@@ -347,6 +347,16 @@ struct GroupInfoView: View {
                     }
                 }
                 descriptionSection(e, chat, admin: admin)
+                if admin {
+                    Section {
+                        Toggle("Seuls les admins peuvent écrire", isOn: Binding(get: { chat.adminsOnly }, set: { on in
+                            let note = on ? "Vous avez réservé l'envoi de messages aux admins." : "Vous avez permis à tous les membres d'écrire."
+                            e.updateGroup(chatId, note: note) { $0.adminsOnly = on }
+                        }))
+                    } footer: {
+                        Text("Les autres membres lisent sans pouvoir répondre.")
+                    }
+                }
                 Section {
                     Picker(selection: Binding(get: { chat.timer }, set: { e.setTimer(chatId, secs: $0) })) {
                         timerOptions()
