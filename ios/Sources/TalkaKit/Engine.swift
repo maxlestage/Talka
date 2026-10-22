@@ -160,6 +160,7 @@ public final class Engine {
         if s == .online {
             watchContacts()
             publishV3()
+            unlinkGone()
             announceDevices()
             refreshBoxes()
             Task { await flush() }
