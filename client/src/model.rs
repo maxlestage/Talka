@@ -244,6 +244,9 @@ pub struct Chat {
     pub avatar: String,
     pub members: Vec<String>,
     pub admins: Vec<String>,
+    /// La description d'un groupe (ce qu'en disent ses admins).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub desc: String,
     pub created_by: String,
     pub created_at: f64,
     pub last_at: f64,
@@ -494,6 +497,17 @@ pub struct GroupInfo {
     pub admins: Vec<String>,
     pub avatar: String,
     pub v: u64,
+    /// Sa description ; absente (un client d'avant elle) : inchangée.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desc: Option<String>,
+}
+
+/// Une description de groupe : 500 caractères au plus.
+pub const MAX_GROUP_DESC: usize = 500;
+
+/// La description d'un groupe telle qu'elle est gardée.
+pub fn group_desc(d: &str) -> String {
+    d.trim().chars().take(MAX_GROUP_DESC).collect()
 }
 
 /// Le contenu d'un message (ce qui est commun à l'envoi et au stockage).
@@ -616,6 +630,7 @@ impl Chat {
             && grp.admins.iter().collect::<Vec<_>>() == admins
             && grp.name == self.name
             && grp.avatar == self.avatar
+            && grp.desc.as_ref().is_none_or(|d| group_desc(d) == self.desc)
     }
 }
 
@@ -1206,6 +1221,7 @@ mod tests {
             admins: c.admins.clone(),
             avatar: c.avatar.clone(),
             v,
+            desc: Some(c.desc.clone()),
         }
     }
 
@@ -1235,6 +1251,12 @@ mod tests {
         assert!(c.accepts("B", &leave));
         leave.name = "À moi".into();
         assert!(!c.accepts("B", &leave));
+        // … sans toucher à la description (absente : inchangée).
+        leave.name = c.name.clone();
+        leave.desc = Some("Mon groupe".into());
+        assert!(!c.accepts("B", &leave));
+        leave.desc = None;
+        assert!(c.accepts("B", &leave));
         // Le dernier admin part : le premier membre restant le devient.
         let mut last = info(&c, 6);
         last.members = vec!["B".into(), "C".into()];
