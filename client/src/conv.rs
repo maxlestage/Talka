@@ -251,15 +251,28 @@ fn chat_menu(chat: &Chat, at: At) {
             danger("trash", "Vider la discussion", move || {
                 let id = i7.clone();
                 spawn(async move {
-                    if confirm_box(
-                        "Vider la discussion ?",
-                        "Tous les messages seront effacés de cet appareil.",
-                        "Vider",
-                        true,
-                    )
-                    .await
-                    {
-                        core::clear_chat(&id).await;
+                    // Des favoris : on peut les garder, comme WhatsApp.
+                    let keep = if core::has_starred(&id).await {
+                        confirm_check(
+                            "Vider la discussion ?",
+                            "Les messages seront effacés de vos appareils.",
+                            "Garder les messages favoris",
+                            true,
+                            "Vider",
+                        )
+                        .await
+                    } else {
+                        confirm_box(
+                            "Vider la discussion ?",
+                            "Tous les messages seront effacés de cet appareil.",
+                            "Vider",
+                            true,
+                        )
+                        .await
+                        .then_some(false)
+                    };
+                    if let Some(keep) = keep {
+                        core::clear_chat(&id, keep).await;
                     }
                 })
             }),

@@ -12,6 +12,7 @@ struct ContactInfoView: View {
     let code: String
     @State private var name = ""
     @State private var confirmDelete = false
+    @State private var confirmClear = false
     /// La protection de la discussion : session à double cliquet (v3) ou
     /// ancien chiffrement, comme dans le navigateur.
     @State private var protection: V3.Protection?
@@ -92,7 +93,7 @@ struct ContactInfoView: View {
                         e.setBlocked(code, !(c?.blocked ?? false))
                     }
                     if chat != nil {
-                        Button("Vider la discussion", role: .destructive) { e.clearChat(code) }
+                        Button("Vider la discussion", role: .destructive) { confirmClear = true }
                         Button("Supprimer la discussion", role: .destructive) { confirmDelete = true }
                     }
                 }
@@ -102,6 +103,7 @@ struct ContactInfoView: View {
             .onAppear { name = c?.name ?? "" }
             .onDisappear { save(e) }
             .task(id: code) { protection = await e.protection(code) }
+            .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: code)
             .confirmationDialog("Supprimer la discussion ?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Supprimer", role: .destructive) {
                     e.deleteChat(code)
@@ -316,6 +318,7 @@ struct GroupInfoView: View {
     @State private var photo: PhotosPickerItem?
     @State private var adding = false
     @State private var confirmLeave = false
+    @State private var confirmClear = false
 
     var body: some View {
         if let e = model.engine, let chat = e.chat(chatId) {
@@ -419,9 +422,10 @@ struct GroupInfoView: View {
                             model.path = []
                         }
                     }
-                    Button("Vider la discussion", role: .destructive) { e.clearChat(chatId) }
+                    Button("Vider la discussion", role: .destructive) { confirmClear = true }
                 }
             }
+            .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: chatId)
             .navigationTitle("Infos du groupe")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
@@ -527,6 +531,23 @@ struct AddMembersSheet: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// « Vider la discussion ? » : avec des favoris, on peut les garder (comme
+/// WhatsApp).
+extension View {
+    func clearChatDialog(isPresented: Binding<Bool>, engine e: Engine, chatId: String) -> some View {
+        confirmationDialog("Vider la discussion ?", isPresented: isPresented, titleVisibility: .visible) {
+            if e.hasStarred(chatId) {
+                Button("Vider, garder les favoris", role: .destructive) { e.clearChat(chatId, keepStarred: true) }
+                Button("Tout vider", role: .destructive) { e.clearChat(chatId) }
+            } else {
+                Button("Vider", role: .destructive) { e.clearChat(chatId) }
+            }
+        } message: {
+            Text("Les messages seront effacés de vos appareils.")
         }
     }
 }

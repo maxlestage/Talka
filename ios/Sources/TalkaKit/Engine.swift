@@ -774,9 +774,33 @@ public final class Engine {
         bump(id)
     }
 
-    public func clearChat(_ id: String) {
-        emptyChat(id)
-        sync("chat", c: id, d: .object(["cleared": .bool(true)]))
+    /// Vide une discussion ; `keepStarred` : sauf les messages favoris
+    /// (comme WhatsApp). Nos autres appareils font de même.
+    public func clearChat(_ id: String, keepStarred: Bool = false) {
+        if keepStarred { emptyChatButStarred(id) } else { emptyChat(id) }
+        sync("chat", c: id, d: .object(["cleared": .bool(true), "keep_starred": .bool(keepStarred)]))
+    }
+
+    /// La discussion a-t-elle des messages favoris ?
+    public func hasStarred(_ id: String) -> Bool {
+        store.messagesOf(id).contains { $0.starred }
+    }
+
+    /// Efface tout sauf les messages favoris.
+    func emptyChatButStarred(_ id: String) {
+        let t = nowMs()
+        var gone: [(String, Double)] = []
+        for m in store.messagesOf(id) where !m.starred {
+            store.removeMessage(id, m.id)
+            if t - m.at < Self.tombWindow { gone.append((m.id, m.at)) }
+        }
+        bury(id, gone)
+        refreshLast(id)
+        if var c = chats[id] {
+            c.unread = 0; c.mentioned = false
+            saveChat(c)
+        }
+        bump(id)
     }
 
     func emptyChat(_ id: String) {
