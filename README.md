@@ -159,7 +159,8 @@ en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
 - 🎙️ vocaux avec forme d'onde et vitesse 1×/1,5×/2× ; 📷 photos réduites
   avant l'envoi ; 📄 fichiers (3 Mo) ; 👤 cartes de contact
 - ⭕ statuts (texte coloré ou photo) pendant 24 heures, avec « vu par »
-- ⏳ messages éphémères (24 h, 7 j, 90 j) ; 📌 épingler, archiver, sourdine,
+- ⏳ messages éphémères (24 h, 7 j, 90 j) ; 📌 épingler, archiver (et, au
+  choix, garder archivées les discussions où arrive un message), sourdine,
   non lu ; 🚫 bloquer
 - 🔐 verrouillage : code de 6 à 12 chiffres qui chiffre aussi la mémoire de
   l'appareil (Argon2id), passkey (navigateur) ou Face ID (iPhone, iPad),

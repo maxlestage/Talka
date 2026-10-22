@@ -39,6 +39,9 @@ pub struct Settings {
     /// Ce que montrent les notifications : « all » (le nom et le message),
     /// « name » (le nom seulement), « none » (rien : « Nouveau message »).
     pub notify_preview: String,
+    /// Une discussion archivée le reste quand un message y arrive (comme
+    /// « Garder les discussions archivées » de WhatsApp).
+    pub keep_archived: bool,
 }
 
 impl Settings {
@@ -68,7 +71,17 @@ impl Default for Settings {
             server: String::new(),
             keep_days: KEEP_DAYS,
             notify_preview: "all".into(),
+            keep_archived: false,
         }
+    }
+}
+
+impl Chat {
+    /// Un message de `from` arrive : la discussion sort-elle des archives ?
+    /// Pas pour nos propres messages, ni en sourdine, ni si l'on garde les
+    /// discussions archivées.
+    pub fn unarchives_on(&self, from: &str, me: &str, keep_archived: bool) -> bool {
+        self.archived && from != me && !self.muted && !keep_archived
     }
 }
 
@@ -960,6 +973,28 @@ mod tests {
 
     fn b64_len(n: usize) -> usize {
         n.div_ceil(3) * 4
+    }
+
+    #[test]
+    fn archived_chats_come_back_unless_kept() {
+        let chat = Chat {
+            archived: true,
+            ..Default::default()
+        };
+        assert!(chat.unarchives_on("BOB", "MOI", false));
+        // Nos messages, une sourdine, ou le réglage : elle reste archivée.
+        assert!(!chat.unarchives_on("MOI", "MOI", false));
+        assert!(!chat.unarchives_on("BOB", "MOI", true));
+        let muted = Chat {
+            muted: true,
+            ..chat.clone()
+        };
+        assert!(!muted.unarchives_on("BOB", "MOI", false));
+        // Une discussion pas archivée n'a rien à quitter.
+        assert!(!Chat::default().unarchives_on("BOB", "MOI", false));
+        // Le réglage : absent des anciens réglages, il vaut « non ».
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert!(!old.keep_archived);
     }
 
     #[test]
