@@ -58,6 +58,27 @@ final class V4Tests: XCTestCase {
         XCTAssertFalse(e.forgetMissingBundles("CODE"))
     }
 
+    /// Une sauvegarde restaurée remplace l'appareil d'où elle vient : un
+    /// identifiant neuf, et l'ancien parmi les appareils retirés (jamais deux
+    /// appareils avec la même identité).
+    @MainActor
+    func testRestoredBackupReplacesItsDevice() async throws {
+        let tmp = FileManager.default.temporaryDirectory
+        let first = Store(directory: tmp.appendingPathComponent("sauve-\(randomId(4))"))
+        Engine.createAccount(first, name: "Alice", avatar: "")
+        let a = Engine(store: first, server: URL(string: "http://127.0.0.1:9")!)
+        XCTAssertTrue(a.devices.has(a.dev))
+        let file = try XCTUnwrap(a.exportBackup(password: "motdepasse"))
+        let other = Store(directory: tmp.appendingPathComponent("restaure-\(randomId(4))"))
+        try Engine.importBackup(other, password: "motdepasse", file: file)
+        let b = Engine(store: other, server: URL(string: "http://127.0.0.1:9")!)
+        XCTAssertEqual(b.me.code, a.me.code)
+        XCTAssertTrue(TalkaV4.isDev(b.dev))
+        XCTAssertNotEqual(b.dev, a.dev)
+        XCTAssertEqual(b.devices.list.map(\.dev), [b.dev])
+        XCTAssertEqual(b.devices.gone, [a.dev])
+    }
+
     /// Les appareils retirés sont retenus (seize au plus), comme dans le
     /// navigateur : chaque appareil les redit au relais à chaque connexion.
     func testRemovedDevicesAreRemembered() {
