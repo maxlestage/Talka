@@ -174,6 +174,9 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
     public var sign = ""
     public var dh = ""
     public var blocked = false
+    /// Ses actus en sourdine, sur cet appareil (comme WhatsApp) : rangées
+    /// sous « Masquées », sans compter comme nouvelles.
+    public var statusMuted = false
     public var saved = false
     public var addedAt: Double = 0
     public var profileV = 0
@@ -219,6 +222,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         case jetonPerso = "jeton_perso"
         case jetonEpoch = "jeton_epoch"
         case pj
+        case statusMuted = "status_muted"
     }
 
     public init(code: String, addedAt: Double = nowMs()) {
@@ -235,6 +239,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         jeton = c.v(.jeton, ""); jetonSent = c.v(.jetonSent, false); nk = c.v(.nk, ""); fp = c.v(.fp, ""); v3 = c.v(.v3, false)
         jetonPerso = c.v(.jetonPerso, false); jetonEpoch = c.v(.jetonEpoch, 0); pj = c.v(.pj, false)
         devs = c.v(.devs, []); dv = c.v(.dv, 0); bx = c.v(.bx, false)
+        statusMuted = c.v(.statusMuted, false)
     }
 
     /// Comme le navigateur : le jeton n'est écrit que s'il y en a un.
@@ -257,6 +262,7 @@ public struct Contact: Codable, Equatable, Identifiable, Sendable {
         if !devs.isEmpty { try c.encode(devs, forKey: .devs) }
         if dv != 0 { try c.encode(dv, forKey: .dv) }
         if bx { try c.encode(bx, forKey: .bx) }
+        if statusMuted { try c.encode(statusMuted, forKey: .statusMuted) }
     }
 }
 
