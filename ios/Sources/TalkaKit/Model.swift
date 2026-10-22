@@ -159,7 +159,7 @@ extension Message {
     /// Une capsule temporelle compte à partir de son ouverture (sinon elle
     /// partirait avant de s'ouvrir).
     public func tooOld(keepDays: Int, now: Double) -> Bool {
-        keepDays > 0 && !starred && max(at, openAt ?? 0) < now - Double(keepDays) * 86_400_000
+        keepDays > 0 && !isStarred && max(at, openAt ?? 0) < now - Double(keepDays) * 86_400_000
     }
 }
 
