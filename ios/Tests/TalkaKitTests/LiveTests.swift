@@ -53,7 +53,8 @@ final class LiveTests: XCTestCase {
         // relais d'avant v3, l'ancien format (sans attendre le paquet).
         let protection = await b.protection(a.me.code)
         let v3 = a.relay.relayV3 == true
-        XCTAssertEqual(protection, v3 ? .ratchet(pq: V3.postQuantum) : .legacy)
+        // (v6 : et le cliquet post-quantique, Alice ayant annoncé sa clé.)
+        XCTAssertEqual(protection, v3 ? (Pq6.available ? .ratchetPq6 : .ratchet(pq: V3.postQuantum)) : .legacy)
         // (Rangée sous son code, ou déjà passée à l'adresse de son appareil, v4.)
         let session = a.v3?.hasSession(b.me.code) == true || a.v3?.hasSession(TalkaV4.address(b.me.code, b.dev)) == true
         XCTAssertEqual(session, v3)
@@ -112,6 +113,25 @@ final class LiveTests: XCTestCase {
     /// est perdue, mais Alice renvoie ce qui n'a pas été confirmé.
     /// `TALKA_RESTART_FILE` : un fichier que le test crée pour demander à son
     /// lanceur de redémarrer le serveur (voir ios/README.md).
+    /// Retour au premier plan après une veille : les connexions sont
+    /// rouvertes tout de suite, et ce qui est arrivé entre-temps se lit.
+    func testReopenAfterSleep() async throws {
+        let url = try server()
+        let a = phone("Alice", url), b = phone("Bob", url)
+        defer { a.stop(); b.stop() }
+        try await wait("connexion") { a.netState == .online && b.netState == .online }
+        _ = try await a.addContact(b.me.code, name: "Bob")
+        a.ensureDirectChat(b.me.code)
+        a.send(b.me.code, Content(text: "Avant la veille"))
+        try await wait("réception") { b.messages(a.me.code).contains { $0.text == "Avant la veille" } }
+        b.relay.reopen()
+        a.send(b.me.code, Content(text: "Pendant le réveil"))
+        try await wait("reconnexion") { b.netState == .online }
+        try await wait("réception après la réouverture", timeout: 20) {
+            b.messages(a.me.code).contains { $0.text == "Pendant le réveil" }
+        }
+    }
+
     func testResendAfterRelayRestart() async throws {
         let url = try server()
         guard let flag = ProcessInfo.processInfo.environment["TALKA_RESTART_FILE"] else {

@@ -137,6 +137,20 @@ public final class Relay {
         }
     }
 
+    /// Retour au premier plan après une veille : les connexions ont pu
+    /// mourir sans le dire (elles semblent ouvertes, plus rien n'arrive). On
+    /// les rouvre tout de suite : ce qui attend chez le relais arrive, et ce
+    /// qui attendait de partir repart (comme le navigateur).
+    public func reopen() {
+        guard !stopped else { return }
+        if let t = task { closed(t) }
+        reconnect?.cancel()
+        retry = 0
+        if let t = anon { anonClosed(t) }
+        boxes.reopenNow()
+        connect()
+    }
+
     func connect() {
         guard !stopped, task == nil else { return }
         let t = openSocket(wsURL)
@@ -550,6 +564,12 @@ public final class BoxSocket {
         } else if changed, ready {
             subscribe()
         }
+    }
+
+    /// Rouvre la connexion tout de suite, s'il y a des boîtes à lire.
+    public func reopenNow() {
+        close()
+        if !list.isEmpty { open() }
     }
 
     /// Ferme la connexion (elle ne se rouvre pas d'elle-même).
