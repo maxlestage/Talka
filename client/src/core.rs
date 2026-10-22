@@ -344,12 +344,12 @@ pub fn on_presence(msg: &Value) {
     let was = with(|s| s.presence.insert(code.clone(), (online, seen)));
     // Il revient : il a republié son paquet v3. Ce qui l'attendait faute de
     // paquet (un contact qui refuse l'ancien format) part maintenant.
-    if online && !was.is_some_and(|(o, _)| o) {
-        let missing = BUNDLES.with(|b| b.borrow().get(&code).is_some_and(|(b, _)| b.is_none()));
-        if missing {
-            BUNDLES.with(|b| b.borrow_mut().remove(&code));
-            spawn(flush());
-        }
+    // À son code comme à chacun de ses appareils (v4).
+    if online
+        && !was.is_some_and(|(o, _)| o)
+        && BUNDLES.with(|b| forget_missing(&mut b.borrow_mut(), &code))
+    {
+        spawn(flush());
     }
     emit(Ev::Presence(code));
 }

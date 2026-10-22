@@ -113,6 +113,15 @@ extension Engine {
         return bundle
     }
 
+    /// Oublie les absences de paquet retenues pour `code` : à son code (un
+    /// ancien client) et à chacun de ses appareils (`<code>/<dev>`). `true`
+    /// s'il y en avait. Comme `forget_missing` du navigateur.
+    func forgetMissingBundles(_ code: String) -> Bool {
+        let stale = bundleCache.filter { ($0.key == code || $0.key.hasPrefix(code + "/")) && $0.value.bundle == nil }.keys
+        for k in stale { bundleCache[k] = nil }
+        return !stale.isEmpty
+    }
+
     /// La protection de la discussion avec un contact (fiche du contact).
     /// Avant iOS 26 (pas de ML-KEM), une session neuve serait classique.
     public func protection(_ code: String) async -> V3.Protection {

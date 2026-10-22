@@ -1,7 +1,7 @@
 //! Ce que garde l'appareil (IndexedDB) et ce qui voyage, chiffré, entre
 //! appareils (`Wire`). Tout est (dé)sérialisé avec serde.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -174,6 +174,16 @@ pub struct Devices {
 
 /// Six appareils au plus par compte.
 pub const MAX_DEVICES: usize = 6;
+
+/// Oublie les absences de paquet v3 retenues pour `code` : à son code (un
+/// ancien client) et à chacun de ses appareils (`<code>/<dev>`). `true` s'il
+/// y en avait (ce qui les attendait peut partir).
+pub fn forget_missing<T>(cache: &mut HashMap<String, (Option<T>, f64)>, code: &str) -> bool {
+    let prefix = format!("{code}/");
+    let before = cache.len();
+    cache.retain(|k, (bundle, _)| bundle.is_some() || (k != code && !k.starts_with(&prefix)));
+    cache.len() != before
+}
 
 /// Les seize derniers appareils retirés sont retenus.
 pub const MAX_GONE: usize = 16;
@@ -950,6 +960,26 @@ mod tests {
 
     fn b64_len(n: usize) -> usize {
         n.div_ceil(3) * 4
+    }
+
+    #[test]
+    fn a_contact_back_online_is_asked_again_for_its_bundles() {
+        let mut cache: HashMap<String, (Option<u8>, f64)> = HashMap::new();
+        cache.insert("CODE".into(), (None, 1.0));
+        cache.insert("CODE/00000000000000a1".into(), (None, 1.0));
+        cache.insert("CODE/00000000000000a2".into(), (Some(7), 1.0));
+        cache.insert("CODEX/00000000000000a1".into(), (None, 1.0));
+        cache.insert("AUTRE".into(), (None, 1.0));
+        assert!(forget_missing(&mut cache, "CODE"));
+        // Ses absences sont oubliées, à son code comme à ses appareils ; un
+        // paquet connu reste, et les autres contacts ne bougent pas.
+        let mut left: Vec<&String> = cache.keys().collect();
+        left.sort();
+        assert_eq!(
+            left,
+            ["AUTRE", "CODE/00000000000000a2", "CODEX/00000000000000a1"]
+        );
+        assert!(!forget_missing(&mut cache, "CODE"));
     }
 
     #[test]
