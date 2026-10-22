@@ -610,7 +610,9 @@ l'ancien format et l'expéditeur scellé. Chaque appareil a en plus :
 
 - un identifiant `dev`, 8 octets aléatoires en hexadécimal (16 caractères),
   tiré à la création du compte, à la liaison ou à la restauration d'une
-  sauvegarde (jamais copié : `kv/dev` ne part pas dans la sauvegarde) ;
+  sauvegarde (jamais repris : la sauvegarde restaurée remplace l'appareil
+  d'où elle vient, dont l'identifiant rejoint les appareils retirés ; s'il
+  sert encore, il efface tout à sa prochaine connexion) ;
 - son appareil v3 (§4.1 : IK, SPK, PQPK), donc ses propres sessions à
   double cliquet ; son adresse est `<code>/<dev>` (l'adresse d'un appareil
   d'avant la v4 reste `<code>`) ;

@@ -193,7 +193,7 @@ struct SettingsTab: View {
                     }
                     Button("Annuler", role: .cancel) { password = "" }
                 } message: {
-                    Text("Les données de cet appareil seront remplacées par celles de la sauvegarde.")
+                    Text("Les données de cet appareil seront remplacées par celles de la sauvegarde. Cet appareil remplacera celui d'où elle vient : s'il sert encore, il sera retiré du compte.")
                 }
                 .confirmationDialog("Retirer le code ?", isPresented: $confirmRemovePin, titleVisibility: .visible) {
                     Button("Retirer le code", role: .destructive) {
