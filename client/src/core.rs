@@ -2083,9 +2083,51 @@ async fn drop_chat(id: &str) {
     emit(Ev::Chats);
 }
 
-pub async fn clear_chat(id: &str) {
-    empty_chat(id).await;
-    sync("chat", id, None, serde_json::json!({ "cleared": true })).await;
+/// Vide une discussion ; `keep_starred` : sauf les messages favoris (comme
+/// WhatsApp). Nos autres appareils font de même.
+pub async fn clear_chat(id: &str, keep_starred: bool) {
+    if keep_starred {
+        empty_chat_but_starred(id).await;
+    } else {
+        empty_chat(id).await;
+    }
+    sync(
+        "chat",
+        id,
+        None,
+        serde_json::json!({ "cleared": true, "keep_starred": keep_starred }),
+    )
+    .await;
+}
+
+/// La discussion a-t-elle des messages favoris ?
+pub async fn has_starred(id: &str) -> bool {
+    store::messages_of(id, usize::MAX)
+        .await
+        .iter()
+        .any(|m| m.starred)
+}
+
+/// Efface tout sauf les messages favoris.
+async fn empty_chat_but_starred(id: &str) {
+    let t = now();
+    let mut gone = Vec::new();
+    for m in store::messages_of(id, usize::MAX).await {
+        if !m.starred {
+            store::remove("messages", &m.key()).await;
+            if t - m.at < TOMB_WINDOW {
+                gone.push((m.id.clone(), m.at));
+            }
+        }
+    }
+    bury(id, gone).await;
+    refresh_last(id).await;
+    if let Some(mut c) = chat(id) {
+        c.unread = 0;
+        c.mentioned = false;
+        save_chat(c).await;
+    }
+    emit(Ev::Messages(id.to_owned()));
 }
 
 async fn empty_chat(id: &str) {
@@ -3954,7 +3996,11 @@ async fn handle_sync(fd: &str, op: &str, c: &str, w: Option<Wire>, d: Value) {
             if d["deleted"] == true {
                 drop_chat(c).await;
             } else if d["cleared"] == true {
-                empty_chat(c).await;
+                if d["keep_starred"] == true {
+                    empty_chat_but_starred(c).await;
+                } else {
+                    empty_chat(c).await;
+                }
             } else if let Ok(state) = serde_json::from_value::<ChatState>(d)
                 && let Some(mut chat) = chat(c)
             {

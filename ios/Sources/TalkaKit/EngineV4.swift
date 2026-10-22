@@ -266,7 +266,7 @@ extension Engine {
             if d["deleted"]?.bool == true {
                 dropChat(chat)
             } else if d["cleared"]?.bool == true {
-                emptyChat(chat)
+                if d["keep_starred"]?.bool == true { emptyChatButStarred(chat) } else { emptyChat(chat) }
             } else if let state = decodeJSON(d, as: ChatState.self), var c = chats[chat] {
                 state.apply(&c)
                 saveChat(c)

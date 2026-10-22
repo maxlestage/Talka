@@ -348,22 +348,34 @@ impl Engine {
 
     /// L'annonce de notre clé ML-KEM, à joindre au message pour `addr` s'il
     /// ne s'en est pas encore servi (au plus une fois par heure, tant qu'il
-    /// ne s'en sert pas : une version qui ne sait pas la lire).
-    fn pq_advert_for(&mut self, addr: &str) -> Option<Value> {
+    /// ne s'en sert pas : une version qui ne sait pas la lire). Elle n'est
+    /// comptée comme partie ([`Engine::pq_advert_sent`]) que si le message
+    /// la porte vraiment.
+    fn pq_advert_for(&self, addr: &str) -> Option<Value> {
         let keys = self.pq.as_ref()?;
-        let current = keys.current()?.id.clone();
-        let advert = keys.advert()?;
+        let current = &keys.current()?.id;
+        let pq = self.peers.get(addr).map(|p| &p.pq);
+        let told = pq.is_some_and(|p| p.told == *current);
+        let due = pq.is_none_or(|p| {
+            p.sent != *current || self.clock.saturating_sub(p.sent_at) >= pq6::ROTATE_SECS
+        });
+        (!told && due).then(|| keys.advert()).flatten()
+    }
+
+    fn pq_advert_sent(&mut self, addr: &str) {
+        let Some(current) = self
+            .pq
+            .as_ref()
+            .and_then(|k| k.current())
+            .map(|k| k.id.clone())
+        else {
+            return;
+        };
         let now = self.clock;
         let peer = self.peers.entry(addr.to_owned()).or_default();
-        let due =
-            peer.pq.sent != current || now.saturating_sub(peer.pq.sent_at) >= pq6::ROTATE_SECS;
-        if peer.pq.told == current || !due {
-            return None;
-        }
         peer.pq.sent = current;
         peer.pq.sent_at = now;
         self.dirty.insert(addr.to_owned());
-        Some(advert)
     }
 
     /// Retient la clé ML-KEM annoncée dans un `Wire` reçu de `addr` (la
@@ -519,15 +531,16 @@ impl Engine {
             return legacy();
         }
         // v6 : notre clé ML-KEM, s'il ne la connaît pas encore.
-        let advert = self.pq_advert_for(addr);
-        let with_advert = advert.and_then(|a| pq6::with_advert(plain, &a));
-        let plain = match &with_advert {
-            Some(p) if p.len() <= MAX_PLAINTEXT => p.as_str(),
-            _ => plain,
-        };
-        let token = self.encrypt(addr, bundle, plain);
+        let with_advert = self
+            .pq_advert_for(addr)
+            .and_then(|a| pq6::with_advert(plain, &a))
+            .filter(|p| p.len() <= MAX_PLAINTEXT);
+        let token = self.encrypt(addr, bundle, with_advert.as_deref().unwrap_or(plain));
         match token {
             Some(token) => {
+                if with_advert.is_some() {
+                    self.pq_advert_sent(addr);
+                }
                 let token = self.pq_wrap(addr, token);
                 crypto::seal(me, peer_code, peer_dh, &token).map(|body| Sealed { body, v3: true })
             }
@@ -789,6 +802,20 @@ mod tests {
             recv(&mut a, &b, &m7),
             Opened::Failed(Failure::V3(Erreur::CleInconnue))
         );
+    }
+
+    #[test]
+    fn an_advert_that_did_not_leave_is_sent_again() {
+        let (mut a, mut b) = (side(), side());
+        a.engine.start_pq(None, 1_000);
+        b.engine.start_pq(None, 1_000);
+        // Pas de session ni de paquet : l'ancien format, sans l'annonce.
+        let m0 = send(&mut a, &b, false, "{\"k\":0}");
+        assert!(!is_token(&inner(&b, &a, &m0)));
+        // Le message suivant (une session) la porte bien : B l'apprend.
+        let m1 = send(&mut a, &b, true, "{\"k\":1}");
+        assert_eq!(text(recv(&mut b, &a, &m1)), "1");
+        assert!(b.engine.pq_with(&a.id.code));
     }
 
     #[test]
