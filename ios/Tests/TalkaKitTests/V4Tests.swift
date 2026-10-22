@@ -40,6 +40,24 @@ final class V4Tests: XCTestCase {
         XCTAssertNil(obj?["gone"], "sans appareil retiré, le JSON est celui d'avant")
     }
 
+    /// Un contact revient en ligne : ses absences de paquet retenues sont
+    /// oubliées, à son code comme à chacun de ses appareils (un appareil
+    /// tout juste lié n'attend pas dix minutes).
+    @MainActor
+    func testAContactBackOnlineIsAskedAgainForItsBundles() async {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("presence-\(randomId(4))")
+        let e = Engine(store: Store(directory: dir), server: URL(string: "http://127.0.0.1:9")!)
+        let known = deviceBundle(Side(), "00000000000000a2")
+        e.bundleCache["CODE"] = (nil, 1)
+        e.bundleCache["CODE/00000000000000a1"] = (nil, 1)
+        e.bundleCache["CODE/00000000000000a2"] = (known, 1)
+        e.bundleCache["CODEX/00000000000000a1"] = (nil, 1)
+        e.bundleCache["AUTRE"] = (nil, 1)
+        e.relay.onPresence?("CODE", true, nil)
+        XCTAssertEqual(Set(e.bundleCache.keys), ["AUTRE", "CODE/00000000000000a2", "CODEX/00000000000000a1"])
+        XCTAssertFalse(e.forgetMissingBundles("CODE"))
+    }
+
     /// Les appareils retirés sont retenus (seize au plus), comme dans le
     /// navigateur : chaque appareil les redit au relais à chaque connexion.
     func testRemovedDevicesAreRemembered() {
