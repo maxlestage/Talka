@@ -288,6 +288,8 @@ pub async fn start() {
     let chats: Vec<Chat> = store::all("chats").await;
     let brocolis = load_brocolis().await;
     let nk: String = store::read("kv", "nk").await.unwrap_or_default();
+    let relay_key: String = store::read("kv", "relais_cle").await.unwrap_or_default();
+    RELAY_KEY.with(|k| *k.borrow_mut() = relay_key);
     let hidden = settings.hide_online;
     with(|s| {
         s.brocolis = brocolis;
@@ -1156,6 +1158,69 @@ async fn import_link(bytes: &[u8]) -> Result<(), String> {
     store::restore(&data).await;
     let _ = identity;
     Ok(())
+}
+
+// ----- La clé du relais (v6, §7.16) --------------------------------------------
+
+/// La clé publique du relais officiel, quand elle est connue d'avance (vide :
+/// retenue à la première connexion qui la présente).
+pub const OFFICIAL_RELAY_KEY: &str = "";
+
+thread_local! {
+    /// La clé du relais retenue (`kv/relais_cle`).
+    static RELAY_KEY: RefCell<String> = const { RefCell::new(String::new()) };
+    /// L'avertissement n'est montré qu'une fois par ouverture.
+    static RELAY_WARNED: Cell<bool> = const { Cell::new(false) };
+}
+
+const UNPROVEN_RELAY: &str =
+    "Le serveur ne prouve pas son identité habituelle : Talka ignore ses ordres d'effacement.";
+
+/// La clé que l'on attend du relais : celle des sources, ou celle retenue.
+fn pinned_relay_key() -> String {
+    if OFFICIAL_RELAY_KEY.is_empty() {
+        RELAY_KEY.with(|k| k.borrow().clone())
+    } else {
+        OFFICIAL_RELAY_KEY.to_owned()
+    }
+}
+
+/// Le relais vient d'accepter la connexion ; `key` et `sig` : sa clé et sa
+/// signature du défi (vides s'il n'en a pas). Une clé prouvée est retenue la
+/// première fois ; une autre ensuite, ou plus de preuve du tout, et Talka
+/// le dit et n'obéit plus à ses ordres d'effacement.
+pub fn on_relay_key(key: &str, sig: &str, nonce: &str) {
+    let msg = format!("talka-relais-v6:pret:{nonce}:{}/{}", my_code(), my_dev());
+    let proven = !key.is_empty() && crypto::verify(key, msg.as_bytes(), sig);
+    let pinned = pinned_relay_key();
+    if proven && pinned.is_empty() {
+        RELAY_KEY.with(|k| *k.borrow_mut() = key.to_owned());
+        let key = key.to_owned();
+        spawn(async move { store::write("kv", "relais_cle", &key).await });
+    } else if !pinned.is_empty() && !(proven && pinned == key) {
+        dom::warn("v6 : le relais ne prouve pas sa clé habituelle");
+        if !RELAY_WARNED.with(|w| w.replace(true)) {
+            dom::toast(UNPROVEN_RELAY);
+        }
+    }
+}
+
+/// Le relais dit que cet appareil est retiré : à croire seulement s'il l'a
+/// signé de la clé retenue (sans clé retenue, comme avant).
+pub fn relay_says_unlinked(sig: &str) -> bool {
+    let pinned = pinned_relay_key();
+    if pinned.is_empty() {
+        return true;
+    }
+    let msg = format!("talka-relais-v6:retire:{}/{}", my_code(), my_dev());
+    let ok = crypto::verify(&pinned, msg.as_bytes(), sig);
+    if !ok {
+        dom::warn("v6 : ordre d'effacement non signé par le relais, ignoré");
+        if !RELAY_WARNED.with(|w| w.replace(true)) {
+            dom::toast(UNPROVEN_RELAY);
+        }
+    }
+    ok
 }
 
 /// Le relais dit que cet appareil a été retiré du compte : tout est effacé.

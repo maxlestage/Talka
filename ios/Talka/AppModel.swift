@@ -119,6 +119,9 @@ final class AppModel {
             self?.wipe()
             self?.show("Cet appareil a été retiré de votre compte Talka.")
         }
+        e.onUnprovenRelay = { [weak self] in
+            self?.show("Le serveur ne prouve pas son identité habituelle : Talka ignore ses ordres d'effacement.")
+        }
         e.onKeysMismatch = { [weak self] code in
             self?.show("Attention : les clés de \(TalkaCode.pretty(code)) ne correspondent pas à son lien d'invitation. Quelqu'un se fait peut-être passer pour lui.")
         }
