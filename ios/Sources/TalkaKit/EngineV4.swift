@@ -351,6 +351,7 @@ extension Engine {
         c.members = grp.members
         c.admins = grp.admins
         if let d = grp.desc { c.desc = groupDesc(d) }
+        if let a = grp.adminsOnly { c.adminsOnly = a }
         c.v = grp.v
         c.left = left
         saveChat(c)
