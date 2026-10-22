@@ -938,7 +938,7 @@ impl Relay {
         st.push.remove(&key);
         if let Some(conns) = st.online.get(code) {
             for c in conns.iter().filter(|c| c.dev == dev) {
-                c.send(json!({ "t": "unlinked" }).to_string());
+                c.send(crate::serverkey::unlinked(code, dev).to_string());
                 c.overflow.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
@@ -1361,13 +1361,22 @@ impl Relay {
         // message (les clients ne lisent pas les codes de fermeture), puis il
         // est coupé ; il efface alors tout.
         if self.is_banned(&me, &dev) {
-            let _ = tx.send(json!({ "t": "unlinked" }).to_string()).await;
+            let _ = tx
+                .send(crate::serverkey::unlinked(&me, &dev).to_string())
+                .await;
             let _ = tx.close(4006, "unlinked").await;
             return;
         }
         let mut ready = json!({ "t": "ready", "code": me, "time": now_ms(), "boot": boot_id(), "sealed": true, "v4": true });
         if let Some(vapid) = crate::push::vapid() {
             ready["push"] = json!(vapid.public);
+        }
+        // Le relais prouve qui il est (v6, §7.16) : sa clé, et sa signature
+        // du défi de cette connexion.
+        if let Some(key) = crate::serverkey::server_key() {
+            ready["relais"] = json!(key.public);
+            ready["relais_sig"] =
+                json!(key.sign(&crate::serverkey::ready_message(&nonce, &me, &dev)));
         }
         let ready = ready.to_string();
         if tx.send(ready).await.is_err() {

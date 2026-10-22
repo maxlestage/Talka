@@ -243,6 +243,15 @@ codes, et discutez.
   heroku config:set TALKA_VAPID_KEY=… -a <app>
   ```
 
+  Le relais prouve aussi qui il est (v6, `docs/SECURITE.md` §7.16) : avec
+  une clé, les appareils refusent les ordres d'effacement d'un faux serveur.
+  À tirer une fois et à ne plus changer :
+
+  ```sh
+  cargo run -- server-key   # affiche TALKA_SERVER_KEY=… et la clé publique
+  heroku config:set TALKA_SERVER_KEY=… -a <app>
+  ```
+
   ```sh
   BASE_PATH=/Talka TALKA_API_URL=https://talka.herokuapp.com cargo run -- export dist
   ```

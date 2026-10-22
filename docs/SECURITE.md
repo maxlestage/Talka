@@ -802,6 +802,33 @@ pourrait remarquer ; contre lui, la couverture sert surtout à brouiller le
 rythme et le nombre des boîtes, et contre un observateur du réseau, elle
 sert pleinement. Un VPN ou Tor cache l'adresse.
 
+### 7.16 Le relais authentifié (v6)
+
+Le relais ne lit rien, mais il peut dire à un appareil « tu es retiré du
+compte » (§7.11), et l'appareil efface tout. Un faux relais (certificat TLS
+frauduleux, réseau qui intercepte) aurait pu s'en servir. Désormais le relais
+a sa propre clé ECDSA P-256 (`TALKA_SERVER_KEY`, tirée une fois par
+`talka server-key`) :
+
+- **À chaque connexion**, `ready` porte `relais` (sa clé publique, non
+  compressée, base64) et `relais_sig`, sa signature de
+  `talka-relais-v6:pret:<défi>:<code>/<appareil>` : le défi est celui que
+  l'appareil vient de signer, la preuve ne se rejoue pas.
+- **L'ordre « retiré »** porte `sig`, la signature de
+  `talka-relais-v6:retire:<code>/<appareil>`.
+- **Côté appareil**, la première clé prouvée est retenue (`kv/relais_cle`,
+  ou une clé écrite dans les sources : `OFFICIAL_RELAY_KEY`,
+  `RelayKey.official`). Ensuite, une autre clé ou plus de preuve, et Talka
+  prévient une fois (« Le serveur ne prouve pas son identité habituelle ») ;
+  un ordre « retiré » non signé de la clé retenue est ignoré.
+
+Sans `TALKA_SERVER_KEY`, le relais ne signe rien et tout se passe comme
+avant ; un ancien client ignore ces champs. **Limites.** La première
+connexion est crue sur parole (comme SSH) ; écrire la clé publique dans les
+sources supprime ce premier pas. Changer la clé ou la retirer fait ignorer
+les retraits par les appareils qui ont retenu l'ancienne : on la tire une
+fois, et on la garde.
+
 ## 8. Revue de sécurité (octobre 2026)
 
 Une revue adversariale du relais, du navigateur et de l'iPhone a relevé
