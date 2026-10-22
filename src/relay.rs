@@ -115,6 +115,10 @@ const MAX_WATCH: usize = 2_000;
 const MAX_PUSH: usize = 4;
 /// Les appareils d'un compte (v4) : 6 au plus.
 const MAX_DEVICES: usize = 6;
+/// Appareils retirés retenus par code (les clients en redisent seize au
+/// plus à chaque connexion) : un compte ne peut pas en faire grossir la
+/// liste sans fin.
+const MAX_BANNED: usize = 64;
 /// Les boîtes tournantes suivies par une connexion anonyme, et par demande.
 const MAX_BOITES: usize = 20_000;
 const MAX_BOITES_ASKED: usize = 8_000;
@@ -917,10 +921,10 @@ impl Relay {
             return;
         }
         let mut st = self.lock();
-        st.banned
-            .entry(code.to_owned())
-            .or_default()
-            .insert(dev.to_owned());
+        let banned = st.banned.entry(code.to_owned()).or_default();
+        if banned.len() < MAX_BANNED {
+            banned.insert(dev.to_owned());
+        }
         if let Some(b) = st.bundles.get_mut(code) {
             b.remove(dev);
         }
@@ -1950,6 +1954,15 @@ mod tests {
         assert_eq!(drain(&mut rx2)[0]["t"], "unlinked");
         assert!(relay.is_banned(b, D2));
         assert!(!relay.is_banned(b, D1));
+        // Redit à chaque connexion : une seule fois retenu ; et pas plus de
+        // `MAX_BANNED` par code.
+        relay.unlink(b, D2);
+        assert_eq!(relay.lock().banned[b].len(), 1);
+        for i in 0..100 {
+            relay.unlink(b, &format!("{i:016x}"));
+        }
+        assert_eq!(relay.lock().banned[b].len(), MAX_BANNED);
+        assert!(relay.is_banned(b, D2));
         relay
             .store(None, Dest::Code(b), "m", "x", false, &Wake::No, MAILBOX_TTL)
             .unwrap();

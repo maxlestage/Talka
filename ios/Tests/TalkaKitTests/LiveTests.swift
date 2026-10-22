@@ -313,4 +313,30 @@ final class LiveTests: XCTestCase {
         a2.relay.start()
         try await wait("l'iPad retiré l'apprend à son retour", timeout: 20) { gone }
     }
+
+    /// v4 : le relais ne garde rien sur disque ; après son redémarrage,
+    /// l'iPhone lui redit l'iPad retiré, qui l'apprend à son retour.
+    func testRemovalSurvivesARelayRestart() async throws {
+        let url = try server()
+        guard let flag = ProcessInfo.processInfo.environment["TALKA_RESTART_FILE"] else {
+            throw XCTSkip("TALKA_RESTART_FILE n'est pas défini")
+        }
+        let a1 = phone("Alice", url)
+        defer { a1.stop() }
+        try await wait("connexion") { a1.netState == .online }
+        let (a2, _) = try await linkIPad(to: a1, url)
+        defer { a2.stop() }
+
+        a2.relay.stop()
+        await a1.unlinkDevice(a2.dev)
+        XCTAssertEqual(a1.devices.gone, [a2.dev])
+        let before = a1.relay.boot
+        FileManager.default.createFile(atPath: flag, contents: Data())
+        try await wait("l'iPhone reconnecté au nouveau relais", timeout: 40) { a1.netState == .online && a1.relay.boot != before }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        var gone = false
+        a2.onUnlinked = { gone = true }
+        a2.relay.start()
+        try await wait("l'iPad retiré l'apprend, même après le redémarrage", timeout: 20) { gone }
+    }
 }

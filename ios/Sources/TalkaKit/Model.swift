@@ -314,24 +314,48 @@ public struct AccountDevice: Codable, Equatable, Identifiable, Sendable {
 /// Six appareils au plus par compte.
 public let maxDevices = 6
 
+/// Les seize derniers appareils retirés sont retenus.
+public let maxGone = 16
+
 /// Les appareils de notre compte (v4) : six au plus ; `v` avance à chaque
 /// changement, la plus grande l'emporte.
 public struct Devices: Codable, Equatable, Sendable {
     public var v = 0
     public var list: [AccountDevice] = []
+    /// Les appareils retirés, les plus récents d'abord. Le relais ne garde
+    /// rien sur disque : chacun de nos appareils les lui redit à chaque
+    /// connexion, pour qu'un appareil retiré pendant qu'il était hors ligne
+    /// reste refusé (et efface tout à son retour), même après un redémarrage.
+    public var gone: [String] = []
 
-    public init(v: Int = 0, list: [AccountDevice] = []) {
-        self.v = v; self.list = list
+    public init(v: Int = 0, list: [AccountDevice] = [], gone: [String] = []) {
+        self.v = v; self.list = list; self.gone = gone
     }
 
-    enum CodingKeys: String, CodingKey { case v, list }
+    enum CodingKeys: String, CodingKey { case v, list, gone }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        v = c.v(.v, 0); list = c.v(.list, [])
+        v = c.v(.v, 0); list = c.v(.list, []); gone = c.v(.gone, [])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(v, forKey: .v); try c.encode(list, forKey: .list)
+        if !gone.isEmpty { try c.encode(gone, forKey: .gone) }
     }
 
     public func has(_ dev: String) -> Bool { list.contains { $0.dev == dev } }
+
+    /// Retire `dev` du compte : il quitte la liste et rejoint les appareils
+    /// retirés.
+    public mutating func remove(_ dev: String) {
+        list.removeAll { $0.dev == dev }
+        gone.removeAll { $0 == dev }
+        gone.insert(dev, at: 0)
+        gone = Array(gone.prefix(maxGone))
+        v += 1
+    }
 
     /// Ce que voient les contacts (dans le profil).
     public var announced: [DevInfo] { list.map { DevInfo(d: $0.dev, nk: $0.nk) } }
@@ -340,7 +364,9 @@ public struct Devices: Codable, Equatable, Sendable {
     /// récente (et bien formée).
     @discardableResult
     public mutating func merge(_ other: Devices) -> Bool {
-        guard other.v > v, other.list.count <= maxDevices, other.list.allSatisfy({ TalkaV4.isDev($0.dev) }) else { return false }
+        guard other.v > v, other.list.count <= maxDevices, other.gone.count <= maxGone,
+              other.list.allSatisfy({ TalkaV4.isDev($0.dev) }), other.gone.allSatisfy(TalkaV4.isDev)
+        else { return false }
         self = other
         return true
     }

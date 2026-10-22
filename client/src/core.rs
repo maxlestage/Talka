@@ -313,6 +313,7 @@ pub fn on_net(state: State) {
     if state == State::Online {
         watch_contacts();
         publish_v3();
+        unlink_gone();
         spawn(announce_devices());
         spawn(refresh_boxes());
         spawn(flush());
@@ -824,9 +825,17 @@ pub async fn unlink_device(dev: &str) {
     flush().await;
     net::unlink(dev);
     let mut list = devices();
-    list.list.retain(|d| d.dev != dev);
-    list.v += 1;
+    list.remove(dev);
     devices_changed(list, true).await;
+}
+
+/// Les appareils retirés, redits au relais à chaque connexion (il ne garde
+/// rien sur disque) : un appareil retiré pendant qu'il était hors ligne reste
+/// refusé, et efface tout à son retour.
+fn unlink_gone() {
+    for dev in devices().gone {
+        net::unlink(&dev);
+    }
 }
 
 // ----- Les boîtes tournantes (v4, §7.13) --------------------------------------
