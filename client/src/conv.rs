@@ -1380,7 +1380,7 @@ fn bubble(m: &Message, prev: Option<&Message>, chat: Option<&Chat>) -> Element {
         })
         .child(
             h("div.meta")
-                .child(m.starred.then(|| h("span.star").text("★")))
+                .child(m.is_starred().then(|| h("span.star").text("★")))
                 .child((m.bro && !m.deleted).then(|| {
                     h("span.bro")
                         .attr("title", "Chiffré aussi par Brocolis 🥦")
@@ -1559,7 +1559,7 @@ fn message_menu(m: &Message, at: At) {
             },
             item(
                 "star",
-                if m.starred {
+                if m.is_starred() {
                     "Retirer des favoris"
                 } else {
                     "Mettre en favori"

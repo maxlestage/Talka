@@ -403,7 +403,7 @@ extension Engine {
         case let .delete(id):
             guard var m = store.message(c.id, id), m.from == me.code else { return }
             m.deleted = true
-            m.text = ""; m.data = ""; m.reactions = [:]
+            m.text = ""; m.data = ""; m.reactions = [:]; m.starred = false
             store.writeMessage(m)
             refreshLast(c.id)
             bump(c.id)
