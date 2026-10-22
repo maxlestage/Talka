@@ -18,11 +18,14 @@ struct Avatar: View {
     var group = false
     var size: CGFloat = 48
 
+    /// Les dix couleurs du navigateur (`COLORS` dans `client/src/ui.rs`), dans
+    /// le même ordre : un contact a la même couleur partout.
     static let colors: [Color] = [
         .init(red: 0.898, green: 0.2588, blue: 0.6392), .init(red: 0.1216, green: 0.4784, blue: 0.9255),
         .init(red: 0.8275, green: 0.4196, blue: 0), .init(red: 0.0078, green: 0.651, blue: 0.5961),
         .init(red: 0.498, green: 0.4, blue: 1), .init(red: 0.7686, green: 0.3255, blue: 0.1765),
         .init(red: 0, green: 0.502, blue: 0.4118), .init(red: 0.651, green: 0.1725, blue: 0.4431),
+        .init(red: 0.3686, green: 0.2784, blue: 0.8706), .init(red: 0.7176, green: 0.5098, blue: 0.0431),
     ]
 
     static func color(_ id: String) -> Color {

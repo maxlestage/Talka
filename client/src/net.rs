@@ -48,6 +48,8 @@ thread_local! {
     static BOX_TIMER: Cell<i32> = const { Cell::new(0) };
     static HIDDEN: Cell<bool> = const { Cell::new(false) };
     static RETRY: Cell<u32> = const { Cell::new(0) };
+    /// Quand la page est passée en arrière-plan (0 : elle est visible).
+    static HIDDEN_AT: Cell<f64> = const { Cell::new(0.0) };
     static TIMER: Cell<i32> = const { Cell::new(0) };
     static SKEW: Cell<f64> = const { Cell::new(0.0) };
     /// Le défi de la connexion en cours : le relais le signe (v6).
@@ -142,11 +144,69 @@ pub fn start(identity: Identity, hidden: bool, dev: &str) {
     HIDDEN.with(|h| h.set(hidden));
     listen_forever(&window(), "online", |_| connect_soon(0));
     listen_forever(&crate::dom::document(), "visibilitychange", |_| {
-        if crate::dom::visible() && state() == State::Offline {
+        if !crate::dom::visible() {
+            HIDDEN_AT.with(|h| h.set(now()));
+            return;
+        }
+        let since = HIDDEN_AT.with(|h| h.replace(0.0));
+        if since > 0.0 && now() - since >= ASLEEP_MS {
+            reopen();
+        } else if state() == State::Offline {
             connect_soon(0);
         }
     });
     connect();
+}
+
+/// Au-delà de cette veille, les connexions sont rouvertes au retour.
+const ASLEEP_MS: f64 = 20_000.0;
+
+/// Retour au premier plan après une veille : Safari sur iPhone (l'app web
+/// installée) suspend la page, et ses connexions ont pu mourir sans le dire
+/// (elles semblent ouvertes, plus rien n'arrive). On les rouvre : ce qui
+/// attend chez le relais arrive aussitôt.
+fn reopen() {
+    if STOPPED.with(Cell::get) {
+        return;
+    }
+    if let Some(ws) = WS.with(|w| w.borrow_mut().take()) {
+        went_offline();
+        let _ = ws.close();
+    }
+    RETRY.with(|r| r.set(0));
+    connect_soon(0);
+    if let Some(ws) = ANON.with(|w| w.borrow_mut().take()) {
+        ANON_READY.with(|r| r.set(false));
+        anon_done(false);
+        for (_, s) in ANON_PENDING.with(|p| p.borrow_mut().drain().collect::<Vec<_>>()) {
+            s.send(Some(Ack::Err("offline".into())));
+        }
+        let _ = ws.close();
+    }
+    if let Some(ws) = BOX.with(|w| w.borrow_mut().take()) {
+        BOX_READY.with(|r| r.set(false));
+        let _ = ws.close();
+    }
+    if !BOX_LIST.with(|l| l.borrow().is_empty()) {
+        clear_timer(BOX_TIMER.with(Cell::get));
+        open_box();
+    }
+}
+
+/// La connexion principale est perdue : ce qui attendait une réponse
+/// échoue (et sera réessayé).
+fn went_offline() {
+    set_state(State::Offline);
+    for (_, s) in PENDING.with(|p| p.borrow_mut().drain().collect::<Vec<_>>()) {
+        s.send(Some(Ack::Err("offline".into())));
+    }
+    for waiting in [&LOOKUPS, &BUNDLES] {
+        for (_, list) in waiting.with(|l| l.borrow_mut().drain().collect::<Vec<_>>()) {
+            for s in list {
+                s.send(None);
+            }
+        }
+    }
 }
 
 pub fn stop() {
@@ -206,17 +266,7 @@ fn connect() {
             return;
         }
         WS.with(|w| *w.borrow_mut() = None);
-        set_state(State::Offline);
-        for (_, s) in PENDING.with(|p| p.borrow_mut().drain().collect::<Vec<_>>()) {
-            s.send(Some(Ack::Err("offline".into())));
-        }
-        for waiting in [&LOOKUPS, &BUNDLES] {
-            for (_, list) in waiting.with(|l| l.borrow_mut().drain().collect::<Vec<_>>()) {
-                for s in list {
-                    s.send(None);
-                }
-            }
-        }
+        went_offline();
         schedule_retry();
     });
     ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
