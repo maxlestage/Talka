@@ -178,6 +178,10 @@ en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
 - 📮 **v4 : boîtes aux lettres tournantes** : entre contacts, le relais ne
   voit ni qui écrit, ni à qui, seulement une boîte anonyme qui change chaque
   jour, liée au relais officiel (§7.13)
+- 🌫️ **v6 : contre l'analyse du trafic** : toutes les enveloppes ont la
+  taille d'un palier, du faux trafic se mêle au vrai, le nombre de boîtes
+  suivies ne trahit pas celui des contacts, l'heure d'envoi est brouillée
+  (§7.15)
 - 🌙 thème clair, sombre ou automatique, fonds d'écran, taille du texte ;
   🔔 notifications et sons (synthétisés, aucun fichier) ; badge d'application
 - 📲 PWA installable (manifeste et service worker de Paquets)

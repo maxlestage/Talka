@@ -540,6 +540,12 @@ pub async fn send_boite(
 }
 
 async fn anon_send(id: &str, mut msg: Value, wake: bool, apercu: Option<&str>) -> Ack {
+    // Un léger délai au hasard (v6, §7.15) : l'heure du dépôt ne colle plus
+    // à la frappe. Pas pour ce qui est en direct (appel, « écrit… »), ni
+    // pour la liaison d'un appareil (`ttl`).
+    if !msg["live"].as_bool().unwrap_or(false) && msg.get("ttl").is_none() {
+        crate::dom::sleep((200.0 + js_sys::Math::random() * 1_800.0) as i32).await;
+    }
     if !anon_ready().await {
         return Ack::Err("offline".into());
     }
