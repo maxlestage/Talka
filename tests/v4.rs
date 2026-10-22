@@ -209,10 +209,13 @@ async fn devices_and_rotating_boxes_end_to_end() {
     assert_eq!(next_of(&mut drop, "ack").await["online"], true);
     assert_eq!(next_of(&mut reader, "msg").await["live"], true);
 
-    // A1 retire A2 : A2 est prévenu, coupé, et ne revient plus.
+    // A1 retire A2 : A2 est prévenu, coupé, et ne revient plus. Hors ligne
+    // au moment du retrait, il l'apprend à son retour (`unlinked`, que les
+    // clients savent traiter, puis la fermeture 4006).
     send(&mut a1, json!({ "t": "unlink", "dev": A2 })).await;
     assert_eq!(next_of(&mut a2, "unlinked").await["t"], "unlinked");
     let mut again = hello(port, &alice, A2).await;
+    assert_eq!(next_json(&mut again).await["t"], "unlinked");
     match tokio::time::timeout(Duration::from_secs(5), again.next()).await {
         Ok(Some(Ok(Message::Close(Some(frame))))) => assert_eq!(u16::from(frame.code), 4006),
         other => panic!("fermeture attendue : {other:?}"),
