@@ -404,6 +404,8 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public var admins: [String] = []
     /// La description d'un groupe (ce qu'en disent ses admins).
     public var desc = ""
+    /// Dans ce groupe, seuls les admins envoient des messages.
+    public var adminsOnly = false
     public var createdBy = ""
     public var createdAt: Double = 0
     public var lastAt: Double = 0
@@ -441,6 +443,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
         case mentioned
         case hasExp = "has_exp"
         case pinMsg = "pin_msg"
+        case adminsOnly = "admins_only"
     }
 
     public init(id: String) {
@@ -452,7 +455,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.v(.id, ""); group = c.v(.group, false); name = c.v(.name, ""); avatar = c.v(.avatar, "")
-        members = c.v(.members, []); admins = c.v(.admins, []); desc = c.v(.desc, ""); createdBy = c.v(.createdBy, "")
+        members = c.v(.members, []); admins = c.v(.admins, []); desc = c.v(.desc, ""); adminsOnly = c.v(.adminsOnly, false); createdBy = c.v(.createdBy, "")
         createdAt = c.v(.createdAt, 0); lastAt = c.v(.lastAt, 0); unread = c.v(.unread, 0)
         markedUnread = c.v(.markedUnread, false); pinned = c.v(.pinned, false); archived = c.v(.archived, false)
         muted = c.v(.muted, false); timer = c.v(.timer, 0); draft = c.v(.draft, ""); wallpaper = c.v(.wallpaper, "")
@@ -769,16 +772,24 @@ public struct GroupInfo: Codable, Equatable, Sendable {
     public var v = 0
     /// Sa description ; absente (un client d'avant elle) : inchangée.
     public var desc: String?
+    /// Seuls les admins écrivent ; absent (un client d'avant) : inchangé.
+    public var adminsOnly: Bool?
 
-    public init(id: String, name: String, members: [String], admins: [String], avatar: String, v: Int, desc: String? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case id, name, members, admins, avatar, v, desc
+        case adminsOnly = "admins_only"
+    }
+
+    public init(id: String, name: String, members: [String], admins: [String], avatar: String, v: Int, desc: String? = nil,
+                adminsOnly: Bool? = nil) {
         self.id = id; self.name = name; self.members = members; self.admins = admins; self.avatar = avatar; self.v = v
-        self.desc = desc
+        self.desc = desc; self.adminsOnly = adminsOnly
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.v(.id, ""); name = c.v(.name, ""); members = c.v(.members, []); admins = c.v(.admins, [])
-        avatar = c.v(.avatar, ""); v = c.v(.v, 0); desc = c.v(.desc, nil)
+        avatar = c.v(.avatar, ""); v = c.v(.v, 0); desc = c.v(.desc, nil); adminsOnly = c.v(.adminsOnly, nil)
     }
 }
 
@@ -975,6 +986,13 @@ extension Chat {
         if newAdmins.isEmpty, let first = rest.first { newAdmins = [first] }
         return grp.members == rest && grp.admins == newAdmins && grp.name == name && grp.avatar == avatar
             && (grp.desc.map { groupDesc($0) == desc } ?? true)
+            && (grp.adminsOnly.map { $0 == adminsOnly } ?? true)
+    }
+
+    /// `me` peut-il écrire ici ? Pas dans un groupe quitté, ni, quand seuls
+    /// les admins écrivent, sans en être un. Comme `Chat::can_write`.
+    public func canWrite(_ me: String) -> Bool {
+        !group || (!left && (!adminsOnly || admins.contains(me)))
     }
 }
 
