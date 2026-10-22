@@ -439,9 +439,50 @@ extension Engine {
                 }
             }
         }
+        // Des boîtes de couverture (v6, §7.15) : à aujourd'hui et demain, et
+        // assez pour que le nombre de boîtes suivies ne dise pas combien nous
+        // avons de contacts (un multiple de 64).
+        let secret = coverSecret()
+        for day in [today, today + 1] {
+            for i in 0..<Self.coverMin { map[TalkaV4.coverBox(secret: secret, day: day, i: i)] = "" }
+        }
+        var i = Self.coverMin
+        while map.count % Self.coverRound != 0 {
+            map[TalkaV4.coverBox(secret: secret, day: today, i: i)] = ""
+            i += 1
+        }
         boxMap = map
         relay.boxes.listen(map.keys.sorted())
         if relay.state == .online { store.write("kv", "boites_jour", today) }
+    }
+
+    /// Boîtes de couverture par jour, au moins ; le nombre de boîtes suivies
+    /// est arrondi au multiple de `coverRound` supérieur.
+    static let coverMin = 4
+    static let coverRound = 64
+
+    /// Le secret des boîtes de couverture : tiré une fois, propre à
+    /// l'appareil (la même clé que le navigateur, `kv/couverture`).
+    func coverSecret() -> Data {
+        if let saved = store.read("kv", "couverture", as: String.self), let s = unb64(saved), s.count == 32 { return s }
+        let s = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+        store.write("kv", "couverture", b64(s))
+        return s
+    }
+
+    /// Le trafic de couverture (v6, §7.15) : de temps en temps (une fois
+    /// toutes les trois minutes en moyenne, en ligne), une enveloppe scellée
+    /// vide, au même palier qu'un court message, part dans une de nos boîtes
+    /// de couverture ; elle nous revient, et on l'oublie.
+    func sendCover() async {
+        guard relay.state == .online, relay.sealed, Double.random(in: 0..<1) < 0.35 else { return }
+        let day = TalkaV4.day(relay.now())
+        let boite = TalkaV4.coverBox(secret: coverSecret(), day: day, i: Int.random(in: 0..<Self.coverMin))
+        guard let sealed = TalkaCrypto.sealSender(from: me.code, fd: dev, to: me.code, toDh: me.dh, body: "") else { return }
+        // Pas `sendBoite` : la couverture ne compte pas parmi les envois.
+        let id = randomId(9)
+        _ = await relay.anonSend(id: id, ["t": "send", "id": id, "boite": boite, "body": sealed, "live": false],
+                                 wake: false, apercu: nil)
     }
 
     /// Les boîtes à recalculer bientôt (une fois, après une rafale de
@@ -461,7 +502,7 @@ extension Engine {
     /// Ce qu'un nouvel appareil ne doit pas recevoir : ce qui est propre à
     /// cet appareil-ci.
     nonisolated static func deviceOnly(_ key: String) -> Bool {
-        ["dev", "nk", "pin", "appareils", "boites_jour", "brocolis_sealed"].contains(key)
+        ["dev", "nk", "pin", "appareils", "boites_jour", "brocolis_sealed", "couverture"].contains(key)
             || key == V3.deviceKey || key.hasPrefix(V3.sessionPrefix)
     }
 
