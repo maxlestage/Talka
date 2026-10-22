@@ -134,12 +134,15 @@ public enum V3 {
     public enum Protection: Equatable, Sendable {
         /// Une session à double cliquet ; `pq` : établie avec ML-KEM.
         case ratchet(pq: Bool)
+        /// Et le cliquet post-quantique (v6) avec au moins un de ses appareils.
+        case ratchetPq6
         /// L'ancien chiffrement (le contact n'a pas la mise à jour).
         case legacy
 
         /// Ce que montre la fiche du contact (les mots du navigateur).
         public var label: String {
             switch self {
+            case .ratchetPq6: "🔐 Double cliquet, et cliquet post-quantique (v6)"
             case .ratchet(pq: true): "🔐 Session à double cliquet (post-quantique)"
             case .ratchet(pq: false): "🔐 Session à double cliquet (classique)"
             case .legacy: "Ancien chiffrement (le contact n'a pas encore la mise à jour)"
@@ -154,6 +157,8 @@ public enum V3 {
         /// Les sessions des contacts qui ont changé (`kv/v3:<code>`) ; vide :
         /// plus de session.
         public var peers: [(code: String, json: String)] = []
+        /// Les clés du cliquet post-quantique (`kv/pq6`), si elles ont changé.
+        public var pq: String?
     }
 }
 
@@ -164,6 +169,8 @@ final class V3Peer {
     var sessions: [Session] = []
     /// La session qui sert à l'envoi (la dernière qui a servi).
     var current: [UInt8]?
+    /// Le cliquet post-quantique avec cet appareil (v6).
+    var pq = PqPeer()
 
     /// Relit `{"current": "<hex>", "sessions": [<session>, …]}` : la forme du
     /// navigateur.
@@ -182,12 +189,21 @@ final class V3Peer {
         }
         let current = obj["current"] as? String ?? ""
         peer.current = peer.sessions.map(\.sessionId).first { hex($0) == current }
+        if let pq = obj["pq"], JSONSerialization.isValidJSONObject(pq),
+           let data = try? JSONSerialization.data(withJSONObject: pq),
+           let decoded = try? JSONDecoder().decode(PqPeer.self, from: data) {
+            peer.pq = decoded
+        }
         return peer
     }
 
     func toJson() -> String {
         let list = sessions.map { $0.toJson() }.joined(separator: ",")
-        return "{\"current\":\"\(current.map(hex) ?? "")\",\"sessions\":[\(list)]}"
+        var pqJson = ""
+        if !pq.isEmpty, let data = try? JSONEncoder().encode(pq), let text = String(data: data, encoding: .utf8) {
+            pqJson = ",\"pq\":\(text)"
+        }
+        return "{\"current\":\"\(current.map(hex) ?? "")\",\"sessions\":[\(list)]\(pqJson)}"
     }
 
     func get(_ id: [UInt8]) -> Session? { sessions.first { $0.sessionId == id } }
@@ -218,6 +234,12 @@ public final class V3Engine {
     var loaded = Set<String>()
     var deviceDirty: Bool
     var dirty = Set<String>()
+    /// Les clés ML-KEM du cliquet post-quantique (v6) ; `nil` : pas de
+    /// cliquet post-quantique (il s'active avec `startPq`).
+    var pq: Pq6.Keys?
+    var pqDirty = false
+    /// L'heure (secondes) de la dernière opération.
+    var clock: UInt64 = 0
 
     /// L'appareil gardé, ou un neuf (avec ML-KEM si cet appareil le sait)
     /// s'il n'y en a pas encore (ou s'il est illisible). Un appareil neuf est
@@ -247,6 +269,61 @@ public final class V3Engine {
             return true
         }
         return false
+    }
+
+    /// Active le cliquet post-quantique (v6, §7.17) avec les clés gardées
+    /// (`kv/pq6`), ou de nouvelles.
+    public func startPq(json: String?, now: UInt64) {
+        pq = json.flatMap { try? JSONDecoder().decode(Pq6.Keys.self, from: Data($0.utf8)) } ?? Pq6.Keys()
+        maintainPq(now: now)
+    }
+
+    /// Fait tourner la clé ML-KEM qui a servi (une fois par heure au plus),
+    /// et efface celles qui ont fait leur temps.
+    public func maintainPq(now: UInt64) {
+        clock = max(clock, now)
+        if pq?.maintain(now: now) == true { pqDirty = true }
+    }
+
+    /// L'annonce de notre clé, à joindre au message pour `addr` s'il ne s'en
+    /// est pas encore servi (au plus une fois par heure tant qu'il ne s'en
+    /// sert pas).
+    func pqAdvert(for addr: String) -> [String: Any]? {
+        guard let keys = pq, let current = keys.current?.id, let advert = keys.advert else { return nil }
+        let peer = peers[addr] ?? V3Peer()
+        peers[addr] = peer
+        let due = peer.pq.sent != current || clock >= peer.pq.sentAt + Pq6.rotateSecs
+        guard peer.pq.told != current, due else { return nil }
+        peer.pq.sent = current
+        peer.pq.sentAt = clock
+        dirty.insert(addr)
+        return advert
+    }
+
+    /// Retient la clé ML-KEM annoncée dans un `Wire` reçu de `addr`.
+    func pqLearn(_ addr: String, _ wire: String) {
+        guard pq != nil, wire.contains("\"pq6\""),
+              let o = (try? JSONSerialization.jsonObject(with: Data(wire.utf8))) as? [String: Any],
+              let (id, ek, at) = Pq6.parseAdvert(o["pq6"])
+        else { return }
+        let peer = peers[addr] ?? V3Peer()
+        peers[addr] = peer
+        if peer.pq.id != id, at >= peer.pq.at {
+            peer.pq.id = id
+            peer.pq.ek = ek
+            peer.pq.at = at
+            dirty.insert(addr)
+        }
+    }
+
+    /// Le cliquet post-quantique est-il en place avec `addr` ?
+    public func pqWith(_ addr: String) -> Bool {
+        pq != nil && !(peers[addr]?.pq.ek.isEmpty ?? true)
+    }
+
+    /// Avec un compte : avec l'un de ses appareils (en mémoire).
+    public func pqWithAny(_ code: String) -> Bool {
+        peers.keys.contains { ($0 == code || $0.hasPrefix(code + "/")) && pqWith($0) }
     }
 
     /// Le paquet à publier sur le relais, et sa signature par l'identité
@@ -286,9 +363,13 @@ public final class V3Engine {
             out.device = device.toJson()
             deviceDirty = false
         }
+        if pqDirty, let keys = pq, let data = try? JSONEncoder().encode(keys) {
+            out.pq = String(data: data, encoding: .utf8)
+            pqDirty = false
+        }
         for code in dirty.sorted() {
             let peer = peers[code]
-            out.peers.append((code, peer.map { $0.sessions.isEmpty ? "" : $0.toJson() } ?? ""))
+            out.peers.append((code, peer.map { $0.sessions.isEmpty && $0.pq.isEmpty ? "" : $0.toJson() } ?? ""))
         }
         dirty.removeAll()
         return out
@@ -328,7 +409,17 @@ public final class V3Engine {
             TalkaCrypto.seal(me, peerCode: peerCode, peerDh: peerDh, plain: plain).map { V3.Sealed(body: $0, v3: false) }
         }
         if plain.utf8.count > Session.maxPlaintext { return legacy() }
-        guard let token = encrypt(addr, bundle: bundle, plain: plain) else { return legacy() }
+        // v6 : notre clé ML-KEM, s'il ne la connaît pas encore.
+        var inner = plain
+        if let advert = pqAdvert(for: addr), let with = Pq6.withAdvert(plain, advert),
+           with.utf8.count <= Session.maxPlaintext {
+            inner = with
+        }
+        guard var token = encrypt(addr, bundle: bundle, plain: inner) else { return legacy() }
+        // Enveloppé pour sa clé ML-KEM, si nous l'avons.
+        if pq != nil, let ek = peers[addr]?.pq.ek, !ek.isEmpty, let wrapped = Pq6.wrap(ek: ek, token: token) {
+            token = wrapped
+        }
         return TalkaCrypto.seal(me, peerCode: peerCode, peerDh: peerDh, plain: token).map { V3.Sealed(body: $0, v3: true) }
     }
 
@@ -365,13 +456,35 @@ public final class V3Engine {
     /// son adresse (`addr`, `<code>/<dev>`).
     public func openFrom(_ me: Identity, addr: String, peerCode: String, peerDh: String, body: String,
                          now: UInt64) -> V3.Opened {
-        guard let plain = TalkaCrypto.open(me, peerCode: peerCode, peerDh: peerDh, body: body) else {
+        guard var plain = TalkaCrypto.open(me, peerCode: peerCode, peerDh: peerDh, body: body) else {
             return .failed(.envelope)
+        }
+        maintainPq(now: now)
+        // v6 : enveloppé par notre clé ML-KEM.
+        var used: String?
+        if Pq6.isWrapped(plain) {
+            guard pq != nil else { return .failed(.v3(.cleInconnue)) }
+            switch pq!.open(plain) {
+            case .success(let r):
+                plain = r.token
+                used = r.id
+                if r.first { pqDirty = true }
+            // Une clé effacée (ou d'avant une restauration) : comme une
+            // session perdue, il faut réparer (lui renvoyer notre clé).
+            case .failure(.unknownKey): return .failed(.v3(.cleInconnue))
+            case .failure(.damaged): return .failed(.v3(.format))
+            }
         }
         guard V3.isToken(plain) else { return .legacy(plain) }
         do {
             switch try decrypt(addr, plain, now: now) {
-            case .text(let wire): return .v3(wire)
+            case .text(let wire):
+                if let used, let peer = peers[addr], peer.pq.told != used {
+                    peer.pq.told = used
+                    dirty.insert(addr)
+                }
+                pqLearn(addr, wire)
+                return .v3(wire)
             // Talka ne se sert pas (encore) des chaînes de groupe.
             case .distribution: return .failed(.v3(.format))
             }

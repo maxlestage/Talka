@@ -829,6 +829,47 @@ sources supprime ce premier pas. Changer la clé ou la retirer fait ignorer
 les retraits par les appareils qui ont retenu l'ancienne : on la tire une
 fois, et on la garde.
 
+### 7.17 Le cliquet post-quantique (v6)
+
+La session v3 est établie en hybride X25519 + ML-KEM-768 (§7.5), mais son
+cliquet ne renouvelle ensuite ses secrets que par X25519. Quelqu'un qui
+volerait l'état d'une session, puis enregistrerait la suite pour la casser
+un jour avec un ordinateur quantique, la lirait. Talka ajoute un second
+cliquet, post-quantique, autour du jeton v3 (`client/src/pq6.rs`,
+`ios/Sources/TalkaKit/Pq6.swift`) :
+
+- **Une clé ML-KEM-768 par appareil, qui tourne** (`kv/pq6`, propre à
+  l'appareil : ni dans la sauvegarde ni dans une liaison). Une neuve dès que
+  la courante a servi et a plus d'une heure ; les remplacées restent 30
+  jours (des messages en retard), puis sont effacées. Son identifiant :
+  `SHA-256("talka-pq6-id:" ‖ ek)[0..8]`.
+- **L'annonce** : le champ `pq6` du `Wire` (`{"id","ek","at"}`, la clé en
+  base64), dans un message v3, donc authentifié par la session. Elle part
+  vers chaque appareil qui ne s'en est pas encore servi, au plus une fois
+  par heure tant qu'il ne s'en sert pas. Une annonce plus ancienne que celle
+  retenue est ignorée. Un ancien client ignore ce champ.
+- **L'enveloppe** : chaque jeton v3 vers un appareil dont on connaît la clé
+  devient `[[TALKA:PQ6:<base64>]]`, avec `1 ‖ id (8) ‖ CT (1 088) ‖ nonce
+  (12) ‖ AES-256-GCM(K, jeton)`, `(CT, SS) = ML-KEM-768.Encaps(ek)`,
+  `K = HKDF-SHA256(SS, sel vide, info = "talka-pq6-cle:" ‖ id ‖ CT)`, et
+  `"talka-pq6:" ‖ id` en données associées. Le tout part dans l'enveloppe
+  Talka habituelle (§7.9) : le relais ne voit pas la différence, sinon par
+  la taille (les paliers de §7.15 la lissent).
+- **Une clé inconnue** (effacée, ou d'avant une restauration) se traite comme
+  une session perdue : le destinataire renvoie son profil, qui porte sa clé
+  du moment.
+
+**Ce que cela apporte.** Pour lire un message enveloppé, il faut casser à la
+fois la session v3 et ML-KEM pour la clé du moment. Une fois la clé
+tournée, voler l'appareil (ou l'état de la session) ne suffit plus pour
+lire la suite, même avec un ordinateur quantique : la guérison après
+compromission vaut aussi contre lui, et une clé effacée rend les anciens
+messages illisibles. **Limites.** La guérison suit la rotation (une heure
+d'activité au plus) ; il faut ML-KEM des deux côtés (navigateur, iPhone
+sous iOS 26) ; un appareil sans ML-KEM ne reçoit rien d'enveloppé. La
+fiche du contact montre « cliquet post-quantique (v6) » seulement quand il
+est en place.
+
 ## 8. Revue de sécurité (octobre 2026)
 
 Une revue adversariale du relais, du navigateur et de l'iPhone a relevé

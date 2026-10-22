@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::crypto::{self, Identity, b64, unb64};
+use crate::pq6;
 
 /// Ce que signe l'identité Talka : ce contexte, puis les octets du paquet.
 pub const BUNDLE_CONTEXT: &[u8] = b"talka-v3-paquet:";
@@ -176,6 +177,28 @@ struct Peer {
     sessions: Vec<Session>,
     /// La session qui sert à l'envoi (la dernière qui a servi).
     current: Option<[u8; 8]>,
+    pq: PqPeer,
+}
+
+/// Le cliquet post-quantique avec un appareil (v6, [`pq6`]).
+#[derive(Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+struct PqPeer {
+    /// Sa clé ML-KEM annoncée : identifiant, clé (base64), création.
+    id: String,
+    ek: String,
+    at: u64,
+    /// La dernière des nôtres dont il s'est servi.
+    told: String,
+    /// La dernière des nôtres que nous lui avons annoncée, et quand.
+    sent: String,
+    sent_at: u64,
+}
+
+impl PqPeer {
+    fn is_empty(&self) -> bool {
+        *self == PqPeer::default()
+    }
 }
 
 /// Les sessions d'un contact, telles qu'elles sont gardées (`kv/v3:<code>`).
@@ -186,6 +209,8 @@ struct StoredPeer {
     current: String,
     /// Chaque session, dans le JSON de `brocolis_proto`.
     sessions: Vec<Value>,
+    #[serde(skip_serializing_if = "PqPeer::is_empty")]
+    pq: PqPeer,
 }
 
 fn hex(id: &[u8; 8]) -> String {
@@ -207,7 +232,11 @@ impl Peer {
             .iter()
             .map(Session::session_id)
             .find(|id| hex(id) == stored.current);
-        Peer { sessions, current }
+        Peer {
+            sessions,
+            current,
+            pq: stored.pq,
+        }
     }
 
     fn to_json(&self) -> String {
@@ -218,6 +247,7 @@ impl Peer {
                 .iter()
                 .filter_map(|s| serde_json::from_str(&s.to_json()).ok())
                 .collect(),
+            pq: self.pq.clone(),
         };
         serde_json::to_string(&stored).unwrap_or_default()
     }
@@ -260,6 +290,12 @@ pub struct Engine {
     loaded: HashSet<String>,
     device_dirty: bool,
     dirty: HashSet<String>,
+    /// Les clés ML-KEM du cliquet post-quantique (v6) ; `None` : pas de
+    /// cliquet post-quantique (il s'active avec [`Engine::start_pq`]).
+    pq: Option<pq6::Keys>,
+    pq_dirty: bool,
+    /// L'heure (secondes) de la dernière opération.
+    clock: u64,
 }
 
 /// Ce qu'il faut garder après une opération.
@@ -267,6 +303,8 @@ pub struct Engine {
 pub struct Dirty {
     /// L'appareil (`kv/v3_device`), s'il a changé.
     pub device: Option<String>,
+    /// Les clés du cliquet post-quantique (`kv/pq6`), si elles ont changé.
+    pub pq: Option<String>,
     /// Les sessions des contacts qui ont changé (`kv/v3:<code>`).
     pub peers: Vec<(String, String)>,
 }
@@ -284,7 +322,83 @@ impl Engine {
             loaded: HashSet::new(),
             device_dirty: created,
             dirty: HashSet::new(),
+            pq: None,
+            pq_dirty: false,
+            clock: now,
         }
+    }
+
+    /// Active le cliquet post-quantique (v6, §7.17) avec les clés gardées
+    /// (`kv/pq6`), ou de nouvelles.
+    pub fn start_pq(&mut self, json: Option<&str>, now: u64) {
+        self.pq = Some(pq6::Keys::from_json(json));
+        self.maintain_pq(now);
+    }
+
+    /// Fait tourner la clé ML-KEM qui a servi (une fois par heure au plus),
+    /// et efface celles qui ont fait leur temps.
+    pub fn maintain_pq(&mut self, now: u64) {
+        self.clock = self.clock.max(now);
+        if let Some(keys) = &mut self.pq
+            && keys.maintain(now, pq6::random_seed)
+        {
+            self.pq_dirty = true;
+        }
+    }
+
+    /// L'annonce de notre clé ML-KEM, à joindre au message pour `addr` s'il
+    /// ne s'en est pas encore servi (au plus une fois par heure, tant qu'il
+    /// ne s'en sert pas : une version qui ne sait pas la lire).
+    fn pq_advert_for(&mut self, addr: &str) -> Option<Value> {
+        let keys = self.pq.as_ref()?;
+        let current = keys.current()?.id.clone();
+        let advert = keys.advert()?;
+        let now = self.clock;
+        let peer = self.peers.entry(addr.to_owned()).or_default();
+        let due =
+            peer.pq.sent != current || now.saturating_sub(peer.pq.sent_at) >= pq6::ROTATE_SECS;
+        if peer.pq.told == current || !due {
+            return None;
+        }
+        peer.pq.sent = current;
+        peer.pq.sent_at = now;
+        self.dirty.insert(addr.to_owned());
+        Some(advert)
+    }
+
+    /// Retient la clé ML-KEM annoncée dans un `Wire` reçu de `addr` (la
+    /// plus récente).
+    fn pq_learn(&mut self, addr: &str, wire: &str) {
+        if self.pq.is_none() || !wire.contains("\"pq6\"") {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(wire) else {
+            return;
+        };
+        let Some((id, ek, at)) = pq6::parse_advert(&v["pq6"]) else {
+            return;
+        };
+        let peer = self.peers.entry(addr.to_owned()).or_default();
+        if peer.pq.id != id && at >= peer.pq.at {
+            peer.pq.id = id;
+            peer.pq.ek = ek;
+            peer.pq.at = at;
+            self.dirty.insert(addr.to_owned());
+        }
+    }
+
+    /// Le cliquet post-quantique est-il en place avec `addr` (nous
+    /// enveloppons pour lui) ?
+    pub fn pq_with(&self, addr: &str) -> bool {
+        self.pq.is_some() && self.peers.get(addr).is_some_and(|p| !p.pq.ek.is_empty())
+    }
+
+    /// Avec un compte : avec l'un de ses appareils (en mémoire).
+    pub fn pq_with_any(&self, code: &str) -> bool {
+        self.peers.keys().any(|addr| {
+            (addr == code || addr.split_once('/').is_some_and(|(c, _)| c == code))
+                && self.pq_with(addr)
+        })
     }
 
     /// Les clés pré-signées : renouvelées chaque semaine, les anciennes
@@ -332,6 +446,11 @@ impl Engine {
     pub fn take_dirty(&mut self) -> Dirty {
         let device =
             std::mem::take(&mut self.device_dirty).then(|| self.device.to_json().to_string());
+        let pq = if std::mem::take(&mut self.pq_dirty) {
+            self.pq.as_ref().map(pq6::Keys::to_json)
+        } else {
+            None
+        };
         let peers = std::mem::take(&mut self.dirty)
             .into_iter()
             .map(|code| {
@@ -339,7 +458,7 @@ impl Engine {
                 (code, json)
             })
             .collect();
-        Dirty { device, peers }
+        Dirty { device, pq, peers }
     }
 
     /// La protection actuelle avec un contact : sa session d'envoi, sinon
@@ -399,13 +518,36 @@ impl Engine {
         if plain.len() > MAX_PLAINTEXT {
             return legacy();
         }
+        // v6 : notre clé ML-KEM, s'il ne la connaît pas encore.
+        let advert = self.pq_advert_for(addr);
+        let with_advert = advert.and_then(|a| pq6::with_advert(plain, &a));
+        let plain = match &with_advert {
+            Some(p) if p.len() <= MAX_PLAINTEXT => p.as_str(),
+            _ => plain,
+        };
         let token = self.encrypt(addr, bundle, plain);
         match token {
             Some(token) => {
+                let token = self.pq_wrap(addr, token);
                 crypto::seal(me, peer_code, peer_dh, &token).map(|body| Sealed { body, v3: true })
             }
             None => legacy(),
         }
+    }
+
+    /// Enveloppe le jeton pour la clé ML-KEM de `addr`, si nous l'avons.
+    fn pq_wrap(&self, addr: &str, token: String) -> String {
+        let Some(peer) = self.peers.get(addr).filter(|_| self.pq.is_some()) else {
+            return token;
+        };
+        if peer.pq.ek.is_empty() {
+            return token;
+        }
+        let mut m = [0u8; 32];
+        let mut nonce = [0u8; 12];
+        m.copy_from_slice(&crypto::random_bytes(32));
+        nonce.copy_from_slice(&crypto::random_bytes(12));
+        pq6::wrap(&peer.pq.ek, &token, &m, &nonce).unwrap_or(token)
     }
 
     fn encrypt(&mut self, code: &str, bundle: Option<&KeyBundle>, plain: &str) -> Option<String> {
@@ -456,14 +598,44 @@ impl Engine {
         body: &str,
         now: u64,
     ) -> Opened {
-        let Some(plain) = crypto::open(me, peer_code, peer_dh, body) else {
+        let Some(mut plain) = crypto::open(me, peer_code, peer_dh, body) else {
             return Opened::Failed(Failure::Envelope);
         };
+        self.maintain_pq(now);
+        // v6 : enveloppé par notre clé ML-KEM.
+        let mut used = None;
+        if pq6::is_wrapped(&plain) {
+            let Some(keys) = &mut self.pq else {
+                return Opened::Failed(Failure::V3(Erreur::CleInconnue));
+            };
+            match keys.open(&plain) {
+                Ok((token, id, first)) => {
+                    plain = token;
+                    used = Some(id);
+                    // Une clé qui sert pour la première fois : à garder.
+                    self.pq_dirty |= first;
+                }
+                // Une clé effacée (ou d'avant une restauration) : comme une
+                // session perdue, il faut réparer (lui renvoyer notre clé).
+                Err(true) => return Opened::Failed(Failure::V3(Erreur::CleInconnue)),
+                Err(false) => return Opened::Failed(Failure::V3(Erreur::Format)),
+            }
+        }
         if !is_token(&plain) {
             return Opened::Legacy(plain);
         }
         match self.decrypt(addr, &plain, now) {
-            Ok(Content::Text(wire)) => Opened::V3(wire),
+            Ok(Content::Text(wire)) => {
+                if let Some(id) = used {
+                    let peer = self.peers.entry(addr.to_owned()).or_default();
+                    if peer.pq.told != id {
+                        peer.pq.told = id;
+                        self.dirty.insert(addr.to_owned());
+                    }
+                }
+                self.pq_learn(addr, &wire);
+                Opened::V3(wire)
+            }
             // Talka ne se sert pas (encore) des chaînes de groupe.
             Ok(Content::Distribution(_)) => Opened::Failed(Failure::V3(Erreur::Format)),
             Err(Erreur::Rejoue) => Opened::Replay,
@@ -550,6 +722,89 @@ mod tests {
     fn recv(to: &mut Side, from: &Side, s: &Sealed) -> Opened {
         to.engine
             .open(&to.id, &from.id.code, &from.id.dh, &s.body, 2_000)
+    }
+
+    /// Le corps v3 d'une enveloppe (pour voir s'il est enveloppé en v6).
+    fn inner(to: &Side, from: &Side, s: &Sealed) -> String {
+        crypto::open(&to.id, &from.id.code, &from.id.dh, &s.body).unwrap()
+    }
+
+    fn text(o: Opened) -> String {
+        let Opened::V3(wire) = o else { panic!("{o:?}") };
+        serde_json::from_str::<Value>(&wire).unwrap()["k"].to_string()
+    }
+
+    #[test]
+    fn the_post_quantum_ratchet_starts_rotates_and_heals() {
+        let (mut a, mut b) = (side(), side());
+        a.engine.start_pq(None, 1_000);
+        b.engine.start_pq(None, 1_000);
+        // A écrit le premier : son annonce part, rien n'est enveloppé.
+        let m1 = send(&mut a, &b, true, "{\"k\":1}");
+        assert!(is_token(&inner(&b, &a, &m1)));
+        assert_eq!(text(recv(&mut b, &a, &m1)), "1");
+        assert!(b.engine.pq_with(&a.id.code));
+        // B répond, enveloppé pour la clé de A, avec sa propre annonce.
+        let m2 = send(&mut b, &a, false, "{\"k\":2}");
+        assert!(pq6::is_wrapped(&inner(&a, &b, &m2)));
+        assert_eq!(text(recv(&mut a, &b, &m2)), "2");
+        // A sait que B a sa clé : plus d'annonce ; et A enveloppe aussi.
+        let m3 = send(&mut a, &b, false, "{\"k\":3}");
+        let plain3 = inner(&b, &a, &m3);
+        assert!(pq6::is_wrapped(&plain3));
+        assert!(plain3.len() < 3_000, "sans annonce : {}", plain3.len());
+        assert_eq!(text(recv(&mut b, &a, &m3)), "3");
+        // Une heure après, la clé de A tourne ; B l'apprend et s'en sert.
+        let old = a.engine.pq.as_ref().unwrap().current().unwrap().id.clone();
+        a.engine.maintain_pq(1_000 + pq6::ROTATE_SECS);
+        assert_ne!(a.engine.pq.as_ref().unwrap().current().unwrap().id, old);
+        let m4 = send(&mut a, &b, false, "{\"k\":4}");
+        assert_eq!(text(recv(&mut b, &a, &m4)), "4");
+        let m5 = send(&mut b, &a, false, "{\"k\":5}");
+        assert_eq!(text(recv(&mut a, &b, &m5)), "5");
+        let new = a.engine.pq.as_ref().unwrap().current().unwrap().id.clone();
+        assert_eq!(a.engine.peers[&b.id.code].pq.told, new);
+        // Tout se garde et se relit.
+        let dirty = a.engine.take_dirty();
+        let keys = dirty.pq.expect("clés à garder");
+        let peer = dirty
+            .peers
+            .iter()
+            .find(|(c, _)| *c == b.id.code)
+            .unwrap()
+            .1
+            .clone();
+        let device = a.engine.device.to_json().to_string();
+        let mut again = Engine::start(Some(&device), 1_000);
+        again.start_pq(Some(&keys), 1_000 + pq6::ROTATE_SECS);
+        again.load(&b.id.code, Some(&peer));
+        a.engine = again;
+        let m6 = send(&mut b, &a, false, "{\"k\":6}");
+        assert_eq!(text(recv(&mut a, &b, &m6)), "6");
+        // Ses clés perdues (une restauration) : à réparer, comme une session.
+        a.engine.pq = Some(pq6::Keys::default());
+        a.engine.maintain_pq(10_000);
+        let m7 = send(&mut b, &a, false, "{\"k\":7}");
+        assert_eq!(
+            recv(&mut a, &b, &m7),
+            Opened::Failed(Failure::V3(Erreur::CleInconnue))
+        );
+    }
+
+    #[test]
+    fn without_the_post_quantum_ratchet_nothing_changes() {
+        let (mut a, mut b) = (side(), side());
+        a.engine.start_pq(None, 1_000);
+        // B (une version d'avant, ou un iPhone sans ML-KEM) ignore l'annonce.
+        let m1 = send(&mut a, &b, true, "{\"k\":1}");
+        assert_eq!(text(recv(&mut b, &a, &m1)), "1");
+        let m2 = send(&mut b, &a, false, "{\"k\":2}");
+        assert!(is_token(&inner(&a, &b, &m2)));
+        assert_eq!(text(recv(&mut a, &b, &m2)), "2");
+        // A n'enveloppe rien pour lui.
+        let m3 = send(&mut a, &b, false, "{\"k\":3}");
+        assert!(is_token(&inner(&b, &a, &m3)));
+        assert!(!a.engine.pq_with(&b.id.code));
     }
 
     #[test]

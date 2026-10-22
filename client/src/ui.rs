@@ -2160,6 +2160,9 @@ async fn contact_info(code: &str) {
     let me = core::me();
     let safety = safety_number((&me.code, &me.sign, &me.dh), (code, &c.sign, &c.dh));
     let protection = match core::protection(code).await {
+        crate::v3::Protection::Ratchet { .. } if core::post_quantum_ratchet(code) => {
+            "🔐 Double cliquet, et cliquet post-quantique (v6)"
+        }
         crate::v3::Protection::Ratchet { pq: true } => {
             "🔐 Session à double cliquet (post-quantique)"
         }
