@@ -730,6 +730,37 @@ struct UnreadSeparator: View {
     }
 }
 
+/// Les lignes d'une bulle : sa largeur est celle de la plus large (sans
+/// dépasser la place proposée), le contenu à gauche, la dernière ligne (l'heure
+/// et les coches) à droite. Une pile ordinaire s'étirerait sur toute la place.
+struct BubbleLayout: Layout {
+    var spacing: CGFloat = 4
+
+    func widths(_ proposal: ProposedViewSize, _ subviews: Subviews) -> [CGFloat] {
+        let limit = proposal.width ?? .infinity
+        return subviews.map { min($0.sizeThatFits(.unspecified).width, limit) }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = widths(proposal, subviews).max() ?? 0
+        let heights = subviews.map { $0.sizeThatFits(ProposedViewSize(width: width, height: nil)).height }
+        return CGSize(width: width, height: heights.reduce(0, +) + spacing * CGFloat(max(subviews.count - 1, 0)))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let own = widths(ProposedViewSize(width: bounds.width, height: nil), subviews)
+        var y = bounds.minY
+        for (i, view) in subviews.enumerated() {
+            let last = i == subviews.count - 1
+            let width = last ? own[i] : bounds.width
+            let height = view.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+            view.place(at: CGPoint(x: last ? bounds.maxX - width : bounds.minX, y: y), anchor: .topLeading,
+                       proposal: ProposedViewSize(width: width, height: height))
+            y += height + spacing
+        }
+    }
+}
+
 struct MessageRow: View {
     let engine: Engine
     let chat: Chat
@@ -830,7 +861,9 @@ struct MessageRow: View {
     @ViewBuilder func bubble(_ e: Engine, _ m: Message, _ mine: Bool) -> some View {
         let size = CGFloat(e.settings.fontSize)
         let big = m.kind == "text" && !m.deleted && m.reply == nil && !m.isCapsule && onlyEmoji(m.text)
-        VStack(alignment: .leading, spacing: 4) {
+        // La bulle épouse son contenu (sans s'étirer sur toute la largeur),
+        // l'heure en bas à droite, comme dans le navigateur.
+        BubbleLayout(spacing: 4) {
             if chat.group, !mine, first {
                 Text(e.displayName(m.from)).font(.caption.bold()).foregroundStyle(Avatar.color(m.from))
             }
@@ -871,7 +904,6 @@ struct MessageRow: View {
                 content(e, m, size: size, big: big)
             }
             HStack(spacing: 3) {
-                Spacer(minLength: 0)
                 if m.isStarred { Image(systemName: "star.fill").font(.caption2) }
                 if m.bro, !m.deleted { Text("🥦").font(.caption2).accessibilityLabel("Chiffré aussi par Brocolis") }
                 if m.exp != nil { Image(systemName: "timer").font(.caption2) }
@@ -882,13 +914,16 @@ struct MessageRow: View {
             .foregroundStyle(.secondary)
         }
         // Une photo : un cadre de verre fin autour, pas un grand aplat.
-        .padding(.horizontal, big ? 4 : m.kind == "image" ? 4 : 9)
+        .padding(.horizontal, m.kind == "image" ? 4 : 9)
         .padding(.vertical, m.kind == "image" ? 4 : 6)
-        .frame(maxWidth: m.kind == "image" ? 280 : 520, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         // Du verre, teinté de la couleur de la bulle : le fond d'écran se
-        // voit à travers (comme la barre de saisie).
-        .bubbleGlass(mine ? Color.bubbleOut : Color.bubbleIn, enabled: !big, in: .rect(cornerRadius: 14))
+        // voit à travers (comme la barre de saisie et le navigateur, y
+        // compris autour d'un émoji seul).
+        .bubbleGlass(mine ? Color.bubbleOut : Color.bubbleIn, in: .rect(cornerRadius: 8))
+        // Au plus 520 points (280 pour une photo), du côté de qui l'a écrit :
+        // les vôtres à droite, les autres à gauche.
+        .frame(maxWidth: m.kind == "image" ? 280 : 520, alignment: mine ? .trailing : .leading)
     }
 
     @ViewBuilder func content(_ e: Engine, _ m: Message, size: CGFloat, big: Bool) -> some View {
