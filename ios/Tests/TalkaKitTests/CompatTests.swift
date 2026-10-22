@@ -81,7 +81,7 @@ final class CompatTests: XCTestCase {
     /// clé de notification s'ouvre ici, ce que l'iPhone chiffre aussi, et
     /// l'iPhone compose le même aperçu que le navigateur.
     @MainActor
-    func testApercuWithTheBrowser() throws {
+    func testApercuWithTheBrowser() async throws {
         let ap = try XCTUnwrap(v["apercu"] as? [String: Any])
         let nk = try XCTUnwrap(ap["nk"] as? String), plain = try XCTUnwrap(ap["plain"] as? String)
         let priv = try XCTUnwrap(unb64(try XCTUnwrap(ap["nk_priv"] as? String)))

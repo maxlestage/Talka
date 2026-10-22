@@ -164,7 +164,7 @@ final class V4Tests: XCTestCase {
     /// Cet appareil a son identifiant, gardé ; lié depuis un autre appareil,
     /// il prend son vrai nom dans la liste.
     @MainActor
-    func testEnsureDeviceAndItsName() throws {
+    func testEnsureDeviceAndItsName() async throws {
         let store = tempStore()
         Engine.createAccount(store, name: "Léa", avatar: "")
         let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
@@ -197,7 +197,7 @@ final class V4Tests: XCTestCase {
     /// Ce que la liaison emporte (et pas : ce qui est propre à l'appareil),
     /// puis ce que le nouvel appareil range.
     @MainActor
-    func testLinkDumpAndImport() throws {
+    func testLinkDumpAndImport() async throws {
         let store = tempStore()
         Engine.createAccount(store, name: "Léa", avatar: "")
         let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
