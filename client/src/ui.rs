@@ -1983,9 +1983,11 @@ async fn pick_contacts(title: &str, exclude: &[String], ok: &str) -> Option<Vec<
 
 /// Choisir des discussions (transférer) : renvoie leurs identifiants.
 pub async fn pick_chats(title: &str) -> Option<Vec<String>> {
+    // Seulement là où l'on peut écrire (pas un groupe réservé aux admins).
+    let me = core::my_code();
     let mut chats: Vec<Chat> = core::chats()
         .into_iter()
-        .filter(|c| !c.left && !core::blocked(&c.id))
+        .filter(|c| c.can_write(&me) && !core::blocked(&c.id))
         .collect();
     chats.sort_by(|a, b| b.last_at.total_cmp(&a.last_at));
     let chosen = Rc::new(RefCell::new(Vec::<String>::new()));
