@@ -933,6 +933,12 @@ fn render_chat_list() {
             let mut e = h("div.side-empty");
             if !q.is_empty() {
                 e = e.child(h("p").text("Aucun résultat."));
+            } else if !archived && filter == "unread" {
+                e = e.child(h("p").text("Aucune discussion non lue."));
+            } else if !archived && filter == "groups" {
+                e = e
+                    .child(h("p").text("Aucun groupe."))
+                    .child(h("p.muted").text("Créez-en un depuis le menu : « Nouveau groupe »."));
             } else if !archived && archived_count == 0 {
                 // (Toutes archivées : la ligne « Archivées » suffit.)
                 e = e
