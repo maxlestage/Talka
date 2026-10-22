@@ -287,17 +287,23 @@ public final class V3Engine {
 
     /// L'annonce de notre clé, à joindre au message pour `addr` s'il ne s'en
     /// est pas encore servi (au plus une fois par heure tant qu'il ne s'en
-    /// sert pas).
+    /// sert pas). Elle n'est comptée comme partie (`pqAdvertSent`) que si le
+    /// message la porte vraiment.
     func pqAdvert(for addr: String) -> [String: Any]? {
-        guard let keys = pq, let current = keys.current?.id, let advert = keys.advert else { return nil }
+        guard let keys = pq, let current = keys.current?.id else { return nil }
+        let pq = peers[addr]?.pq ?? PqPeer()
+        let due = pq.sent != current || clock >= pq.sentAt + Pq6.rotateSecs
+        guard pq.told != current, due else { return nil }
+        return keys.advert
+    }
+
+    func pqAdvertSent(_ addr: String) {
+        guard let current = pq?.current?.id else { return }
         let peer = peers[addr] ?? V3Peer()
         peers[addr] = peer
-        let due = peer.pq.sent != current || clock >= peer.pq.sentAt + Pq6.rotateSecs
-        guard peer.pq.told != current, due else { return nil }
         peer.pq.sent = current
         peer.pq.sentAt = clock
         dirty.insert(addr)
-        return advert
     }
 
     /// Retient la clé ML-KEM annoncée dans un `Wire` reçu de `addr`.
@@ -416,6 +422,7 @@ public final class V3Engine {
             inner = with
         }
         guard var token = encrypt(addr, bundle: bundle, plain: inner) else { return legacy() }
+        if inner != plain { pqAdvertSent(addr) }
         // Enveloppé pour sa clé ML-KEM, si nous l'avons.
         if pq != nil, let ek = peers[addr]?.pq.ek, !ek.isEmpty, let wrapped = Pq6.wrap(ek: ek, token: token) {
             token = wrapped
