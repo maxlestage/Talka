@@ -314,7 +314,7 @@ final class VoiceChainTests: XCTestCase {
 final class SealedSenderTests: XCTestCase {
     /// Notre jeton personnel va à un contact comme à un membre de groupe qui
     /// nous écrit (pas dans nos contacts) ; jamais à qui est bloqué.
-    func testJetonGoesToCorrespondentsButNotBlocked() {
+    func testJetonGoesToCorrespondentsButNotBlocked() async {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-jeton-\(randomId(4))")
         let store = Store(directory: dir)
         Engine.createAccount(store, name: "Léa", avatar: "")
