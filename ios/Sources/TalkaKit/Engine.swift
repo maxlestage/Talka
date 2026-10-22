@@ -1847,6 +1847,20 @@ public final class Engine {
               json["app"] as? String == "talka", let data = json["data"] as? [String: Any]
         else { throw TalkaCrypto.BackupError.notBackup }
         store.restore(data)
+        replaceBackedUpDevice(store)
+    }
+
+    /// Une sauvegarde restaurée remplace l'appareil d'où elle vient : cet
+    /// appareil prend un identifiant neuf (deux appareils ne partagent jamais
+    /// le leur), et l'ancien rejoint les appareils retirés ; s'il sert encore,
+    /// il efface tout à sa prochaine connexion. Comme le navigateur.
+    nonisolated static func replaceBackedUpDevice(_ store: Store) {
+        let old = store.read("kv", "dev", as: String.self) ?? ""
+        store.write("kv", "dev", TalkaV4.newDev())
+        if TalkaV4.isDev(old), var list = store.read("kv", "appareils", as: Devices.self), list.has(old) {
+            list.remove(old)
+            store.write("kv", "appareils", list)
+        }
     }
 
     public func wipeEverything() {

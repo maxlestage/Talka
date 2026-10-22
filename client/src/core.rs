@@ -4225,6 +4225,7 @@ pub async fn import_backup(password: &str, file: &str) -> Result<(), String> {
     // doit plus réveiller ce navigateur (la nouvelle se réabonne).
     crate::push::forget().await;
     store::restore(&data["data"]).await;
+    replace_backed_up_device().await;
     // Le code de la sauvegarde n'est peut-être pas celui de cet appareil : la
     // clé de l'appareil n'est plus protégée par l'ancien ; le code restauré
     // la protégera au prochain déverrouillage (une passkey, elle, reste).
@@ -4232,6 +4233,21 @@ pub async fn import_backup(password: &str, file: &str) -> Result<(), String> {
         store::protect(store::NewLock::None).await;
     }
     Ok(())
+}
+
+/// Une sauvegarde restaurée remplace l'appareil d'où elle vient : cet
+/// appareil prend un identifiant neuf (deux appareils ne partagent jamais le
+/// leur), et l'ancien rejoint les appareils retirés ; s'il sert encore, il
+/// efface tout à sa prochaine connexion. Pour ajouter un appareil sans en
+/// remplacer un, il y a la liaison par QR code.
+async fn replace_backed_up_device() {
+    let old: String = store::read("kv", "dev").await.unwrap_or_default();
+    store::write("kv", "dev", &crypto::new_dev()).await;
+    let mut list: Devices = store::read("kv", "appareils").await.unwrap_or_default();
+    if crypto::is_dev(&old) && list.has(&old) {
+        list.remove(&old);
+        store::write("kv", "appareils", &list).await;
+    }
 }
 
 /// Cet appareil quitte le compte (avant de tout effacer) : nos autres
