@@ -824,7 +824,13 @@ async fn render(initial: bool) {
 }
 
 fn ticks(m: &Message) -> El {
-    match m.tick() {
+    tick_el(m.tick())
+}
+
+/// La coche d'un message envoyé (`Message::tick`) : dans sa bulle, et dans
+/// la liste des discussions pour le dernier.
+pub fn tick_el(tick: &str) -> El {
+    match tick {
         "pending" => h("span.tick.pending")
             .attr("title", "En attente")
             .text("🕓"),
