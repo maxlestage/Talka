@@ -23,6 +23,8 @@ struct ConversationView: View {
     @State private var deleting: Message?
     @State private var viewing: Message?
     @State private var showInfo = false
+    /// Le jour du message tout en haut de l'écran (la date qui reste affichée).
+    @State private var topDay: String?
     @State private var recorder = VoiceRecorder()
     @State private var voiceChain = VoiceChain()
     /// La discussion exportée en texte, à partager.
@@ -78,12 +80,7 @@ struct ConversationView: View {
                                 .padding(.vertical, 8)
                             ForEach(Array(messages.enumerated()), id: \.element.id) { i, m in
                                 if i == 0 || !Dates.sameDay(messages[i - 1].at, m.at) {
-                                    Text(Dates.separator(m.at))
-                                        .font(.caption.weight(.medium))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 4)
-                                        .background(Color(.systemBackground).opacity(0.9), in: .capsule)
-                                        .padding(.vertical, 8)
+                                    DayChip(text: Dates.separator(m.at)).padding(.vertical, 8)
                                 }
                                 if let mark = unreadMark, mark.id == m.id, query.isEmpty {
                                     UnreadSeparator(count: mark.count).id("unread-separator")
@@ -92,6 +89,7 @@ struct ConversationView: View {
                                 MessageRow(engine: e, chat: chat, message: m, first: first, onReply: { reply = m; focused = true },
                                            onOpen: { viewing = m }, onScrollTo: { id in withAnimation { proxy.scrollTo(id, anchor: .center) } })
                                     .id(m.id)
+                                    .reportsRowTop(m.id)
                                     .contextMenu { menu(e, chat, m) }
                             }
                         }
@@ -100,6 +98,18 @@ struct ConversationView: View {
                     }
                     .defaultScrollAnchor(.bottom)
                     .scrollDismissesKeyboard(.interactively)
+                    .coordinateSpace(.named("fil"))
+                    // La date du message tout en haut reste affichée pendant le
+                    // défilement, comme dans le navigateur et WhatsApp.
+                    .onPreferenceChange(RowTops.self) { tops in topDay = Self.topDay(tops, messages) }
+                    .overlay(alignment: .top) {
+                        if let topDay {
+                            DayChip(text: topDay)
+                                .padding(.top, 6)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
                     .onChange(of: messages.last?.id) { _, id in
                         guard let id else { return }
                         withAnimation(loaded ? .default : nil) { proxy.scrollTo(id, anchor: .bottom) }
@@ -741,6 +751,52 @@ struct UnreadSeparator: View {
             .background(Color(.systemBackground).opacity(0.75))
             .padding(.vertical, 6)
             .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// Le jour, au-dessus de ses messages (« Aujourd'hui », « Hier »…).
+struct DayChip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Color(.systemBackground).opacity(0.9), in: .capsule)
+    }
+}
+
+/// Le bas de chaque bulle affichée, dans la discussion : la plus haute donne
+/// la date qui reste en haut de l'écran.
+struct RowTops: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+extension View {
+    /// Sa place à l'écran, dans la discussion : la date du haut suit le
+    /// défilement.
+    func reportsRowTop(_ id: String) -> some View {
+        background {
+            GeometryReader { g in
+                Color.clear.preference(key: RowTops.self, value: [id: g.frame(in: .named("fil")).maxY])
+            }
+        }
+    }
+}
+
+extension ConversationView {
+    /// Le jour du message tout en haut de l'écran (celui dont le bas est le
+    /// plus haut, encore visible).
+    static func topDay(_ tops: [String: CGFloat], _ messages: [Message]) -> String? {
+        guard let top = tops.filter({ $0.value > 0 }).min(by: { $0.value < $1.value }),
+              let m = messages.first(where: { $0.id == top.key })
+        else { return nil }
+        return Dates.separator(m.at)
     }
 }
 
