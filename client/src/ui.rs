@@ -2,7 +2,7 @@
 //! appels), les fiches de contact et de groupe, les réglages, le code Talka.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
@@ -831,7 +831,10 @@ fn render_chat_list() {
                     })
             }),
         );
-        let items: Vec<Element> = chats.iter().map(chat_item).collect();
+        // La coche du dernier message envoyé : son vrai état (envoyé,
+        // distribué, lu), comme sur l'iPhone ; relue en arrière-plan.
+        let items: Vec<Element> = chats.iter().map(|c| chat_item(c, cached_tick(c))).collect();
+        spawn(refresh_ticks(chats.iter().take(60).cloned().collect()));
         let extra: Vec<Element> = if q.is_empty() {
             Vec::new()
         } else {
@@ -978,12 +981,53 @@ fn render_chat_list() {
     });
 }
 
-fn chat_item(chat: &Chat) -> Element {
+thread_local! {
+    /// La coche du dernier message de chaque discussion (s'il est de nous) :
+    /// (son identifiant, son état), lue de la base après l'affichage.
+    static TICKS: RefCell<HashMap<String, (String, &'static str)>> = RefCell::new(HashMap::new());
+}
+
+fn cached_tick(chat: &Chat) -> Option<&'static str> {
+    let last = chat.last.as_ref()?;
+    TICKS.with(|t| {
+        t.borrow()
+            .get(&chat.id)
+            .filter(|(id, _)| *id == last.id)
+            .map(|(_, tick)| *tick)
+    })
+}
+
+/// Relit les coches ; si l'une a changé (un ✓ devenu ✓✓, un « lu »), la
+/// liste est redessinée.
+async fn refresh_ticks(chats: Vec<Chat>) {
+    let mut changed = false;
+    for c in &chats {
+        let (Some(last), Some(tick)) = (c.last.as_ref(), core::last_tick(c).await) else {
+            continue;
+        };
+        let fresh = (last.id.clone(), tick);
+        changed |=
+            TICKS.with(|t| t.borrow_mut().insert(c.id.clone(), fresh.clone())) != Some(fresh);
+    }
+    if changed {
+        render_chat_list();
+    }
+}
+
+fn chat_item(chat: &Chat, tick: Option<&str>) -> Element {
     let typing = core::typing_in(&chat.id);
     let me = core::my_code();
     let preview: El = if !typing.is_empty() {
         h("span.typing").text(if chat.group {
-            format!("{} écrit…", core::display_name(&typing[0]))
+            // Tous ceux qui écrivent, comme l'en-tête et l'iPhone.
+            format!(
+                "{} écrit…",
+                typing
+                    .iter()
+                    .map(|c| core::display_name(c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         } else {
             "écrit…".into()
         })
@@ -1006,7 +1050,7 @@ fn chat_item(chat: &Chat) -> Element {
             String::new()
         };
         h("span")
-            .child((mine && last.kind != "system").then(|| h("span.tick-mini").text("✓ ")))
+            .child(tick.map(|t| conv::tick_el(t).class("tick-mini")))
             .text(who)
             .text(&last.text)
     } else {
