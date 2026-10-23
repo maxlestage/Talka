@@ -23,6 +23,8 @@ struct ConversationView: View {
     @State private var deleting: Message?
     @State private var viewing: Message?
     @State private var showInfo = false
+    /// Le jour du message tout en haut de l'écran (la date qui reste affichée).
+    @State private var topDay: String?
     @State private var recorder = VoiceRecorder()
     @State private var voiceChain = VoiceChain()
     /// La discussion exportée en texte, à partager.
@@ -92,6 +94,12 @@ struct ConversationView: View {
                                 MessageRow(engine: e, chat: chat, message: m, first: first, onReply: { reply = m; focused = true },
                                            onOpen: { viewing = m }, onScrollTo: { id in withAnimation { proxy.scrollTo(id, anchor: .center) } })
                                     .id(m.id)
+                                    // Sa place à l'écran : la date du haut suit le défilement.
+                                    .background {
+                                        GeometryReader { g in
+                                            Color.clear.preference(key: RowTops.self, value: [m.id: g.frame(in: .named("fil")).maxY])
+                                        }
+                                    }
                                     .contextMenu { menu(e, chat, m) }
                             }
                         }
@@ -100,6 +108,26 @@ struct ConversationView: View {
                     }
                     .defaultScrollAnchor(.bottom)
                     .scrollDismissesKeyboard(.interactively)
+                    .coordinateSpace(.named("fil"))
+                    // La date du message tout en haut reste affichée pendant le
+                    // défilement, comme dans le navigateur et WhatsApp.
+                    .onPreferenceChange(RowTops.self) { tops in
+                        topDay = tops.filter { $0.value > 0 }.min { $0.value < $1.value }
+                            .flatMap { top in messages.first { $0.id == top.key } }
+                            .map { Dates.separator($0.at) }
+                    }
+                    .overlay(alignment: .top) {
+                        if let topDay {
+                            Text(topDay)
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Color(.systemBackground).opacity(0.9), in: .capsule)
+                                .padding(.top, 6)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
                     .onChange(of: messages.last?.id) { _, id in
                         guard let id else { return }
                         withAnimation(loaded ? .default : nil) { proxy.scrollTo(id, anchor: .bottom) }
@@ -741,6 +769,16 @@ struct UnreadSeparator: View {
             .background(Color(.systemBackground).opacity(0.75))
             .padding(.vertical, 6)
             .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// Le bas de chaque bulle affichée, dans la discussion : la plus haute donne
+/// la date qui reste en haut de l'écran.
+struct RowTops: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { $1 }
     }
 }
 
