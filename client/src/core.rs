@@ -2264,6 +2264,16 @@ fn last_of(m: &Message) -> Last {
     }
 }
 
+/// L'état du dernier message d'une discussion, s'il est de nous (sa coche
+/// dans la liste des discussions, comme sur l'iPhone).
+pub async fn last_tick(chat: &Chat) -> Option<&'static str> {
+    let last = chat.last.as_ref()?;
+    if last.from != my_code() || last.kind == "system" {
+        return None;
+    }
+    get_message(&chat.id, &last.id).await.map(|m| m.tick())
+}
+
 async fn refresh_last(chat_id: &str) {
     let last = store::messages_of(chat_id, 1).await.pop();
     update_chat(chat_id, |c| c.last = last.as_ref().map(last_of)).await;
