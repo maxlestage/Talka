@@ -318,13 +318,16 @@ struct ChatRow: View {
                         if last.from == e.me.code, last.kind != "system", let m = e.store.message(chat.id, last.id) {
                             TickView(tick: m.tick)
                         }
-                        Text(chat.group && last.from != e.me.code && last.from != "system" && !last.from.isEmpty
-                             ? "\(e.displayName(last.from)) : \(last.text)" : last.text)
+                        // Dans un groupe, qui l'a écrit (« Vous » compris), comme
+                        // le navigateur.
+                        Text(chat.group && last.from != "system" && !last.from.isEmpty
+                             ? "\(last.from == e.me.code ? "Vous" : e.displayName(last.from)) : \(last.text)" : last.text)
                             .lineLimit(1)
                     } else {
-                        Text(chat.group ? "Groupe créé" : "Dites bonjour 👋").lineLimit(1)
+                        Text(chat.group ? "Groupe créé" : "Nouvelle discussion").lineLimit(1)
                     }
                     Spacer()
+                    if chat.timer > 0 { Text("⏳").font(.caption).accessibilityLabel("Messages éphémères") }
                     if chat.muted { Image(systemName: "bell.slash.fill").font(.caption) }
                     if chat.pinned { Image(systemName: "pin.fill").font(.caption) }
                     if chat.mentioned {
