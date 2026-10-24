@@ -628,6 +628,38 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         reply = content.reply; fwd = content.fwd; openAt = content.openAt; mentions = content.mentions
     }
 
+    /// Le nom d'une pièce jointe enregistrée (« Enregistrer ») : le sien, ou
+    /// `photo-talka` / `vocal-talka` / `fichier-talka` avec l'extension de son
+    /// vrai type. Le même que le navigateur (`Message::save_name`).
+    public var saveName: String {
+        if !name.isEmpty { return name }
+        var type = mime
+        if type.isEmpty, data.hasPrefix("data:") {
+            type = String(data.dropFirst(5).prefix { $0 != ";" && $0 != "," })
+        }
+        type = String(type.prefix { $0 != ";" }).trimmingCharacters(in: .whitespaces).lowercased()
+        let base = kind == "image" ? "photo-talka" : kind == "voice" ? "vocal-talka" : "fichier-talka"
+        let ext: String
+        switch type {
+        case "image/jpeg", "image/jpg": ext = "jpg"
+        case "image/png": ext = "png"
+        case "image/gif": ext = "gif"
+        case "image/webp": ext = "webp"
+        case "image/heic": ext = "heic"
+        case "audio/webm": ext = "webm"
+        case "audio/ogg": ext = "ogg"
+        case "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/aac": ext = "m4a"
+        case "audio/mpeg": ext = "mp3"
+        default:
+            switch kind {
+            case "image": ext = "jpg"
+            case "voice": ext = "webm"
+            default: return base
+            }
+        }
+        return base + "." + ext
+    }
+
     /// Une capsule temporelle (scellée ou déjà ouverte).
     public var isCapsule: Bool { (openAt ?? 0) > 0 }
 
