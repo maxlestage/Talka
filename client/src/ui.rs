@@ -3597,7 +3597,7 @@ pub async fn open_settings() {
                 .child(h("h3").text("Confidentialité"))
                 .child(toggle(
                     "Confirmations de lecture",
-                    "Désactivées, vous ne voyez pas non plus celles des autres",
+                    "Sans elles, vous ne voyez pas non plus celles des autres",
                     s.read_receipts,
                     |v| spawn(core::save_settings(move |s| s.read_receipts = v)),
                 ))
