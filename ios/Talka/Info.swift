@@ -579,3 +579,97 @@ struct StarredRow: View {
         }
     }
 }
+
+/// Le menu ⋮ d'une discussion : les mêmes choix, dans le même ordre, que
+/// celui du navigateur (`chat_menu`), comme WhatsApp.
+struct ChatMoreMenu: View {
+    @Environment(AppModel.self) private var model
+    let chatId: String
+    @Binding var search: String?
+    var searchFocused: FocusState<Bool>.Binding
+    @Binding var showInfo: Bool
+    @Binding var exported: URL?
+    @Binding var choosingBrocolis: Bool
+    @State private var choosingWallpaper = false
+    @State private var confirmClear = false
+    @State private var confirmDelete = false
+
+    var body: some View {
+        if let e = model.engine, let chat = e.chat(chatId) {
+            Menu {
+                Button { showInfo = true } label: {
+                    Label(chat.group ? "Infos du groupe" : "Infos du contact", systemImage: "info.circle")
+                }
+                Button {
+                    withAnimation { search = search == nil ? "" : nil }
+                    searchFocused.wrappedValue = search != nil
+                } label: {
+                    Label(search == nil ? "Rechercher" : "Fermer la recherche", systemImage: "magnifyingglass")
+                }
+                Picker(selection: Binding(get: { chat.timer }, set: { e.setTimer(chatId, secs: $0) })) {
+                    timerOptions()
+                } label: {
+                    Label("Messages éphémères", systemImage: "timer")
+                }
+                .pickerStyle(.menu)
+                Button { export(e) } label: {
+                    Label("Exporter la discussion", systemImage: "square.and.arrow.up")
+                }
+                Button { choosingBrocolis = true } label: {
+                    Label(chat.brocolis.isEmpty ? "Chiffrer avec Brocolis 🥦" : "Brocolis 🥦 : \(e.chatBrocolis(chat).map(\.name).joined(separator: ", "))",
+                          systemImage: "lock.shield")
+                }
+                if chat.muted {
+                    Button { e.mute(chatId, seconds: 0) } label: { Label("Réactiver les notifications", systemImage: "bell") }
+                } else {
+                    Menu {
+                        MuteChoices(engine: e, chatId: chatId, muted: false)
+                    } label: {
+                        Label("Mettre en sourdine", systemImage: "bell.slash")
+                    }
+                }
+                Button { choosingWallpaper = true } label: { Label("Fond d'écran", systemImage: "paintpalette") }
+                if !chat.group {
+                    if e.blocked(chatId) {
+                        Button { e.setBlocked(chatId, false) } label: { Label("Débloquer", systemImage: "hand.raised.slash") }
+                    } else {
+                        Button(role: .destructive) { e.setBlocked(chatId, true) } label: { Label("Bloquer", systemImage: "hand.raised") }
+                    }
+                }
+                Button(role: .destructive) { confirmClear = true } label: { Label("Vider la discussion", systemImage: "trash") }
+                Button(role: .destructive) { confirmDelete = true } label: {
+                    Label(chat.group ? "Quitter et supprimer" : "Supprimer la discussion", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .rotationEffect(.degrees(90))
+            }
+            .accessibilityLabel("Plus d'options")
+            .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: chatId)
+            .confirmationDialog("Supprimer la discussion ?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                Button("Supprimer", role: .destructive) {
+                    if chat.group, !chat.left { e.leaveGroup(chatId) }
+                    e.deleteChat(chatId)
+                    model.path = []
+                }
+            } message: {
+                Text("Elle disparaîtra de cet appareil avec tous ses messages.")
+            }
+            .sheet(isPresented: $choosingWallpaper) {
+                NavigationStack {
+                    Form { WallpaperPicker(chatId: chatId) }
+                        .navigationTitle("Fond d'écran")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("OK") { choosingWallpaper = false } } }
+                }
+                .presentationDetents([.medium])
+            }
+        }
+    }
+
+    func export(_ e: Engine) {
+        guard let export = e.exportChat(chatId) else { return }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(export.filename)
+        if (try? Data(export.text.utf8).write(to: url)) != nil { exported = url }
+    }
+}

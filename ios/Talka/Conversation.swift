@@ -212,33 +212,8 @@ struct ConversationView: View {
                         }
                         .accessibilityLabel("Appel audio")
                     }
-                    Menu {
-                        Button {
-                            withAnimation { search = search == nil ? "" : nil }
-                            searchFocused = search != nil
-                        } label: {
-                            Label(search == nil ? "Rechercher" : "Fermer la recherche", systemImage: "magnifyingglass")
-                        }
-                        Button { showInfo = true } label: {
-                            Label(chat.group ? "Infos du groupe" : "Infos du contact", systemImage: "info.circle")
-                        }
-                        Button {
-                            if let export = e.exportChat(chatId) {
-                                let url = FileManager.default.temporaryDirectory.appendingPathComponent(export.filename)
-                                if (try? Data(export.text.utf8).write(to: url)) != nil { exported = url }
-                            }
-                        } label: {
-                            Label("Exporter la discussion", systemImage: "square.and.arrow.up")
-                        }
-                        Button { choosingBrocolis = true } label: {
-                            Label(chat.brocolis.isEmpty ? "Chiffrer avec Brocolis 🥦" : "Brocolis 🥦 : \(e.chatBrocolis(chat).map(\.name).joined(separator: ", "))",
-                                  systemImage: "lock.shield")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .rotationEffect(.degrees(90))
-                    }
-                    .accessibilityLabel("Plus d'options")
+                    ChatMoreMenu(chatId: chatId, search: $search, searchFocused: $searchFocused, showInfo: $showInfo,
+                                 exported: $exported, choosingBrocolis: $choosingBrocolis)
                 }
             }
             // Sur iPhone, la discussion prend tout l'écran ; sur iPad, les
@@ -501,11 +476,11 @@ struct ConversationView: View {
             if !sealed {
                 Button { forwarding = m } label: { Label("Transférer", systemImage: "arrowshape.turn.up.right") }
             }
+            Button { e.toggleStar(chatId, m.id) } label: {
+                Label(m.isStarred ? "Retirer des importants" : "Important", systemImage: m.isStarred ? "star.slash" : "star")
+            }
             Button { e.setPin(chatId, chat.pinMsg == m.id ? "" : m.id) } label: {
                 Label(chat.pinMsg == m.id ? "Désépingler" : "Épingler", systemImage: chat.pinMsg == m.id ? "pin.slash" : "pin")
-            }
-            Button { e.toggleStar(chatId, m.id) } label: {
-                Label(m.starred ? "Retirer des importants" : "Important", systemImage: m.starred ? "star.slash" : "star")
             }
             if mine, m.kind == "text", !m.isCapsule, nowMs() - m.at < 15 * 60_000 {
                 Button { editing = m; text = m.text; reply = nil; focused = true } label: { Label("Modifier", systemImage: "pencil") }
@@ -513,8 +488,14 @@ struct ConversationView: View {
             if mine {
                 Button { info = m } label: { Label("Infos", systemImage: "info.circle") }
             }
-            if m.tick == .failed, mine {
-                Button { Task { await e.flush() } } label: { Label("Réessayer", systemImage: "arrow.clockwise") }
+            // Une photo, un vocal, un document : l'enregistrer, sous le même
+            // nom que le navigateur.
+            if !sealed, ["image", "file", "voice"].contains(m.kind), m.data.hasPrefix("data:") {
+                Button {
+                    if let data = Data(dataURL: m.data) { exported = temporaryFile(data, name: m.saveName) }
+                } label: {
+                    Label("Enregistrer", systemImage: "square.and.arrow.down")
+                }
             }
         }
         Button(role: .destructive) { deleting = m } label: { Label("Supprimer", systemImage: "trash") }
