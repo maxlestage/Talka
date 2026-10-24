@@ -1599,14 +1599,7 @@ fn message_menu(m: &Message, at: At) {
             },
             if media {
                 item("download", "Enregistrer", move || {
-                    let name = if !m6.name.is_empty() {
-                        m6.name.clone()
-                    } else if m6.kind == "image" {
-                        "photo-talka.jpg".into()
-                    } else {
-                        "vocal-talka.webm".into()
-                    };
-                    download(&name, &m6.data);
+                    download(&m6.save_name(), &m6.data)
                 })
             } else {
                 None
