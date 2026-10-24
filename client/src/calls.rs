@@ -534,10 +534,7 @@ async fn end(c: &Rc<Call>, reason: &str, missed: bool) {
 
 fn notify(from: &str, video: bool) {
     let s = core::settings();
-    if dom::visible()
-        || !s.notify
-        || web_sys::Notification::permission() != web_sys::NotificationPermission::Granted
-    {
+    if dom::visible() || !s.notify || !crate::push::granted() {
         return;
     }
     let opts = web_sys::NotificationOptions::new();

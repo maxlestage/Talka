@@ -41,8 +41,16 @@ pub fn available() -> bool {
         && !get(&window(), "PushManager").is_undefined()
 }
 
-fn granted() -> bool {
-    web_sys::Notification::permission() == web_sys::NotificationPermission::Granted
+/// Ce navigateur sait-il afficher des notifications ? Safari sur iPhone
+/// n'a pas `Notification` hors de l'écran d'accueil : y toucher lèverait
+/// une erreur au milieu du code (réglages fermés, connexion interrompue).
+pub fn supported() -> bool {
+    !get(&window(), "Notification").is_undefined()
+}
+
+/// Les notifications sont-elles permises (et possibles) ?
+pub fn granted() -> bool {
+    supported() && web_sys::Notification::permission() == web_sys::NotificationPermission::Granted
 }
 
 /// Abonne ou désabonne ce navigateur selon le réglage « Notifications ».
