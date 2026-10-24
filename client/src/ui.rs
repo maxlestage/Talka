@@ -1346,8 +1346,7 @@ fn notify(chat: &Chat, body: &str) {
         }
         return;
     }
-    if !s.notify || web_sys::Notification::permission() != web_sys::NotificationPermission::Granted
-    {
+    if !s.notify || !crate::push::granted() {
         return;
     }
     // L'écran verrouillé ne montre que ce qu'on a choisi.
@@ -3752,8 +3751,7 @@ pub async fn open_settings() {
                 false,
                 blocked_list,
             ));
-            let notif_ok =
-                web_sys::Notification::permission() == web_sys::NotificationPermission::Granted;
+            let notif_ok = crate::push::granted();
             h("div.settings")
                 .child(h("div.settings-profile").child(avatar_btn).child(h("div.stack.grow").child(h("label.muted.small").text("Votre nom")).child(name.clone()).child(h("label.muted.small").text("Actu")).child(about.clone())))
                 .child(h("div.settings-group").child(h("h3").text("Mon code")).child(setting("qr", &pretty(&core::my_code()), "Votre identifiant Talka : il remplace le numéro de téléphone", false, show_my_code)))
@@ -3782,6 +3780,11 @@ pub async fn open_settings() {
                         .child(h("h3").text("Notifications"))
                         .child(toggle("Notifications", if crate::push::available() { "Même quand Talka est fermé, sans rien dévoiler" } else { "Quand Talka est en arrière-plan" }, s.notify && notif_ok, |v| {
                             spawn(async move {
+                                if v && !crate::push::supported() {
+                                    toast("Sur iPhone : ajoutez Talka à l'écran d'accueil (Partager → Sur l'écran d'accueil) pour recevoir les notifications");
+                                    core::save_settings(|s| s.notify = false).await;
+                                    return;
+                                }
                                 if v {
                                     let p = await_promise(call(&get(&window(), "Notification"), "requestPermission", &[])).await.ok().and_then(|p| p.as_string()).unwrap_or_default();
                                     if p != "granted" {
