@@ -593,6 +593,8 @@ struct ChatMoreMenu: View {
     @State private var choosingWallpaper = false
     @State private var confirmClear = false
     @State private var confirmDelete = false
+    @State private var addingContact = false
+    @State private var contactName = ""
 
     var body: some View {
         if let e = model.engine, let chat = e.chat(chatId) {
@@ -629,6 +631,15 @@ struct ChatMoreMenu: View {
                     }
                 }
                 Button { choosingWallpaper = true } label: { Label("Fond d'écran", systemImage: "paintpalette") }
+                // Quelqu'un qui nous a écrit sans être dans nos contacts.
+                if !chat.group, e.contact(chatId)?.saved != true {
+                    Button {
+                        contactName = e.contact(chatId)?.profileName ?? ""
+                        addingContact = true
+                    } label: {
+                        Label("Ajouter aux contacts", systemImage: "person.badge.plus")
+                    }
+                }
                 if !chat.group {
                     if e.blocked(chatId) {
                         Button { e.setBlocked(chatId, false) } label: { Label("Débloquer", systemImage: "hand.raised.slash") }
@@ -646,6 +657,16 @@ struct ChatMoreMenu: View {
             }
             .accessibilityLabel("Plus d'options")
             .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: chatId)
+            .alert("Ajouter aux contacts", isPresented: $addingContact) {
+                TextField("Nom (facultatif)", text: $contactName)
+                Button("Annuler", role: .cancel) {}
+                Button("Ajouter") {
+                    let name = contactName
+                    Task { _ = try? await e.addContact(chatId, name: name) }
+                }
+            } message: {
+                Text(TalkaCode.pretty(chatId))
+            }
             .confirmationDialog("Supprimer la discussion ?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Supprimer", role: .destructive) {
                     if chat.group, !chat.left { e.leaveGroup(chatId) }
