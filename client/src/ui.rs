@@ -3446,12 +3446,18 @@ async fn render_calls() {
 // ----- Réglages ---------------------------------------------------------------------
 
 fn toggle(label: &str, desc: &str, on: bool, f: impl Fn(bool) + 'static) -> El {
+    toggle_with(label, desc, on, move |v, _| f(v))
+}
+
+/// Un interrupteur dont l'action reçoit aussi la case (pour la remettre
+/// comme avant si le changement n'a pas pu se faire).
+fn toggle_with(label: &str, desc: &str, on: bool, f: impl Fn(bool, Element) + 'static) -> El {
     let input = h("input.switch")
         .attr("type", "checkbox")
         .prop("checked", on)
         .el();
     let i = input.clone();
-    listen(&input, "change", move |_| f(checked(&i)));
+    listen(&input, "change", move |_| f(checked(&i), i.clone()));
     h("label.setting")
         .child(
             h("div.grow")
@@ -3597,7 +3603,7 @@ pub async fn open_settings() {
                 .child(h("h3").text("Confidentialité"))
                 .child(toggle(
                     "Confirmations de lecture",
-                    "Désactivées, vous ne voyez pas non plus celles des autres",
+                    "Sans elles, vous ne voyez pas non plus celles des autres",
                     s.read_receipts,
                     |v| spawn(core::save_settings(move |s| s.read_receipts = v)),
                 ))
@@ -3778,17 +3784,24 @@ pub async fn open_settings() {
                 .child(
                     h("div.settings-group")
                         .child(h("h3").text("Notifications"))
-                        .child(toggle("Notifications", if crate::push::available() { "Même quand Talka est fermé, sans rien dévoiler" } else { "Quand Talka est en arrière-plan" }, s.notify && notif_ok, |v| {
+                        .child(toggle_with("Notifications", if crate::push::available() { "Même quand Talka est fermé, sans rien dévoiler" } else { "Quand Talka est en arrière-plan" }, s.notify && notif_ok, |v, case| {
                             spawn(async move {
+                                // Impossible ici : l'interrupteur revient sur « non ».
+                                let refuse = |message: &str| {
+                                    toast(message);
+                                    if let Some(i) = case.dyn_ref::<web_sys::HtmlInputElement>() {
+                                        i.set_checked(false);
+                                    }
+                                };
                                 if v && !crate::push::supported() {
-                                    toast("Sur iPhone : ajoutez Talka à l'écran d'accueil (Partager → Sur l'écran d'accueil) pour recevoir les notifications");
+                                    refuse("Sur iPhone, ajoutez d'abord Talka à l'écran d'accueil (Partager → Sur l'écran d'accueil)");
                                     core::save_settings(|s| s.notify = false).await;
                                     return;
                                 }
                                 if v {
                                     let p = await_promise(call(&get(&window(), "Notification"), "requestPermission", &[])).await.ok().and_then(|p| p.as_string()).unwrap_or_default();
                                     if p != "granted" {
-                                        toast("Notifications refusées par le navigateur");
+                                        refuse("Notifications refusées par le navigateur");
                                         core::save_settings(|s| s.notify = false).await;
                                         return;
                                     }
