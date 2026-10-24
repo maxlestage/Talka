@@ -19,7 +19,13 @@ fn audio() -> Option<AudioContext> {
         }
         let ctx = c.clone()?;
         if ctx.state() == web_sys::AudioContextState::Suspended {
-            let _ = ctx.resume();
+            // Safari peut refuser (pas encore de geste) : sans bruit.
+            if let Ok(p) = ctx.resume() {
+                let noop =
+                    wasm_bindgen::closure::Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(|_| {});
+                let _ = p.catch(&noop);
+                noop.forget();
+            }
         }
         Some(ctx)
     })
