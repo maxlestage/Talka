@@ -441,6 +441,47 @@ impl Message {
         self.open_at > now && self.from != me
     }
 
+    /// Le nom d'une pièce jointe enregistrée (« Enregistrer ») : le sien, ou
+    /// `photo-talka` / `vocal-talka` / `fichier-talka` avec l'extension de son
+    /// vrai type (un vocal de l'iPhone est en m4a). Le même que l'iPhone
+    /// (`Message.saveName`).
+    pub fn save_name(&self) -> String {
+        if !self.name.is_empty() {
+            return self.name.clone();
+        }
+        let mime = if self.mime.is_empty() {
+            self.data
+                .strip_prefix("data:")
+                .and_then(|d| d.split([';', ',']).next())
+                .unwrap_or("")
+        } else {
+            self.mime.as_str()
+        };
+        let base = match self.kind.as_str() {
+            "image" => "photo-talka",
+            "voice" => "vocal-talka",
+            _ => "fichier-talka",
+        };
+        let mime = mime.split(';').next().unwrap_or("").trim();
+        let ext = match mime.to_ascii_lowercase().as_str() {
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/png" => "png",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            "image/heic" => "heic",
+            "audio/webm" => "webm",
+            "audio/ogg" => "ogg",
+            "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" => "m4a",
+            "audio/mpeg" => "mp3",
+            _ => match self.kind.as_str() {
+                "image" => "jpg",
+                "voice" => "webm",
+                _ => return base.to_owned(),
+            },
+        };
+        format!("{base}.{ext}")
+    }
+
     /// `chat|id` : la clé dans IndexedDB.
     pub fn key(&self) -> String {
         format!("{}|{}", self.chat, self.id)
@@ -990,6 +1031,36 @@ pub fn fold(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_name_follows_the_real_type() {
+        let m = |kind: &str, name: &str, mime: &str, data: &str| Message {
+            kind: kind.into(),
+            name: name.into(),
+            mime: mime.into(),
+            data: data.into(),
+            ..Default::default()
+        };
+        assert_eq!(m("file", "devis.pdf", "", "").save_name(), "devis.pdf");
+        assert_eq!(
+            m("image", "", "", "data:image/jpeg;base64,AA").save_name(),
+            "photo-talka.jpg"
+        );
+        assert_eq!(
+            m("image", "", "image/png", "").save_name(),
+            "photo-talka.png"
+        );
+        assert_eq!(
+            m("voice", "", "", "data:audio/mp4;base64,AA").save_name(),
+            "vocal-talka.m4a"
+        );
+        assert_eq!(
+            m("voice", "", "audio/webm;codecs=opus", "").save_name(),
+            "vocal-talka.webm"
+        );
+        assert_eq!(m("voice", "", "", "").save_name(), "vocal-talka.webm");
+        assert_eq!(m("file", "", "", "").save_name(), "fichier-talka");
+    }
 
     /// La limite du relais (`MAX_BODY` côté serveur).
     const MAX_BODY: usize = 8 * 1024 * 1024;
