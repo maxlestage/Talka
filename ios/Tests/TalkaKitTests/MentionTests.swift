@@ -50,4 +50,23 @@ final class MentionTests: XCTestCase {
         XCTAssertEqual(e.chat("g:mention")?.unread, 1)
         XCTAssertEqual(e.chat("g:mention")?.mentioned, false)
     }
+
+    /// « X vous a ajouté » reste avant le premier message du groupe, même
+    /// quand l'annonce a quitté l'expéditeur après qu'il a écrit ce message
+    /// (l'annonce est datée par le relais, le message par l'expéditeur).
+    @MainActor
+    func testAddedNoticeStaysFirst() async {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-ajout-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Léa", avatar: "")
+        let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
+        let x = Identity.create()
+        let grp = GroupInfo(id: "ordre", name: "Les amis", members: [x.code, e.me.code], admins: [x.code], avatar: "", v: 1)
+        let t = nowMs()
+        e.handle(x.code, Wire(.group(op: "create", note: ""), grp: grp), ts: t, live: true)
+        e.handle(x.code, Wire(.msg(id: "m1", at: t - 800, pn: "", content: Content(text: "Bienvenue")), g: "ordre"), ts: t + 50, live: true)
+        let list = e.messages("g:ordre")
+        XCTAssertEqual(list.map(\.kind), ["system", "text"])
+        XCTAssertGreaterThan(list[1].at, list[0].at)
+    }
 }

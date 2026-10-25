@@ -1567,7 +1567,8 @@ public final class Engine {
             c.name = grp.name; c.avatar = grp.avatar; c.members = grp.members; c.admins = grp.admins
             c.desc = groupDesc(grp.desc ?? "")
             c.adminsOnly = grp.adminsOnly ?? false
-            c.createdBy = from; c.v = grp.v
+            // Rejoint à l'heure de l'annonce : nos premiers messages viennent après.
+            c.createdBy = from; c.v = grp.v; c.createdAt = at
             saveChat(c)
             systemMessage(id, "\(displayName(from)) vous a ajouté au groupe « \(grp.name) ».", at: at)
             relay.watch(grp.members.filter { $0 != me.code })
@@ -1703,7 +1704,12 @@ public final class Engine {
             if !kinds.contains(safe.kind) || (safe.kind == "brokey" && Brocolis.key(base64: safe.data) == nil) { safe.kind = "text" }
             safe.text = String(safe.text.prefix(65_536))
             // Une capsule s'ouvre au plus tard dans dix ans.
-            let mAt = min(at, ts + 60_000)
+            var mAt = min(at, ts + 60_000)
+            // Dans un groupe où l'on nous a ajoutés, rien ne précède l'annonce
+            // « X vous a ajouté » (datée par le relais, le message par son
+            // auteur : une annonce partie après le message passait derrière).
+            // Quelques minutes au plus : un historique plus ancien garde son heure.
+            if c.group, c.createdBy != me.code, mAt <= c.createdAt, c.createdAt - mAt < 300_000 { mAt = c.createdAt + 1 }
             if let open = safe.openAt { safe.openAt = open > mAt ? min(open, mAt + capsuleMaxMs) : nil }
             // Les mentions : seulement des membres du groupe (50 au plus).
             safe.mentions = c.group ? Array(safe.mentions.filter { c.members.contains($0) }.prefix(50)) : []
