@@ -164,6 +164,9 @@ public final class Engine {
 
     func onNet(_ s: Relay.State) {
         netState = s
+        // Hors ligne, on ne sait plus qui est « en ligne » : le relais le redira
+        // à la reconnexion (`watch`). Les « vu à » restent (comme le navigateur).
+        if s != .online { presence = presence.filter { !$0.value.online } }
         if s == .online {
             watchContacts()
             publishV3()
