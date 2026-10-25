@@ -100,6 +100,10 @@ fn subtitle(chat: &Chat) -> String {
     if core::blocked(&chat.id) {
         return "Bloqué".into();
     }
+    // Sans relais, sa présence est inconnue (comme WhatsApp).
+    if crate::net::state() != crate::net::State::Online {
+        return "Connexion…".into();
+    }
     match core::presence(&chat.id) {
         Some((true, _)) => "en ligne".into(),
         Some((false, Some(seen))) => last_seen(seen),
