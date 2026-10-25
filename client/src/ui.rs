@@ -2202,6 +2202,11 @@ async fn contact_info(code: &str) {
     };
     let starred = core::starred_in(code).await.len();
     let me = core::me();
+    let all_chats = core::chats();
+    let common: Vec<(String, String)> = crate::model::groups_in_common(&all_chats, &me.code, code)
+        .into_iter()
+        .map(|g| (g.id.clone(), core::chat_title(g)))
+        .collect();
     let safety = safety_number((&me.code, &me.sign, &me.dh), (code, &c.sign, &c.dh));
     let protection = match core::protection(code).await {
         crate::v3::Protection::Ratchet { .. } if core::post_quantum_ratchet(code) => {
@@ -2357,6 +2362,23 @@ async fn contact_info(code: &str) {
                 )
                 .child((!c.about.is_empty()).then(|| h("div.info-section").child(h("h3").text("Actu")).child(h("p").text(&c.about))))
                 .child(grid.clone())
+                // Les groupes en commun, comme WhatsApp : toucher en ouvre un.
+                .child((!common.is_empty()).then(|| {
+                    h("div.info-section")
+                        .child(h("h3").text(format!("Groupes en commun ({})", common.len())))
+                        .child(h("div.list").children(common.iter().map(|(id, title)| {
+                            let (id, md) = (id.clone(), md.clone());
+                            h("button.list-item")
+                                .attr("type", "button")
+                                .child(avatar(&id, 40))
+                                .child(h("div.grow.strong").text(title))
+                                .click(move || {
+                                    md.close();
+                                    let id = id.clone();
+                                    spawn(async move { open_chat(&id).await })
+                                })
+                        })))
+                }))
                 .child(
                     h("div.info-section")
                         .child(h("h3").child(icon("shield")).text(" Chiffrement"))
