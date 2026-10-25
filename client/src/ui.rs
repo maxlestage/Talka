@@ -482,6 +482,11 @@ fn render_empty_main() {
     });
 }
 
+/// Le nombre de l'onglet « Discussions » : « 99+ » au-delà.
+fn tab_count(n: u32) -> String {
+    if n > 99 { "99+".into() } else { n.to_string() }
+}
+
 fn update_badge() {
     let n: u32 = core::chats()
         .iter()
@@ -493,6 +498,13 @@ fn update_badge() {
     } else {
         "Talka".into()
     });
+    // Sur l'onglet « Discussions » aussi (comme l'iPhone, `unreadTotal`).
+    if let Some(tabs) = with(|u| u.tabs.clone())
+        && let Some(count) = query_in(&tabs, "[data-tab=\"chats\"] .tab-count")
+    {
+        count.set_text_content(Some(&tab_count(n)));
+        toggle_class(&count, "on", n > 0);
+    }
     let nav = window().navigator();
     let _ = if n > 0 {
         call(&nav, "setAppBadge", &[n.into()])
@@ -525,7 +537,13 @@ fn render_side() {
                     .class_if("on", tab == *key)
                     .attr("type", "button")
                     .attr("data-tab", key)
-                    .child(h("span.tab-icon").child(icon(ic)).child(h("i.tab-dot")))
+                    .child(
+                        h("span.tab-icon")
+                            .child(icon(ic))
+                            .child(h("i.tab-dot"))
+                            // Les messages non lus, comme l'onglet de l'iPhone.
+                            .child((*key == "chats").then(|| h("b.tab-count"))),
+                    )
                     .child(h("span").text(label))
                     .click(move || switch_tab(key))
             }));
@@ -627,6 +645,7 @@ fn render_side() {
         });
     });
     update_fab();
+    update_badge();
     render_net();
     spawn(render_side_body());
 }
