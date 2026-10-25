@@ -408,6 +408,8 @@ struct ConversationView: View {
             return chat.members.map { $0 == e.me.code ? "Vous" : e.displayName($0) }.joined(separator: ", ")
         }
         if e.blocked(chat.id) { return "Bloqué" }
+        // Sans relais, sa présence est inconnue (comme WhatsApp).
+        if e.netState != .online { return "Connexion…" }
         if let p = e.presence[chat.id] {
             if p.online { return "en ligne" }
             if let seen = p.seen { return Dates.lastSeen(seen) }
