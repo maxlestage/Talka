@@ -328,6 +328,11 @@ public final class Engine {
         code == me.code ? profile.avatar : contacts[code]?.avatar ?? ""
     }
 
+    /// Les groupes que l'on partage avec ce contact.
+    public func groupsInCommon(_ code: String) -> [Chat] {
+        Chat.groupsInCommon(Array(chats.values), me: me.code, code: code)
+    }
+
     public func title(_ chat: Chat) -> String {
         chat.group ? (chat.name.isEmpty ? "Groupe" : chat.name) : displayName(chat.id)
     }

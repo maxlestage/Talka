@@ -74,6 +74,20 @@ struct ContactInfoView: View {
                         StarredRow(engine: e, chatId: code, shown: $showStarred)
                     }
                 }
+                // Les groupes en commun, comme WhatsApp (et le navigateur).
+                let common = e.groupsInCommon(code)
+                if !common.isEmpty {
+                    Section("Groupes en commun (\(common.count))") {
+                        ForEach(common) { g in
+                            Button { model.openChat(g.id) } label: {
+                                HStack(spacing: 12) {
+                                    e.avatar(g.id, size: 36)
+                                    Text(e.title(g)).foregroundStyle(.primary)
+                                }
+                            }
+                        }
+                    }
+                }
                 Section {
                     NavigationLink {
                         SafetyView(code: code)
