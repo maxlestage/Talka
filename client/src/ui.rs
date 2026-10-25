@@ -404,7 +404,12 @@ pub fn event(e: Ev) {
             }
             queue_side();
         }
-        Ev::Net => render_net(),
+        Ev::Net => {
+            render_net();
+            // « Connexion… » dans l'en-tête, plus de pastilles « en ligne ».
+            conv::refresh_header();
+            queue_side();
+        }
         Ev::Statuses => {
             if with(|u| u.tab == "status") {
                 queue_side();

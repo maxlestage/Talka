@@ -315,6 +315,11 @@ pub async fn start() {
 
 /// Le relais annonce un changement d'état.
 pub fn on_net(state: State) {
+    // Hors ligne, on ne sait plus qui est « en ligne » : le relais le redira
+    // à la reconnexion (`watch`). Les « vu à » restent.
+    if state != State::Online {
+        with(|s| s.presence.retain(|_, (online, _)| !*online));
+    }
     emit(Ev::Net);
     if state == State::Online {
         watch_contacts();
