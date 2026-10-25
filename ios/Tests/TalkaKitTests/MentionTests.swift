@@ -91,3 +91,20 @@ final class GroupsInCommonTests: XCTestCase {
         XCTAssertTrue(Chat.groupsInCommon(chats, me: "MOI", code: "ZOE").isEmpty)
     }
 }
+
+final class PresenceTests: XCTestCase {
+    /// Hors ligne, plus personne n'est « en ligne » ; les « vu à » restent.
+    @MainActor
+    func testOfflineForgetsWhoIsOnline() async {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-presence-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Léa", avatar: "")
+        let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
+        e.relay.onPresence?("AAAAAAAAAA", true, nil)
+        e.relay.onPresence?("BBBBBBBBBB", false, 1_000)
+        XCTAssertEqual(e.presence["AAAAAAAAAA"]?.online, true)
+        e.onNet(.offline)
+        XCTAssertNil(e.presence["AAAAAAAAAA"])
+        XCTAssertEqual(e.presence["BBBBBBBBBB"]?.seen, 1_000)
+    }
+}

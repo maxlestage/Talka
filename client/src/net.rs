@@ -143,6 +143,10 @@ pub fn start(identity: Identity, hidden: bool, dev: &str) {
     DEV.with(|d| *d.borrow_mut() = dev.to_owned());
     HIDDEN.with(|h| h.set(hidden));
     listen_forever(&window(), "online", |_| connect_soon(0));
+    // Le réseau tombe : les connexions sont mortes, même si elles ne l'ont
+    // pas encore dit. On le dit tout de suite (« Connexion… »), et on
+    // réessaie ; « online » rouvre aussitôt.
+    listen_forever(&window(), "offline", |_| reopen());
     listen_forever(&crate::dom::document(), "visibilitychange", |_| {
         if !crate::dom::visible() {
             HIDDEN_AT.with(|h| h.set(now()));
