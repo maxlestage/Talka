@@ -415,6 +415,23 @@ pub fn export_filename(title: &str) -> String {
 pub const KEEP_DAYS: u32 = 90;
 const DAY_MS: f64 = 86_400_000.0;
 
+/// Les groupes que l'on partage avec `code` (fiche du contact, comme
+/// WhatsApp) : ceux dont nous sommes membres tous les deux, par nom. Le
+/// même que l'iPhone (`Chat.groupsInCommon`).
+pub fn groups_in_common<'a>(chats: &'a [Chat], me: &str, code: &str) -> Vec<&'a Chat> {
+    let mut list: Vec<&Chat> = chats
+        .iter()
+        .filter(|c| {
+            c.group
+                && !c.left
+                && c.members.iter().any(|m| m == me)
+                && c.members.iter().any(|m| m == code)
+        })
+        .collect();
+    list.sort_by_key(|c| c.name.to_lowercase());
+    list
+}
+
 impl Message {
     /// En favori, et pas supprimé pour tous (un message supprimé n'a plus
     /// rien à garder, comme WhatsApp).
@@ -1031,6 +1048,35 @@ pub fn fold(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn groups_in_common_are_shared_and_sorted() {
+        let g = |id: &str, name: &str, members: &[&str], left: bool| Chat {
+            id: id.into(),
+            group: true,
+            name: name.into(),
+            members: members.iter().map(|m| (*m).to_owned()).collect(),
+            left,
+            ..Default::default()
+        };
+        let chats = vec![
+            g("g:1", "Voisins", &["MOI", "LEA"], false),
+            g("g:2", "amis", &["MOI", "LEA", "BOB"], false),
+            g("g:3", "Travail", &["MOI", "BOB"], false),
+            g("g:4", "Ancien", &["MOI", "LEA"], true),
+            g("g:5", "Sans moi", &["LEA", "BOB"], false),
+            Chat {
+                id: "LEA".into(),
+                ..Default::default()
+            },
+        ];
+        let ids: Vec<_> = groups_in_common(&chats, "MOI", "LEA")
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(ids, ["g:2", "g:1"]);
+        assert!(groups_in_common(&chats, "MOI", "ZOE").is_empty());
+    }
 
     #[test]
     fn save_name_follows_the_real_type() {
