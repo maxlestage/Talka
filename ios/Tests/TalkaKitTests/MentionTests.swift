@@ -70,3 +70,24 @@ final class MentionTests: XCTestCase {
         XCTAssertGreaterThan(list[1].at, list[0].at)
     }
 }
+
+final class GroupsInCommonTests: XCTestCase {
+    /// Les mêmes cas que `groups_in_common_are_shared_and_sorted` (navigateur).
+    func testGroupsInCommonAreSharedAndSorted() {
+        func g(_ id: String, _ name: String, _ members: [String], left: Bool = false) -> Chat {
+            var c = Chat(id: id)
+            c.group = true; c.name = name; c.members = members; c.left = left
+            return c
+        }
+        let chats = [
+            g("g:1", "Voisins", ["MOI", "LEA"]),
+            g("g:2", "amis", ["MOI", "LEA", "BOB"]),
+            g("g:3", "Travail", ["MOI", "BOB"]),
+            g("g:4", "Ancien", ["MOI", "LEA"], left: true),
+            g("g:5", "Sans moi", ["LEA", "BOB"]),
+            Chat(id: "LEA"),
+        ]
+        XCTAssertEqual(Chat.groupsInCommon(chats, me: "MOI", code: "LEA").map(\.id), ["g:2", "g:1"])
+        XCTAssertTrue(Chat.groupsInCommon(chats, me: "MOI", code: "ZOE").isEmpty)
+    }
+}
