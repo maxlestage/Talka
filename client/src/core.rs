@@ -3445,7 +3445,8 @@ async fn group_chat(from: &str, grp: &GroupInfo, at: f64) -> (Option<Chat>, bool
                 desc: grp.desc.as_deref().map(group_desc).unwrap_or_default(),
                 admins_only: grp.admins_only.unwrap_or(false),
                 created_by: from.to_owned(),
-                created_at: now(),
+                // Rejoint à l'heure de l'annonce : nos premiers messages viennent après.
+                created_at: at,
                 last_at: now(),
                 v: grp.v,
                 ..Default::default()
@@ -3693,7 +3694,18 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             } else {
                 "text".into()
             };
-            let at = at.min(ts + 60_000.0);
+            let mut at = at.min(ts + 60_000.0);
+            // Dans un groupe où l'on nous a ajoutés, rien ne précède l'annonce
+            // « X vous a ajouté » (datée par le relais, le message par son
+            // auteur : une annonce partie après le message passait derrière).
+            // Quelques minutes au plus : un historique plus ancien garde son heure.
+            if c.group
+                && c.created_by != my_code()
+                && at <= c.created_at
+                && c.created_at - at < 300_000.0
+            {
+                at = c.created_at + 1.0;
+            }
             // Une clé Brocolis partagée garde sa clé ; le reste, seulement des
             // données `data:` du bon type.
             let data = if shared_key {
