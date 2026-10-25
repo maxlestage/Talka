@@ -400,6 +400,16 @@ public struct Last: Codable, Equatable, Sendable {
     }
 }
 
+extension Chat {
+    /// Les groupes que l'on partage avec `code` (fiche du contact, comme
+    /// WhatsApp) : ceux dont nous sommes membres tous les deux, par nom. Le
+    /// même que le navigateur (`model::groups_in_common`).
+    public static func groupsInCommon(_ chats: [Chat], me: String, code: String) -> [Chat] {
+        chats.filter { $0.group && !$0.left && $0.members.contains(me) && $0.members.contains(code) }
+            .sorted { $0.name.lowercased() < $1.name.lowercased() }
+    }
+}
+
 public struct Chat: Codable, Equatable, Identifiable, Sendable {
     /// Le code du contact, ou `g:<id>` pour un groupe.
     public var id: String
