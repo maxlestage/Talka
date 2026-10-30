@@ -77,6 +77,11 @@ final class AppModel {
         }
         let shown = Date().timeIntervalSince(launchedAt)
         if shown < 1.2 { try? await Task.sleep(for: .seconds(1.2 - shown)) }
+        #if DEBUG
+        // Pour la capture de la CI (simulateur, `-TalkaHoldSplash YES`) :
+        // l'écran de chargement reste affiché.
+        if UserDefaults.standard.bool(forKey: "TalkaHoldSplash") { try? await Task.sleep(for: .seconds(600)) }
+        #endif
         withAnimation(.easeOut(duration: 0.35)) { loading = nil }
     }
 
