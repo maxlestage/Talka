@@ -163,7 +163,7 @@ pub fn inactive() {
                 ),
         ),
     );
-    toggle_class(&root(), "boot", false);
+    hide_splash();
 }
 
 fn fatal(text: &str) {
@@ -182,7 +182,7 @@ fn fatal(text: &str) {
                 .child(h("p.muted").text(text)),
         ),
     );
-    toggle_class(&root(), "boot", false);
+    hide_splash();
 }
 
 /// L'adresse d'un fichier du site (sous le chemin de GitHub Pages).
@@ -229,6 +229,28 @@ fn pending_invite() -> Option<String> {
     Some(code)
 }
 
+/// L'écran de chargement reste au moins ce temps (depuis l'ouverture de la
+/// page) : assez pour être vu, sans faire attendre.
+const SPLASH_MIN_MS: f64 = 1200.0;
+
+/// Retire l'écran de chargement : en fondu, une fois son temps minimal
+/// passé. Ce qui est dessous (accueil, verrou, discussions) est déjà prêt.
+fn hide_splash() {
+    let Some(splash) = by_id("splash") else {
+        return;
+    };
+    if splash.get_attribute("data-hiding").is_some() {
+        return;
+    }
+    let _ = splash.set_attribute("data-hiding", "");
+    let since = window().performance().map_or(SPLASH_MIN_MS, |p| p.now());
+    let wait = (SPLASH_MIN_MS - since).max(0.0) as i32;
+    timer(wait, move || {
+        toggle_class(&splash, "gone", true);
+        timer(400, move || splash.remove());
+    });
+}
+
 /// L'étape affichée par l'écran de chargement (tant qu'il est là).
 fn boot_step(text: &str) {
     if let Some(el) = by_id("boot-step") {
@@ -246,10 +268,12 @@ pub async fn boot() {
         store::Lock::None => {}
         store::Lock::Code => {
             replace(&root(), Child::None);
+            hide_splash();
             pin = Some(lock::unlock_screen().await);
         }
         store::Lock::Passkey { id, salt } => {
             replace(&root(), Child::None);
+            hide_splash();
             crate::passkey::unlock_screen(&id, &salt).await;
         }
     }
@@ -266,6 +290,7 @@ pub async fn boot() {
     if core::has_account().await {
         if pin.is_none() && lock::has_pin().await {
             replace(&root(), Child::None);
+            hide_splash();
             pin = Some(lock::lock_screen().await);
             with(|u| u.lock = true);
         }
@@ -333,7 +358,7 @@ fn mount() {
     let side = h("aside.sidebar").el();
     let main = h("section.main").el();
     let r = root();
-    toggle_class(&r, "boot", false);
+    hide_splash();
     replace(&r, h("div.layout").child(side.clone()).child(main.clone()));
     with(|u| {
         u.side = Some(side);
@@ -4095,7 +4120,7 @@ async fn wipe() {
 /// été lié à un compte existant (v4).
 async fn welcome() -> bool {
     let r = root();
-    toggle_class(&r, "boot", false);
+    hide_splash();
     let d = Deferred::<bool>::new();
     let linked = d.sender();
     let pic = Rc::new(RefCell::new(String::new()));

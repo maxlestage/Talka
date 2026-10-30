@@ -581,34 +581,37 @@ pub fn app_shell(site: &Site) -> Page {
         .head(head_tags(site, "app"))
         .stylesheet(site.url(&assets::url("app.css")))
         // L'écran de chargement, affiché dès la première image, avant le
-        // module WebAssembly : l'application le remplace une fois prête, et
-        // y écrit l'étape en cours (`#boot-step`).
+        // module WebAssembly : il reste au-dessus de l'application le temps
+        // qu'elle se prépare (une seconde au moins), puis s'efface en
+        // fondu. L'application y écrit l'étape en cours (`#boot-step`).
         .body(
             div()
-                .id("root")
-                .class("boot")
+                .id("splash")
+                .class("splash")
                 .attr("role", "status")
                 .attr("aria-live", "polite")
                 .child(
-                    img()
-                        .class("boot-logo")
-                        .attr("src", site.url("/logo.svg"))
-                        .attr("alt", "")
-                        .attr("width", "88")
-                        .attr("height", "88"),
+                    div()
+                        .class("splash-center")
+                        .child(
+                            img()
+                                .class("splash-logo")
+                                .attr("src", site.url("/logo.svg"))
+                                .attr("alt", "")
+                                .attr("width", "96")
+                                .attr("height", "96"),
+                        )
+                        .child(p().class("splash-name").text("Talka"))
+                        .child(div().class("splash-bar").child(span()))
+                        .child(
+                            p().id("boot-step")
+                                .class("splash-step")
+                                .text("Ouverture de Talka…"),
+                        ),
                 )
-                .child(p().class("boot-name").text("Talka"))
-                .child(div().class("boot-bar").child(span()))
-                .child(
-                    p().id("boot-step")
-                        .class("boot-step")
-                        .text("Ouverture de Talka…"),
-                )
-                .child(
-                    p().class("boot-note")
-                        .text("Vos messages restent sur cet appareil, chiffrés de bout en bout."),
-                ),
+                .child(p().class("splash-note").text("🔒 Chiffré de bout en bout")),
         )
+        .body(div().id("root"))
         .body(
             noscript().text("Talka a besoin de JavaScript (pour charger son module WebAssembly)."),
         )
