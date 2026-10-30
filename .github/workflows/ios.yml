@@ -49,10 +49,14 @@ jobs:
           xcrun simctl bootstatus "$UDID" -b > /dev/null
           xcrun simctl install "$UDID" dd/Build/Products/Debug-iphonesimulator/Talka.app
           mkdir -p shots
-          xcrun simctl launch "$UDID" com.maxlestage.talka
-          sleep 0.7
+          # L'écran de chargement, gardé à l'écran (option des builds Debug).
+          xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaHoldSplash YES
+          sleep 5
           xcrun simctl io "$UDID" screenshot shots/1-chargement.png
-          sleep 4
+          xcrun simctl terminate "$UDID" com.maxlestage.talka
+          # Puis un lancement normal : l'accueil.
+          xcrun simctl launch "$UDID" com.maxlestage.talka
+          sleep 8
           xcrun simctl io "$UDID" screenshot shots/2-accueil.png
           for f in shots/*.png; do
             sips -Z 420 -s format jpeg -s formatOptions 55 "$f" --out "${f%.png}.jpg" > /dev/null
