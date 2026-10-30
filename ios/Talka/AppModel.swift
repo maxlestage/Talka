@@ -45,6 +45,8 @@ final class AppModel {
 
     /// L'étape de l'écran de chargement (`nil` : Talka est prêt).
     var loading: String? = "Ouverture de Talka…"
+    /// L'écran de chargement reste au moins 1,2 s : assez pour être vu.
+    @ObservationIgnored private let launchedAt = Date()
 
     init() {
         if StoreVault.isProtected || StoreVault.isCodeLocked {
@@ -66,16 +68,16 @@ final class AppModel {
     /// L'écran de chargement : le temps de retrouver le relais (2,5 s au
     /// plus : hors ligne, on montre tout de suite les discussions gardées).
     func finishLoading() async {
-        guard let e = engine else {
-            withAnimation(.easeOut(duration: 0.3)) { loading = nil }
-            return
+        if let e = engine {
+            loading = "Connexion à vos contacts…"
+            let end = Date().addingTimeInterval(2.5)
+            while e.netState != .online, Date() < end {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
         }
-        loading = "Connexion à vos contacts…"
-        let end = Date().addingTimeInterval(2.5)
-        while e.netState != .online, Date() < end {
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-        withAnimation(.easeOut(duration: 0.3)) { loading = nil }
+        let shown = Date().timeIntervalSince(launchedAt)
+        if shown < 1.2 { try? await Task.sleep(for: .seconds(1.2 - shown)) }
+        withAnimation(.easeOut(duration: 0.35)) { loading = nil }
     }
 
     /// Une adresse de serveur choisie autrefois est oubliée : il n'y a plus
