@@ -31,8 +31,44 @@ jobs:
         run: |
           xcodebuild -project Talka.xcodeproj -scheme Talka \
             -destination 'generic/platform=iOS Simulator' -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO build > build.log 2>&1 && status=0 || status=$?
+            -derivedDataPath dd CODE_SIGNING_ALLOWED=NO build > build.log 2>&1 && status=0 || status=$?
           # Les erreurs d'abord (le journal complet est très long).
           grep -E "error:|warning: .*(deprecated|never)" build.log | sort -u | head -n 80 || true
           tail -n 15 build.log
           exit $status
+      # Talka lancé dans un vrai simulateur d'iPhone : l'écran de chargement
+      # puis l'accueil, capturés. Les captures (réduites) sont aussi écrites
+      # dans le journal, en base64 entre deux repères, pour être relues sans
+      # télécharger l'artefact. Une panne du simulateur ne bloque pas la CI.
+      - name: Simulateur — Talka démarre (captures)
+        continue-on-error: true
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          echo "Simulateur : $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b > /dev/null
+          xcrun simctl install "$UDID" dd/Build/Products/Debug-iphonesimulator/Talka.app
+          mkdir -p shots
+          # L'écran de chargement, gardé à l'écran (option des builds Debug).
+          xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaHoldSplash YES
+          sleep 5
+          xcrun simctl io "$UDID" screenshot shots/1-chargement.png
+          xcrun simctl terminate "$UDID" com.maxlestage.talka
+          # Puis un lancement normal : l'accueil.
+          xcrun simctl launch "$UDID" com.maxlestage.talka
+          sleep 8
+          xcrun simctl io "$UDID" screenshot shots/2-accueil.png
+          for f in shots/*.png; do
+            sips -Z 420 -s format jpeg -s formatOptions 55 "$f" --out "${f%.png}.jpg" > /dev/null
+            echo "=== capture $(basename "${f%.png}")"
+            base64 -i "${f%.png}.jpg" | fold -w 1500
+            echo "=== fin"
+          done
+      - name: Simulateur — captures (artefact)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures-simulateur
+          path: ios/shots/*.png
+          if-no-files-found: ignore
