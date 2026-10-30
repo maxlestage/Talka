@@ -220,62 +220,85 @@ a {
 
 /* ----- Démarrage ----- */
 
-/* L'écran de chargement : le logo qui respire, une barre qui avance, l'étape. */
-.boot {
+/* L'écran de chargement : au-dessus de tout, le logo qui respire sur le vert
+   de Talka, une barre qui avance, l'étape ; il s'efface en fondu. */
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 24px 16px;
-  min-height: 100%;
+  padding: 24px 16px max(24px, env(safe-area-inset-bottom));
   text-align: center;
-  color: var(--muted);
+  color: #fff;
+  /* Le vert du lancement de l'iPhone (LaunchBackground) : la même entrée. */
+  background: #0e6b63;
+  transition:
+    opacity 0.35s ease,
+    visibility 0.35s ease;
 }
 
-.boot-logo {
+.splash.gone {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.splash-center {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.splash-logo {
   border-radius: 22%;
-  box-shadow: 0 12px 30px rgba(14, 107, 99, 0.28);
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.9),
+    0 14px 34px rgba(0, 0, 0, 0.25);
   animation: boot-breathe 1.8s ease-in-out infinite;
 }
 
-.boot-name {
-  margin: 6px 0 0;
-  font-size: 26px;
+.splash-name {
+  margin: 8px 0 0;
+  font-size: 30px;
   font-weight: 700;
   letter-spacing: -0.01em;
-  color: var(--text);
 }
 
-.boot-bar {
+.splash-bar {
   position: relative;
   width: min(180px, 60vw);
   height: 4px;
-  margin-top: 8px;
+  margin-top: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: var(--line);
+  background: rgba(255, 255, 255, 0.25);
 }
 
-.boot-bar span {
+.splash-bar span {
   position: absolute;
   inset: 0 auto 0 0;
   width: 40%;
   border-radius: inherit;
-  background: #0e6b63;
+  background: #fff;
   animation: boot-slide 1.2s ease-in-out infinite;
 }
 
-.boot-step {
+.splash-step {
   margin: 4px 0 0;
   font-size: 15px;
-  color: var(--text);
+  opacity: 0.9;
 }
 
-.boot-note {
+.splash-note {
   margin: 0;
-  max-width: 30ch;
   font-size: 13px;
+  opacity: 0.8;
 }
 
 @keyframes pulse {
@@ -301,9 +324,13 @@ a {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .boot-logo,
-  .boot-bar span {
+  .splash-logo,
+  .splash-bar span {
     animation: none;
+  }
+
+  .splash {
+    transition: none;
   }
 }
 
