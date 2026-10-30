@@ -177,7 +177,8 @@ struct Logo: View {
     }
 }
 
-/// L'écran de chargement : le logo qui respire, une barre qui avance,
+/// L'écran de chargement : sur le vert de Talka, le logo qui respire à la
+/// place exacte de celui du lancement d'iOS, le nom, une barre qui avance,
 /// l'étape en cours (comme le navigateur).
 struct LoadingView: View {
     let step: String
@@ -188,30 +189,18 @@ struct LoadingView: View {
     var body: some View {
         ZStack {
             Color("LaunchBackground").ignoresSafeArea()
-            VStack(spacing: 14) {
-                Logo(size: 88)
-                    .scaleEffect(breathe ? 0.94 : 1)
-                    .opacity(breathe ? 0.85 : 1)
-                Text("Talka").font(.title.bold())
-                Capsule()
-                    .fill(Color(.systemGray5))
-                    .frame(width: 180, height: 4)
-                    .overlay(alignment: .leading) {
-                        Capsule()
-                            .fill(Color(red: 0.055, green: 0.42, blue: 0.39))
-                            .frame(width: 72, height: 4)
-                            .offset(x: slide ? 180 : -72)
-                    }
-                    .clipShape(.capsule)
-                    .padding(.top, 4)
-                Text(step).font(.callout)
-                Text("Vos messages restent sur cet appareil, chiffrés de bout en bout.")
+            Logo(size: 88)
+                .overlay(RoundedRectangle(cornerRadius: 88 * 0.23).strokeBorder(.white.opacity(0.92), lineWidth: 3))
+                .scaleEffect(breathe ? 0.94 : 1)
+                .opacity(breathe ? 0.85 : 1)
+                .overlay(alignment: .top) { caption.fixedSize().offset(y: 88 + 18) }
+            VStack {
+                Spacer()
+                Text("🔒 Chiffré de bout en bout")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 260)
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.bottom, 12)
             }
-            .padding()
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Chargement de Talka. \(step)")
@@ -219,6 +208,24 @@ struct LoadingView: View {
             guard !reduceMotion else { return }
             withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { breathe = true }
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) { slide = true }
+        }
+    }
+
+    /// Sous le logo : le nom, la barre, l'étape.
+    var caption: some View {
+        VStack(spacing: 12) {
+            Text("Talka").font(.system(size: 30, weight: .bold)).foregroundStyle(.white)
+            Capsule()
+                .fill(.white.opacity(0.25))
+                .frame(width: 180, height: 4)
+                .overlay(alignment: .leading) {
+                    Capsule()
+                        .fill(.white)
+                        .frame(width: 72, height: 4)
+                        .offset(x: slide ? 180 : -72)
+                }
+                .clipShape(.capsule)
+            Text(step).font(.callout).foregroundStyle(.white.opacity(0.9))
         }
     }
 }
