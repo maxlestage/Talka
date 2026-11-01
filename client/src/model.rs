@@ -689,6 +689,18 @@ pub struct GroupInfo {
     pub admins_only: Option<bool>,
 }
 
+/// « 1:05 ». Une durée reçue d'un autre appareil peut être n'importe quoi :
+/// bornée (0 à 99 h), comme l'iPhone (`formatDuration`, qui sans cela
+/// planterait).
+pub fn format_duration(s: f64) -> String {
+    let s = if s.is_finite() {
+        s.clamp(0.0, 359_999.0).round() as u64
+    } else {
+        0
+    };
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
 /// Une taille lisible : « 25 o », « 11,7 Ko », « 3,2 Mo » (par 1024, une
 /// décimale à la française). Le même que l'iPhone (`formatBytes`).
 pub fn format_bytes(n: f64) -> String {
@@ -1388,6 +1400,16 @@ mod tests {
         );
         assert_eq!(st.detail(), "2 photos · 1 document · 1 vocal");
         assert_eq!(Storage::default().detail(), "");
+    }
+
+    #[test]
+    fn durations_like_the_iphone() {
+        assert_eq!(format_duration(65.0), "1:05");
+        assert_eq!(format_duration(0.4), "0:00");
+        assert_eq!(format_duration(-5.0), "0:00");
+        assert_eq!(format_duration(f64::NAN), "0:00");
+        assert_eq!(format_duration(f64::INFINITY), "0:00");
+        assert_eq!(format_duration(1e300), "5999:59");
     }
 
     #[test]

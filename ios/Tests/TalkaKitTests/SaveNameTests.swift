@@ -68,4 +68,14 @@ final class SaveNameTests: XCTestCase {
         XCTAssertEqual(st.detail, "2 photos · 1 document · 1 vocal")
         XCTAssertEqual(Storage().detail, "")
     }
+
+    /// Une durée absurde reçue d'un autre appareil ne fait pas planter.
+    func testDurationNeverCrashes() {
+        XCTAssertEqual(formatDuration(65), "1:05")
+        XCTAssertEqual(formatDuration(0.4), "0:00")
+        XCTAssertEqual(formatDuration(-5), "0:00")
+        XCTAssertEqual(formatDuration(.nan), "0:00")
+        XCTAssertEqual(formatDuration(.infinity), "0:00")
+        XCTAssertEqual(formatDuration(1e300), "5999:59")
+    }
 }
