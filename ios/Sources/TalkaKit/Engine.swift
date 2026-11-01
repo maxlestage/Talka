@@ -348,6 +348,12 @@ public final class Engine {
         store.messagesOf(chat, limit: limit)
     }
 
+    /// Les photos de la discussion, la plus récente d'abord (parmi ses 500
+    /// derniers messages, comme le navigateur).
+    public func photos(in chat: String) -> [Message] {
+        Message.photos(messages(chat, limit: 500), me: me.code, now: nowMs())
+    }
+
     // ----- Contacts -----
 
     func saveContact(_ c: Contact) {

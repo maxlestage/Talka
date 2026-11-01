@@ -90,6 +90,27 @@ final class GroupsInCommonTests: XCTestCase {
         XCTAssertEqual(Chat.groupsInCommon(chats, me: "MOI", code: "LEA").map(\.id), ["g:2", "g:1"])
         XCTAssertTrue(Chat.groupsInCommon(chats, me: "MOI", code: "ZOE").isEmpty)
     }
+
+    /// La fiche montre les photos de la plus récente à la plus ancienne, sans
+    /// les supprimées ni une capsule encore scellée (comme le navigateur).
+    func testPhotosNewestFirstWithoutHiddenOnes() {
+        func m(_ id: String, _ kind: String, _ from: String, deleted: Bool = false, openAt: Double? = nil) -> Message {
+            var x = Message(chat: "LEA", id: id, from: from, at: 0, content: Content())
+            x.kind = kind; x.data = "data:image/jpeg;base64,AA=="
+            x.deleted = deleted; x.openAt = openAt
+            return x
+        }
+        let msgs = [
+            m("1", "image", "LEA"),
+            m("2", "text", "LEA"),
+            m("3", "image", "LEA", deleted: true),
+            m("4", "image", "LEA", openAt: 5_000),
+            m("5", "image", "MOI", openAt: 5_000),
+            m("6", "image", "MOI"),
+        ]
+        XCTAssertEqual(Message.photos(msgs, me: "MOI", now: 1_000).map(\.id), ["6", "5", "1"])
+        XCTAssertEqual(Message.photos(msgs, me: "MOI", now: 9_000).map(\.id), ["6", "5", "4", "1"])
+    }
 }
 
 final class PresenceTests: XCTestCase {
