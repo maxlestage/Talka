@@ -1265,7 +1265,6 @@ fn content(m: &Message) -> El {
                 },
                 m.data.clone(),
             );
-            let ext = m.name.rsplit('.').next().unwrap_or("").to_uppercase();
             h("button.file")
                 .attr("type", "button")
                 .click(move || download(&name, &data))
@@ -1277,7 +1276,7 @@ fn content(m: &Message) -> El {
                         } else {
                             &m.name
                         }))
-                        .child(h("small").text(format!("{} · {ext}", bytes(m.size)))),
+                        .child(h("small").text(m.file_detail(&bytes(m.size)))),
                 )
                 .child(icon("download"))
         }

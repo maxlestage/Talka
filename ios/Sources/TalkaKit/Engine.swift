@@ -360,6 +360,12 @@ public final class Engine {
         Message.documents(messages(chat, limit: 500), me: me.code, now: nowMs())
     }
 
+    /// Les liens de la discussion, le plus récent d'abord (mêmes 500
+    /// derniers messages).
+    public func links(in chat: String) -> [ChatLink] {
+        Message.links(messages(chat, limit: 500), me: me.code, now: nowMs())
+    }
+
     // ----- Contacts -----
 
     func saveContact(_ c: Contact) {
