@@ -792,19 +792,7 @@ pub fn fmt_dur(s: f64) -> String {
 }
 
 pub fn bytes(n: f64) -> String {
-    let units = ["o", "Ko", "Mo", "Go"];
-    let mut n = n.max(0.0);
-    let mut i = 0;
-    while n >= 1024.0 && i < units.len() - 1 {
-        n /= 1024.0;
-        i += 1;
-    }
-    let s = if i == 0 {
-        format!("{n:.0}")
-    } else {
-        format!("{n:.1}")
-    };
-    format!("{} {}", s.replace('.', ","), units[i])
+    crate::model::format_bytes(n)
 }
 
 // ----- Toasts, fenêtres, menus ----------------------------------------------
