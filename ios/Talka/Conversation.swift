@@ -48,6 +48,10 @@ struct ConversationView: View {
     @FocusState private var searchFocused: Bool
     /// La largeur de la discussion (sur iPad, pas celle de l'écran).
     @State private var width: CGFloat = 0
+    /// Le bas de la discussion est à l'écran : un message qui arrive y fait
+    /// descendre ; sinon le bouton « Derniers messages » apparaît, comme dans
+    /// le navigateur, et la lecture plus haut n'est pas interrompue.
+    @State private var atBottom = true
 
     var body: some View {
         if let e = model.engine, let chat = e.chat(chatId) {
@@ -92,6 +96,11 @@ struct ConversationView: View {
                                     .reportsRowTop(m.id)
                                     .contextMenu { menu(e, chat, m) }
                             }
+                            Color.clear
+                                .frame(height: 1)
+                                .id("fil-bas")
+                                .onAppear { atBottom = true }
+                                .onDisappear { atBottom = false }
                         }
                         .padding(.horizontal, 8)
                         .padding(.bottom, 8)
@@ -110,9 +119,30 @@ struct ConversationView: View {
                                 .accessibilityHidden(true)
                         }
                     }
+                    .overlay(alignment: .bottomTrailing) {
+                        if !atBottom {
+                            Button {
+                                withAnimation { proxy.scrollTo("fil-bas", anchor: .bottom) }
+                            } label: {
+                                Image(systemName: "chevron.down")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 40, height: 40)
+                                    .background(.regularMaterial, in: Circle())
+                                    .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+                            }
+                            .padding(12)
+                            .accessibilityLabel("Derniers messages")
+                            .transition(.opacity)
+                        }
+                    }
                     .onChange(of: messages.last?.id) { _, id in
                         guard let id else { return }
-                        withAnimation(loaded ? .default : nil) { proxy.scrollTo(id, anchor: .bottom) }
+                        // Comme le navigateur : on descend si l'on était en bas, ou
+                        // pour notre propre message ; pas pendant la lecture plus haut.
+                        if atBottom || messages.last?.from == e.me.code || !loaded {
+                            withAnimation(loaded ? .default : nil) { proxy.scrollTo(id, anchor: .bottom) }
+                        }
                         e.markRead(chatId)
                         // Seulement pour un message qui arrive ou part maintenant.
                         if let m = messages.last, nowMs() - m.at < 10_000, m.summonsBrocoli(me: e.me.code) {
