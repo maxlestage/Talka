@@ -2211,29 +2211,62 @@ pub async fn open_info(id: &str) {
     }
 }
 
+/// Les photos et les documents de la discussion, dans sa fiche (comme
+/// WhatsApp) : toucher une photo l'ouvre, un document l'enregistre.
 async fn media_grid(chat_id: &str) -> Option<Element> {
     let msgs = core::messages(chat_id, 500).await;
-    let all = crate::model::photos(&msgs, &core::my_code(), now());
-    if all.is_empty() {
+    let (me, t) = (core::my_code(), now());
+    let photos = crate::model::photos(&msgs, &me, t);
+    let docs = crate::model::documents(&msgs, &me, t);
+    if photos.is_empty() && docs.is_empty() {
         return None;
     }
-    Some(
+    let photos = (!photos.is_empty()).then(|| {
         h("div.info-section")
-            .child(h("h3").text(format!("Photos ({})", all.len())))
-            .child(h("div.media-grid").children(all.iter().take(24).map(|m| {
-                let (d, t) = (m.data.clone(), m.text.clone());
-                h("button")
+            .child(h("h3").text(format!("Photos ({})", photos.len())))
+            .child(
+                h("div.media-grid").children(photos.iter().take(24).map(|m| {
+                    let (d, t) = (m.data.clone(), m.text.clone());
+                    h("button")
+                        .attr("type", "button")
+                        .child(
+                            h("img")
+                                .attr("src", &m.data)
+                                .attr("alt", "")
+                                .attr("loading", "lazy"),
+                        )
+                        .click(move || open_image(&d, &t))
+                })),
+            )
+    });
+    let docs = (!docs.is_empty()).then(|| {
+        h("div.info-section")
+            .child(h("h3").text(format!("Documents ({})", docs.len())))
+            .child(h("div.list").children(docs.iter().take(20).map(|m| {
+                let (name, data) = (m.save_name(), m.data.clone());
+                let shown = if m.name.is_empty() {
+                    "Fichier".to_owned()
+                } else {
+                    m.name.clone()
+                };
+                h("button.list-item")
                     .attr("type", "button")
+                    .attr("aria-label", format!("Enregistrer {shown}"))
+                    .child(h("span.file-icon").child(icon("file")))
                     .child(
-                        h("img")
-                            .attr("src", &m.data)
-                            .attr("alt", "")
-                            .attr("loading", "lazy"),
+                        h("div.grow")
+                            .child(h("div.strong.ellipsis").text(&shown))
+                            .child(h("div.muted.small").text(format!(
+                                "{} · {}",
+                                bytes(m.size),
+                                day_label(m.at)
+                            ))),
                     )
-                    .click(move || open_image(&d, &t))
+                    .child(icon("download"))
+                    .click(move || download(&name, &data))
             })))
-            .el(),
-    )
+    });
+    Some(h("div").child(photos).child(docs).el())
 }
 
 async fn contact_info(code: &str) {

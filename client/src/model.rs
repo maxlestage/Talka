@@ -437,9 +437,19 @@ pub fn groups_in_common<'a>(chats: &'a [Chat], me: &str, code: &str) -> Vec<&'a 
 /// pour nous. `msgs` va du plus ancien au plus récent. Le même que l'iPhone
 /// (`Message.photos`).
 pub fn photos<'a>(msgs: &'a [Message], me: &str, now: f64) -> Vec<&'a Message> {
+    attachments(msgs, "image", me, now)
+}
+
+/// Les documents (fichiers) d'une discussion, pour sa fiche, avec la même
+/// règle que les photos. Le même que l'iPhone (`Message.documents`).
+pub fn documents<'a>(msgs: &'a [Message], me: &str, now: f64) -> Vec<&'a Message> {
+    attachments(msgs, "file", me, now)
+}
+
+fn attachments<'a>(msgs: &'a [Message], kind: &str, me: &str, now: f64) -> Vec<&'a Message> {
     msgs.iter()
         .rev()
-        .filter(|m| m.kind == "image" && !m.deleted && !m.data.is_empty() && !m.sealed_for(me, now))
+        .filter(|m| m.kind == kind && !m.deleted && !m.data.is_empty() && !m.sealed_for(me, now))
         .collect()
 }
 
@@ -1118,6 +1128,29 @@ mod tests {
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(ids, ["6", "5", "4", "1"]);
+    }
+
+    #[test]
+    fn documents_are_the_files_only() {
+        let m = |id: &str, kind: &str, data: &str| Message {
+            id: id.into(),
+            kind: kind.into(),
+            from: "LEA".into(),
+            data: data.into(),
+            ..Default::default()
+        };
+        let msgs = vec![
+            m("1", "file", "data:application/pdf;base64,AA=="),
+            m("2", "image", "data:image/jpeg;base64,AA=="),
+            m("3", "file", ""),
+            m("4", "voice", "data:audio/webm;base64,AA=="),
+            m("5", "file", "data:text/plain;base64,AA=="),
+        ];
+        let ids: Vec<_> = documents(&msgs, "MOI", 0.0)
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(ids, ["5", "1"]);
     }
 
     #[test]
