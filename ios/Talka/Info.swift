@@ -718,13 +718,16 @@ struct ChatMoreMenu: View {
 }
 
 /// Les photos de la discussion dans sa fiche, comme WhatsApp (et le
-/// navigateur) : les 24 plus récentes en grille ; toucher en ouvre une.
+/// navigateur) : les 24 plus récentes en grille, « Tout voir (N) » pour les
+/// autres ; toucher en ouvre une.
 struct PhotosSection: View {
     let engine: Engine
     let chatId: String
     @State private var thumbs: [Thumb] = []
     @State private var total = 0
     @State private var viewing: Message?
+    /// « Tout voir (N) » : toutes les photos, pas seulement les 24 dernières.
+    @State private var all = false
 
     struct Thumb: Identifiable {
         let message: Message
@@ -756,13 +759,16 @@ struct PhotosSection: View {
                         }
                     }
                     .padding(.vertical, 4)
+                    if !all, total > 24 {
+                        Button("Tout voir (\(total))") { all = true }
+                    }
                 }
             }
         }
         // Décodées une fois (en vignettes), pas à chaque mise à jour de la fiche.
-        .task(id: photos.map(\.id)) {
+        .task(id: [all ? "tout" : ""] + photos.map(\.id)) {
             total = photos.count
-            thumbs = photos.prefix(24).compactMap { m in
+            thumbs = photos.prefix(all ? photos.count : 24).compactMap { m in
                 guard let ui = UIImage.fromDataURL(m.data) else { return nil }
                 return Thumb(message: m, image: ui.preparingThumbnail(of: CGSize(width: 240, height: 240)) ?? ui)
             }
@@ -772,17 +778,19 @@ struct PhotosSection: View {
 }
 
 /// Les documents de la discussion dans sa fiche, comme WhatsApp (et le
-/// navigateur) : les 20 plus récents ; toucher en partage ou enregistre un.
+/// navigateur) : les 20 plus récents, « Tout voir (N) » pour les autres ;
+/// toucher en partage ou enregistre un.
 struct DocumentsSection: View {
     let engine: Engine
     let chatId: String
     @State private var exported: URL?
+    @State private var all = false
 
     var body: some View {
         let docs = engine.documents(in: chatId)
         if !docs.isEmpty {
             Section("Documents (\(docs.count))") {
-                ForEach(docs.prefix(20)) { m in
+                ForEach(docs.prefix(all ? docs.count : 20)) { m in
                     Button {
                         if let data = Data(dataURL: m.data) { exported = temporaryFile(data, name: m.saveName) }
                     } label: {
@@ -798,6 +806,9 @@ struct DocumentsSection: View {
                     }
                     .accessibilityLabel("Enregistrer \(m.name.isEmpty ? "le fichier" : m.name)")
                 }
+                if !all, docs.count > 20 {
+                    Button("Tout voir (\(docs.count))") { all = true }
+                }
             }
             .sheet(item: Binding(get: { exported.map(SharedURL.init) }, set: { exported = $0?.url })) { shared in
                 ActivityView(items: [shared.url]).presentationDetents([.medium, .large])
@@ -807,17 +818,19 @@ struct DocumentsSection: View {
 }
 
 /// Les liens de la discussion dans sa fiche, comme WhatsApp (et le
-/// navigateur) : les 20 plus récents ; toucher en ouvre un.
+/// navigateur) : les 20 plus récents, « Tout voir (N) » pour les autres ;
+/// toucher en ouvre un.
 struct LinksSection: View {
     @Environment(\.openURL) private var openURL
     let engine: Engine
     let chatId: String
+    @State private var all = false
 
     var body: some View {
         let links = engine.links(in: chatId)
         if !links.isEmpty {
             Section("Liens (\(links.count))") {
-                ForEach(links.prefix(20)) { l in
+                ForEach(links.prefix(all ? links.count : 20)) { l in
                     Button {
                         if let url = URL(string: l.url) { openURL(url) }
                     } label: {
@@ -830,6 +843,9 @@ struct LinksSection: View {
                             }
                         }
                     }
+                }
+                if !all, links.count > 20 {
+                    Button("Tout voir (\(links.count))") { all = true }
                 }
             }
         }
