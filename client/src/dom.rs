@@ -787,8 +787,7 @@ pub fn full_date(ts: f64) -> String {
 }
 
 pub fn fmt_dur(s: f64) -> String {
-    let s = s.round().max(0.0) as u64;
-    format!("{}:{:02}", s / 60, s % 60)
+    crate::model::format_duration(s)
 }
 
 pub fn bytes(n: f64) -> String {
