@@ -173,7 +173,7 @@ dependencies = [
 [[package]]
 name = "brocolis-proto"
 version = "0.1.0"
-source = "git+https://github.com/maxlestage/Messagerie-?rev=32c386e3deaed316994f338a182ec2e544bface0#32c386e3deaed316994f338a182ec2e544bface0"
+source = "git+https://github.com/maxlestage/Messagerie-?rev=ceb48e9a3d5b8c8faedd77f5505e79840bf4b95a#ceb48e9a3d5b8c8faedd77f5505e79840bf4b95a"
 dependencies = [
  "aes-gcm 0.11.1",
  "argon2",

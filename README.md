@@ -83,6 +83,26 @@ iPhone et un navigateur à jour discutent en sessions à double cliquet.
   « (classique) », ou « Ancien chiffrement » ; un iPhone d'avant iOS 26 (pas
   de ML-KEM dans CryptoKit) n'ouvre que des sessions classiques.
 
+### Triple cliquet (protocole v4 de la messagerie)
+
+Entre deux navigateurs à jour, la session passe au **triple cliquet** de
+[Brocolis](https://github.com/maxlestage/messagerie-) (`session4` de
+`brocolis-proto`, §9 de sa spécification) : ML-KEM-768 est mélangé à
+**chaque** tour du cliquet, pas seulement à l'établissement ; les en-têtes
+du cliquet sont chiffrés (plus aucun identifiant de session en clair) ; et
+l'identité de l'expéditeur du premier message est chiffrée elle aussi.
+
+- un navigateur à jour l'annonce (`"v4":1`) dans les messages qu'il envoie en
+  double cliquet : l'annonce voyage dans une session authentifiée, le relais
+  ne peut ni la lire ni l'ôter ;
+- dès qu'un contact l'a annoncé (ou qu'un jeton `[[BROCOLIS:v4:…]]` est
+  arrivé de lui), on ne lui écrit plus qu'en v4, pour de bon : une session
+  perdue se répare en v4, et un vieux message rejoué n'y change rien ;
+- une version d'avant, ou l'iPhone (pas encore porté), n'annonce rien et
+  reste en double cliquet, comme avant ;
+- la fiche du contact dit « 🔐 Triple cliquet (post-quantique à chaque
+  message, en-têtes chiffrés) ».
+
 Comme tout est dans le navigateur, **Réglages → Exporter une sauvegarde
 chiffrée** produit un fichier protégé par mot de passe (PBKDF2 + AES-GCM), à
 importer sur un autre appareil ou après avoir effacé les données du site.
