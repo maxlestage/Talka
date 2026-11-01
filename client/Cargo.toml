@@ -35,7 +35,7 @@ memoire-orm = { git = "https://github.com/maxlestage/Memoire", default-features 
 # Le protocole v3 (sessions à double cliquet, établissement hybride X25519 +
 # ML-KEM-768) : l'implémentation de référence de Brocolis 🥦, la même que
 # celle de l'app. Voir `v3`.
-brocolis-proto = { git = "https://github.com/maxlestage/Messagerie-", rev = "32c386e3deaed316994f338a182ec2e544bface0" }
+brocolis-proto = { git = "https://github.com/maxlestage/Messagerie-", rev = "ceb48e9a3d5b8c8faedd77f5505e79840bf4b95a" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

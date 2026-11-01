@@ -363,24 +363,31 @@ async fn two_clients_talk_v3_through_the_relay() {
     assert!(matches!(opened, Opened::V3(_)));
     assert_eq!(text_of(&opened).as_deref(), Some("Salut 🥦"));
     bob.got(&env).await;
+    // Le premier message, en double cliquet, annonçait le triple cliquet :
+    // Bob ne répond plus qu'en v4.
     assert_eq!(
         bob.v3.as_ref().unwrap().session_protection(&alice_id.code),
-        Some(Protection::Ratchet { pq: true })
+        Some(Protection::Triple)
     );
 
-    // La réponse : par la session, sans redemander le paquet.
+    // La réponse : une session v4 vers le paquet d'Alice.
     assert!(
         bob.send_wire(&alice_id, &text("r1", "Bien reçu"), "r1")
             .await
     );
+    assert!(bob.v3.as_ref().unwrap().has_session(&alice_id.code));
     let env = alice.next_msg().await;
     assert_eq!(
         text_of(&alice.open(&bob_id, &env)).as_deref(),
         Some("Bien reçu")
     );
     alice.got(&env).await;
+    assert_eq!(
+        alice.v3.as_ref().unwrap().session_protection(&bob_id.code),
+        Some(Protection::Triple)
+    );
 
-    // Dans le désordre : trois messages, ouverts 3, 1, 2.
+    // Dans le désordre : trois messages, ouverts 3, 1, 2 (en v4).
     for i in 2..5 {
         assert!(
             alice
