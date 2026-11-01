@@ -74,6 +74,7 @@ struct ContactInfoView: View {
                         StarredRow(engine: e, chatId: code, shown: $showStarred)
                     }
                 }
+                if chat != nil { PhotosSection(engine: e, chatId: code) }
                 // Les groupes en commun, comme WhatsApp (et le navigateur).
                 let common = e.groupsInCommon(code)
                 if !common.isEmpty {
@@ -389,6 +390,7 @@ struct GroupInfoView: View {
                     WallpaperPicker(chatId: chatId)
                     StarredRow(engine: e, chatId: chatId, shown: $showStarred)
                 }
+                PhotosSection(engine: e, chatId: chatId)
                 Section("\(chat.members.count) membres") {
                     if admin {
                         Button { adding = true } label: { Label("Ajouter des membres", systemImage: "person.badge.plus") }
@@ -706,5 +708,59 @@ struct ChatMoreMenu: View {
         guard let export = e.exportChat(chatId) else { return }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(export.filename)
         if (try? Data(export.text.utf8).write(to: url)) != nil { exported = url }
+    }
+}
+
+/// Les photos de la discussion dans sa fiche, comme WhatsApp (et le
+/// navigateur) : les 24 plus récentes en grille ; toucher en ouvre une.
+struct PhotosSection: View {
+    let engine: Engine
+    let chatId: String
+    @State private var thumbs: [Thumb] = []
+    @State private var total = 0
+    @State private var viewing: Message?
+
+    struct Thumb: Identifiable {
+        let message: Message
+        let image: UIImage
+        var id: String { message.id }
+    }
+
+    var body: some View {
+        let photos = engine.photos(in: chatId)
+        Group {
+            if !thumbs.isEmpty {
+                Section("Photos (\(total))") {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
+                        ForEach(thumbs) { t in
+                            Button { viewing = t.message } label: {
+                                Color.clear
+                                    .aspectRatio(1, contentMode: .fit)
+                                    .overlay {
+                                        Image(uiImage: t.image)
+                                            .resizable()
+                                            .scaledToFill()
+                                    }
+                                    .clipShape(.rect(cornerRadius: 6))
+                                    .contentShape(.rect)
+                            }
+                            // Dans une Form, chaque vignette reste un bouton à part.
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Photo")
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        // Décodées une fois (en vignettes), pas à chaque mise à jour de la fiche.
+        .task(id: photos.map(\.id)) {
+            total = photos.count
+            thumbs = photos.prefix(24).compactMap { m in
+                guard let ui = UIImage.fromDataURL(m.data) else { return nil }
+                return Thumb(message: m, image: ui.preparingThumbnail(of: CGSize(width: 240, height: 240)) ?? ui)
+            }
+        }
+        .fullScreenCover(item: $viewing) { m in ImageViewer(engine: engine, message: m) }
     }
 }

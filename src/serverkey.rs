@@ -24,7 +24,7 @@ impl ServerKey {
     pub fn from_secret(secret_b64: &str) -> Option<ServerKey> {
         let bytes = B64.decode(secret_b64.trim()).ok()?;
         let signing = SigningKey::from_slice(&bytes).ok()?;
-        let public = B64.encode(signing.verifying_key().to_encoded_point(false).as_bytes());
+        let public = B64.encode(signing.verifying_key().to_sec1_point(false).as_bytes());
         Some(ServerKey { signing, public })
     }
 

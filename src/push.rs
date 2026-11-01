@@ -56,7 +56,7 @@ impl Vapid {
     pub fn new(secret: &str, subject: &str) -> Option<Vapid> {
         let bytes = B64URL.decode(secret.trim().trim_end_matches('=')).ok()?;
         let key = SigningKey::from_slice(&bytes).ok()?;
-        let public = B64URL.encode(key.verifying_key().to_encoded_point(false).as_bytes());
+        let public = B64URL.encode(key.verifying_key().to_sec1_point(false).as_bytes());
         Some(Vapid {
             key,
             public,
@@ -181,15 +181,15 @@ fn encrypt_with(
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes128Gcm, Nonce};
     use hkdf::Hkdf;
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use p256::elliptic_curve::sec1::ToSec1Point;
     use sha2::Sha256;
 
     if auth.len() != 16 || plain.len() > 3800 {
         return None;
     }
     let ua = p256::PublicKey::from_sec1_bytes(p256dh).ok()?;
-    let ua_raw = ua.to_encoded_point(false);
-    let as_raw = secret.public_key().to_encoded_point(false);
+    let ua_raw = ua.to_sec1_point(false);
+    let as_raw = secret.public_key().to_sec1_point(false);
     let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), ua.as_affine());
     // IKM = HKDF(auth, ECDH, « WebPush: info » ‖ 0 ‖ clé du navigateur ‖ la nôtre)
     let mut info = b"WebPush: info\0".to_vec();
@@ -469,6 +469,28 @@ mod tests {
         }
         let long = format!("https://fcm.googleapis.com/{}", "a".repeat(MAX_ENDPOINT));
         assert!(audience(&long).is_none());
+    }
+
+    /// L'exemple de RFC 8291, annexe A : octet pour octet ce que le navigateur
+    /// attend.
+    #[test]
+    fn rfc8291_example() {
+        let d = |s: &str| B64URL.decode(s).unwrap();
+        let secret =
+            p256::SecretKey::from_slice(&d("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw")).unwrap();
+        let salt: [u8; 16] = d("DGv6ra1nlYgDCS1FRnbzlw").try_into().unwrap();
+        let out = encrypt_with(
+            &d("BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"),
+            &d("BTBZMqHH6r4Tts7J_aSIgg"),
+            b"When I grow up, I want to be a watermelon",
+            &secret,
+            salt,
+        )
+        .unwrap();
+        assert_eq!(
+            B64URL.encode(out),
+            "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
+        );
     }
 
     #[test]

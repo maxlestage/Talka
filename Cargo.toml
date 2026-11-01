@@ -30,7 +30,7 @@ sha2 = "0.10"
 getrandom = "0.2"
 # Le serveur vérifie que celui qui se présente avec un code détient bien la
 # clé dont le code est l'empreinte (ECDSA P-256, signée par WebCrypto).
-p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+p256 = { version = "0.14", features = ["ecdsa", "ecdh"] }
 # Les notifications avec aperçu : chiffrées pour le navigateur (RFC 8291).
 aes-gcm = "0.10"
 hkdf = "0.12"

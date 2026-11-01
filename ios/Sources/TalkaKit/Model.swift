@@ -161,6 +161,14 @@ extension Message {
     public func tooOld(keepDays: Int, now: Double) -> Bool {
         keepDays > 0 && !isStarred && max(at, openAt ?? 0) < now - Double(keepDays) * 86_400_000
     }
+
+    /// Les photos d'une discussion, pour sa fiche (« Photos », comme
+    /// WhatsApp) : la plus récente d'abord, sans les supprimées ni une
+    /// capsule encore scellée pour nous. `messages` va du plus ancien au plus
+    /// récent. Le même que le navigateur (`model::photos`).
+    public static func photos(_ messages: [Message], me: String, now: Double) -> [Message] {
+        messages.reversed().filter { $0.kind == "image" && !$0.deleted && !$0.data.isEmpty && !$0.sealed(for: me, now: now) }
+    }
 }
 
 public struct Contact: Codable, Equatable, Identifiable, Sendable {
