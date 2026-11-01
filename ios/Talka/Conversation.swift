@@ -570,6 +570,8 @@ struct ConversationView: View {
                                 .padding(.leading, 14)
                                 .padding(.vertical, 11)
                                 .onChange(of: text) { _, t in
+                                    // Comme le `maxlength` du navigateur : la saisie s'arrête là.
+                                    if t.count > maxMessageText { text = String(t.prefix(maxMessageText)) }
                                     if editing == nil { e.setTyping(chatId, !t.isEmpty) }
                                 }
                                 // Un clavier (iPad, Mac) : Entrée envoie, Maj + Entrée va à la
@@ -662,7 +664,7 @@ struct ConversationView: View {
             if t != m.text { e.edit(chatId, m.id, text: t) }
             editing = nil
         } else {
-            var content = Content(text: String(t.prefix(8000)))
+            var content = Content(text: String(t.prefix(maxMessageText)))
             if let chat = e.chat(chatId), chat.group {
                 content.mentions = Mentions.found(in: content.text, members: e.mentionCandidates(chat))
             }
