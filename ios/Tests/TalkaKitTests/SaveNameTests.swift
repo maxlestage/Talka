@@ -20,4 +20,21 @@ final class SaveNameTests: XCTestCase {
         XCTAssertEqual(message("voice").saveName, "vocal-talka.webm")
         XCTAssertEqual(message("file").saveName, "fichier-talka")
     }
+
+    /// Sous le nom d'un document : l'extension seulement s'il y en a une vraie.
+    func testFileDetailShowsARealExtensionOnly() {
+        func f(_ name: String) -> Message {
+            var m = Message(chat: "c", id: "m", from: "x", at: 0, content: Content())
+            m.name = name
+            return m
+        }
+        XCTAssertEqual(f("devis.pdf").fileDetail(size: "12 Ko"), "12 Ko · PDF")
+        XCTAssertEqual(f("archive.tar.gz").fileDetail(size: "3 Mo"), "3 Mo · GZ")
+        XCTAssertEqual(f("README").fileDetail(size: "1 Ko"), "1 Ko")
+        XCTAssertEqual(f("").fileDetail(size: "1 Ko"), "1 Ko")
+        XCTAssertEqual(f(".profile").fileDetail(size: "1 Ko"), "1 Ko")
+        XCTAssertEqual(f("fin.").fileDetail(size: "1 Ko"), "1 Ko")
+        XCTAssertEqual(f("v1.2 compte rendu final").fileDetail(size: "1 Ko"), "1 Ko")
+        XCTAssertEqual(f("v1.2 fin").fileDetail(size: "1 Ko"), "1 Ko")
+    }
 }
