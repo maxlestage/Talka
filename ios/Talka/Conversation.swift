@@ -102,8 +102,8 @@ struct ConversationView: View {
                             Color.clear
                                 .frame(height: 1)
                                 .id("fil-bas")
-                                .onAppear { atBottom = true }
-                                .onDisappear { atBottom = false }
+                                .onAppear { atBottom = true; seenAtLeave = nil }
+                                .onDisappear { atBottom = false; seenAtLeave = messages.last?.id }
                         }
                         .padding(.horizontal, 8)
                         .padding(.bottom, 8)
@@ -124,36 +124,11 @@ struct ConversationView: View {
                     }
                     .overlay(alignment: .bottomTrailing) {
                         if !atBottom {
-                            let below = seenAtLeave.map { Message.newBelow(messages, seen: $0, me: e.me.code) } ?? 0
-                            Button {
+                            LatestButton(below: seenAtLeave.map { Message.newBelow(messages, seen: $0, me: e.me.code) } ?? 0) {
                                 withAnimation { proxy.scrollTo("fil-bas", anchor: .bottom) }
-                            } label: {
-                                Image(systemName: "chevron.down")
-                                    .font(.body.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 40, height: 40)
-                                    .background(.regularMaterial, in: Circle())
-                                    .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
-                                    // Les messages arrivés depuis, comme WhatsApp (et le navigateur).
-                                    .overlay(alignment: .topTrailing) {
-                                        if below > 0 {
-                                            Text("\(below)")
-                                                .font(.caption2.bold())
-                                                .foregroundStyle(.white)
-                                                .padding(.horizontal, 5)
-                                                .frame(minWidth: 20, minHeight: 20)
-                                                .background(Color.talkaGreen, in: Capsule())
-                                                .offset(x: 4, y: -6)
-                                        }
-                                    }
                             }
-                            .padding(12)
-                            .accessibilityLabel(below == 0 ? "Derniers messages" : below == 1 ? "Derniers messages, 1 nouveau" : "Derniers messages, \(below) nouveaux")
                             .transition(.opacity)
                         }
-                    }
-                    .onChange(of: atBottom) { _, bottom in
-                        seenAtLeave = bottom ? nil : messages.last?.id
                     }
                     .onChange(of: messages.last?.id) { _, id in
                         guard let id else { return }
@@ -1390,5 +1365,36 @@ struct MentionBar: View {
                 .frosted(in: .capsule)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// « Derniers messages » ⌄, avec les messages arrivés depuis qu'on a quitté
+/// le bas, comme WhatsApp (et le navigateur).
+struct LatestButton: View {
+    let below: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.down")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 40, height: 40)
+                .background(.regularMaterial, in: Circle())
+                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+                .overlay(alignment: .topTrailing) {
+                    if below > 0 {
+                        Text("\(below)")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .frame(minWidth: 20, minHeight: 20)
+                            .background(Color.talkaGreen, in: Capsule())
+                            .offset(x: 4, y: -6)
+                    }
+                }
+        }
+        .padding(12)
+        .accessibilityLabel(below == 0 ? "Derniers messages" : below == 1 ? "Derniers messages, 1 nouveau" : "Derniers messages, \(below) nouveaux")
     }
 }
