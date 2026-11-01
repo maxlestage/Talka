@@ -707,6 +707,57 @@ pub fn format_bytes(n: f64) -> String {
     format!("{} {}", s.replace('.', ","), units[i])
 }
 
+/// Ce que pèsent les pièces jointes d'une discussion (« Gérer le stockage »,
+/// comme WhatsApp). Le même que l'iPhone (`Storage`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Storage {
+    pub bytes: f64,
+    pub photos: usize,
+    pub files: usize,
+    pub voices: usize,
+}
+
+impl Storage {
+    /// Les photos, documents et vocaux encore là (pas les supprimés) : leur
+    /// taille, ou à défaut celle de leur contenu base64 décodé.
+    pub fn of(msgs: &[Message]) -> Storage {
+        let mut st = Storage::default();
+        for m in msgs.iter().filter(|m| !m.deleted && !m.data.is_empty()) {
+            match m.kind.as_str() {
+                "image" => st.photos += 1,
+                "file" => st.files += 1,
+                "voice" => st.voices += 1,
+                _ => continue,
+            }
+            st.bytes += if m.size > 0.0 {
+                m.size
+            } else {
+                let b64 = m.data.split_once(',').map_or(m.data.as_str(), |(_, b)| b);
+                (b64.len() * 3 / 4) as f64
+            };
+        }
+        st
+    }
+
+    /// « 12 photos · 2 documents · 1 vocal ».
+    pub fn detail(&self) -> String {
+        let part = |n: usize, one: &str, many: &str| match n {
+            0 => None,
+            1 => Some(format!("1 {one}")),
+            n => Some(format!("{n} {many}")),
+        };
+        [
+            part(self.photos, "photo", "photos"),
+            part(self.files, "document", "documents"),
+            part(self.voices, "vocal", "vocaux"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
+    }
+}
+
 /// Une description de groupe : 500 caractères au plus.
 pub const MAX_GROUP_DESC: usize = 500;
 
@@ -1306,6 +1357,37 @@ mod tests {
         assert_eq!(format_bytes(12_000.0), "11,7 Ko");
         assert_eq!(format_bytes(1_572_864.0), "1,5 Mo");
         assert_eq!(format_bytes(-3.0), "0 o");
+    }
+
+    #[test]
+    fn storage_counts_the_attachments() {
+        let m = |kind: &str, data: &str, size: f64, deleted: bool| Message {
+            kind: kind.into(),
+            data: data.into(),
+            size,
+            deleted,
+            ..Default::default()
+        };
+        let msgs = vec![
+            m("image", "data:image/jpeg;base64,AAAAAAAA", 0.0, false),
+            m("image", "data:image/jpeg;base64,AAAA", 0.0, false),
+            m("file", "data:application/pdf;base64,AA==", 1000.0, false),
+            m("voice", "data:audio/webm;base64,AAAA", 500.0, false),
+            m("voice", "data:audio/webm;base64,AAAA", 500.0, true),
+            m("text", "", 0.0, false),
+        ];
+        let st = Storage::of(&msgs);
+        assert_eq!(
+            st,
+            Storage {
+                bytes: 6.0 + 3.0 + 1000.0 + 500.0,
+                photos: 2,
+                files: 1,
+                voices: 1
+            }
+        );
+        assert_eq!(st.detail(), "2 photos · 1 document · 1 vocal");
+        assert_eq!(Storage::default().detail(), "");
     }
 
     #[test]
