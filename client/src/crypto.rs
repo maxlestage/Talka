@@ -103,14 +103,28 @@ pub struct Identity {
 }
 
 fn raw(key: &PublicKey) -> Vec<u8> {
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
-    key.to_encoded_point(false).as_bytes().to_vec()
+    use p256::elliptic_curve::sec1::ToSec1Point;
+    key.to_sec1_point(false).as_bytes().to_vec()
+}
+
+/// Une clé P-256 neuve : 32 octets du générateur du système (`OsRng`, comme
+/// partout ailleurs), tirés de nouveau s'ils sortent de l'ordre de la courbe
+/// (une chance sur 2³²) — ce que fait `SecretKey::random`, sans dépendre de
+/// sa version de `rand_core`.
+pub fn new_secret_key() -> SecretKey {
+    loop {
+        let mut seed = p256::elliptic_curve::zeroize::Zeroizing::new([0u8; 32]);
+        OsRng.fill_bytes(seed.as_mut());
+        if let Ok(key) = SecretKey::from_slice(seed.as_ref()) {
+            return key;
+        }
+    }
 }
 
 impl Identity {
     pub fn create(now: f64) -> Identity {
-        let sign = SecretKey::random(&mut OsRng);
-        let dh = SecretKey::random(&mut OsRng);
+        let sign = new_secret_key();
+        let dh = new_secret_key();
         let (sign_raw, dh_raw) = (raw(&sign.public_key()), raw(&dh.public_key()));
         Identity {
             code: code_of(&sign_raw, &dh_raw),
@@ -453,7 +467,7 @@ pub fn seal_sender(from: &str, to: &str, to_dh: &str, body: &str) -> Option<Stri
 pub fn seal_sender_from(from: &str, fd: &str, to: &str, to_dh: &str, body: &str) -> Option<String> {
     let to_dh_raw = unb64(to_dh)?;
     let public = PublicKey::from_sec1_bytes(&to_dh_raw).ok()?;
-    let eph = SecretKey::random(&mut OsRng);
+    let eph = new_secret_key();
     let eph_raw = raw(&eph.public_key());
     let shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
     let cipher = sealed_key(shared.raw_secret_bytes(), &eph_raw, &to_dh_raw, to)?;
@@ -630,7 +644,7 @@ impl LinkOffer {
 
 impl LinkSecret {
     pub fn new() -> LinkSecret {
-        let key = SecretKey::random(&mut OsRng);
+        let key = new_secret_key();
         let mut lid = [0u8; 16];
         OsRng.fill_bytes(&mut lid);
         LinkSecret {
@@ -674,7 +688,7 @@ fn link_key(shared: &[u8], lid: &[u8], ek: &[u8], lk: &[u8]) -> Option<[u8; 32]>
 /// clé de liaison).
 pub fn link_answer(offer: &LinkOffer) -> Option<(Vec<u8>, [u8; 32])> {
     let public = PublicKey::from_sec1_bytes(&offer.lk).ok()?;
-    let eph = SecretKey::random(&mut OsRng);
+    let eph = new_secret_key();
     let ek = raw(&eph.public_key());
     let shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
     let key = link_key(shared.raw_secret_bytes(), &offer.lid, &ek, &offer.lk)?;
@@ -801,7 +815,7 @@ pub fn seal_apercu(me: &Identity, nk: &str, plain: &str) -> Option<String> {
     if me.code.len() != 10 {
         return None;
     }
-    let eph = SecretKey::random(&mut OsRng);
+    let eph = new_secret_key();
     let eph_raw = raw(&eph.public_key());
     let eph_shared = p256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), public.as_affine());
     let static_shared =
@@ -1269,7 +1283,7 @@ mod tests {
     #[test]
     fn notification_preview() {
         let (a, b) = (Identity::create(0.0), Identity::create(0.0));
-        let nk = SecretKey::random(&mut OsRng);
+        let nk = new_secret_key();
         let nk_pub = b64(&raw(&nk.public_key()));
         let plain = r#"{"n":"Léa","t":"Bonjour 👋"}"#;
         let sealed = seal_apercu(&a, &nk_pub, plain).unwrap();
@@ -1293,7 +1307,7 @@ mod tests {
             b64(&raw_bytes)
         };
         assert!(open_apercu(&nk.to_bytes(), &swapped, |_| Some(b.dh.clone())).is_none());
-        let other = SecretKey::random(&mut OsRng);
+        let other = new_secret_key();
         assert!(open_apercu(&other.to_bytes(), &sealed, contacts).is_none());
         assert!(seal_apercu(&a, "pas une clé", "x").is_none());
         assert!(valid_nk(&nk_pub));
