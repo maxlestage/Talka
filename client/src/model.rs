@@ -689,6 +689,21 @@ pub struct GroupInfo {
     pub admins_only: Option<bool>,
 }
 
+/// Combien de messages des autres sont arrivés après `seen` (le dernier
+/// message affiché quand on a quitté le bas de la discussion) : le nombre du
+/// bouton « Derniers messages », comme WhatsApp. Sans `seen` trouvé dans la
+/// liste, rien (la liste a changé de fenêtre). Le même que l'iPhone
+/// (`Message.newBelow`).
+pub fn new_below(msgs: &[Message], seen: &str, me: &str) -> usize {
+    match msgs.iter().position(|m| m.id == seen) {
+        Some(i) => msgs[i + 1..]
+            .iter()
+            .filter(|m| m.from != me && m.from != "system")
+            .count(),
+        None => 0,
+    }
+}
+
 /// « 1:05 ». Une durée reçue d'un autre appareil peut être n'importe quoi :
 /// bornée (0 à 99 h), comme l'iPhone (`formatDuration`, qui sans cela
 /// planterait).
@@ -1410,6 +1425,26 @@ mod tests {
         assert_eq!(format_duration(f64::NAN), "0:00");
         assert_eq!(format_duration(f64::INFINITY), "0:00");
         assert_eq!(format_duration(1e300), "5999:59");
+    }
+
+    #[test]
+    fn new_messages_below_count_the_others_only() {
+        let m = |id: &str, from: &str| Message {
+            id: id.into(),
+            from: from.into(),
+            ..Default::default()
+        };
+        let msgs = vec![
+            m("1", "LEA"),
+            m("2", "MOI"),
+            m("3", "LEA"),
+            m("4", "system"),
+            m("5", "MOI"),
+            m("6", "BOB"),
+        ];
+        assert_eq!(new_below(&msgs, "2", "MOI"), 2);
+        assert_eq!(new_below(&msgs, "6", "MOI"), 0);
+        assert_eq!(new_below(&msgs, "inconnu", "MOI"), 0);
     }
 
     #[test]
