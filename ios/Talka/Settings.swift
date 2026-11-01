@@ -110,6 +110,11 @@ struct SettingsTab: View {
                         Button { exporting = true } label: { Label("Exporter une sauvegarde", systemImage: "square.and.arrow.up") }
                         Button { importing = true } label: { Label("Restaurer une sauvegarde", systemImage: "square.and.arrow.down") }
                         LabeledContent("Espace utilisé", value: formatBytes(Double(e.store.usage())))
+                        NavigationLink {
+                            StorageView()
+                        } label: {
+                            Label("Gérer le stockage", systemImage: "internaldrive")
+                        }
                     } header: {
                         Text("Sauvegarde")
                     } footer: {
@@ -450,6 +455,46 @@ struct SettingLabel: View {
             }
         } icon: {
             Image(systemName: icon).foregroundStyle(tint == .red ? Color.red : Color.secondary)
+        }
+    }
+}
+
+/// « Gérer le stockage », comme WhatsApp (et le navigateur) : les discussions
+/// qui gardent le plus de photos, documents et vocaux sur cet appareil ;
+/// toucher en ouvre la fiche (où les voir et les enregistrer).
+struct StorageView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if let e = model.engine {
+            let rows = e.storageByChat()
+            List {
+                if rows.isEmpty {
+                    Text("Aucune photo, aucun document, aucun vocal pour l'instant.").foregroundStyle(.secondary)
+                } else {
+                    Section {
+                        ForEach(rows) { r in
+                            NavigationLink {
+                                if r.chat.group { GroupInfoView(chatId: r.chat.id) } else { ContactInfoView(code: r.chat.id) }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    e.avatar(r.chat.id, size: 40)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(e.title(r.chat)).lineLimit(1)
+                                        Text(r.storage.detail).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 0)
+                                    Text(formatBytes(r.storage.bytes)).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } footer: {
+                        Text("Photos, documents et vocaux : \(formatBytes(rows.reduce(0) { $0 + $1.storage.bytes })) sur cet appareil.")
+                    }
+                }
+            }
+            .navigationTitle("Gérer le stockage")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

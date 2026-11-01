@@ -935,6 +935,57 @@ public func formatBytes(_ n: Double) -> String {
     return "\(s.replacingOccurrences(of: ".", with: ",")) \(units[i])"
 }
 
+/// Une discussion et ce que pèsent ses pièces jointes (« Gérer le stockage »).
+public struct ChatStorage: Identifiable, Sendable {
+    public let chat: Chat
+    public let storage: Storage
+    public var id: String { chat.id }
+}
+
+/// Ce que pèsent les pièces jointes d'une discussion (« Gérer le
+/// stockage », comme WhatsApp). Le même que le navigateur (`Storage`).
+public struct Storage: Equatable, Sendable {
+    public var bytes: Double = 0
+    public var photos = 0
+    public var files = 0
+    public var voices = 0
+
+    public init(bytes: Double = 0, photos: Int = 0, files: Int = 0, voices: Int = 0) {
+        self.bytes = bytes; self.photos = photos; self.files = files; self.voices = voices
+    }
+
+    /// Les photos, documents et vocaux encore là (pas les supprimés) : leur
+    /// taille, ou à défaut celle de leur contenu base64 décodé.
+    public static func of(_ messages: [Message]) -> Storage {
+        var st = Storage()
+        for m in messages where !m.deleted && !m.data.isEmpty {
+            switch m.kind {
+            case "image": st.photos += 1
+            case "file": st.files += 1
+            case "voice": st.voices += 1
+            default: continue
+            }
+            if m.size > 0 {
+                st.bytes += m.size
+            } else {
+                let b64 = m.data.firstIndex(of: ",").map { m.data[m.data.index(after: $0)...] } ?? Substring(m.data)
+                st.bytes += Double(b64.utf8.count * 3 / 4)
+            }
+        }
+        return st
+    }
+
+    /// « 12 photos · 2 documents · 1 vocal ».
+    public var detail: String {
+        func part(_ n: Int, _ one: String, _ many: String) -> String? {
+            n == 0 ? nil : n == 1 ? "1 \(one)" : "\(n) \(many)"
+        }
+        return [part(photos, "photo", "photos"), part(files, "document", "documents"), part(voices, "vocal", "vocaux")]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+}
+
 /// Une description de groupe : 500 caractères au plus.
 public let maxGroupDesc = 500
 
