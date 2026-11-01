@@ -432,6 +432,17 @@ pub fn groups_in_common<'a>(chats: &'a [Chat], me: &str, code: &str) -> Vec<&'a 
     list
 }
 
+/// Les photos d'une discussion, pour sa fiche (« Photos », comme WhatsApp) :
+/// la plus récente d'abord, sans les supprimées ni une capsule encore scellée
+/// pour nous. `msgs` va du plus ancien au plus récent. Le même que l'iPhone
+/// (`Message.photos`).
+pub fn photos<'a>(msgs: &'a [Message], me: &str, now: f64) -> Vec<&'a Message> {
+    msgs.iter()
+        .rev()
+        .filter(|m| m.kind == "image" && !m.deleted && !m.data.is_empty() && !m.sealed_for(me, now))
+        .collect()
+}
+
 impl Message {
     /// En favori, et pas supprimé pour tous (un message supprimé n'a plus
     /// rien à garder, comme WhatsApp).
@@ -1076,6 +1087,37 @@ mod tests {
             .collect();
         assert_eq!(ids, ["g:2", "g:1"]);
         assert!(groups_in_common(&chats, "MOI", "ZOE").is_empty());
+    }
+
+    #[test]
+    fn photos_newest_first_without_hidden_ones() {
+        let m = |id: &str, kind: &str, from: &str, deleted: bool, open_at: f64| Message {
+            id: id.into(),
+            kind: kind.into(),
+            from: from.into(),
+            data: "data:image/jpeg;base64,AA==".into(),
+            deleted,
+            open_at,
+            ..Default::default()
+        };
+        let msgs = vec![
+            m("1", "image", "LEA", false, 0.0),
+            m("2", "text", "LEA", false, 0.0),
+            m("3", "image", "LEA", true, 0.0),
+            m("4", "image", "LEA", false, 5_000.0),
+            m("5", "image", "MOI", false, 5_000.0),
+            m("6", "image", "MOI", false, 0.0),
+        ];
+        let ids: Vec<_> = photos(&msgs, "MOI", 1_000.0)
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(ids, ["6", "5", "1"]);
+        let ids: Vec<_> = photos(&msgs, "MOI", 9_000.0)
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(ids, ["6", "5", "4", "1"]);
     }
 
     #[test]
