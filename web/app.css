@@ -3516,3 +3516,13 @@ body.locked .lock-screen {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* Fiche : une liste repliée (« Tout voir (N) » la déplie). */
+.folded > .extra {
+  display: none;
+}
+
+.see-all {
+  margin-top: 8px;
+  width: 100%;
+}
