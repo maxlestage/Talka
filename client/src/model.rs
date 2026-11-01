@@ -689,6 +689,24 @@ pub struct GroupInfo {
     pub admins_only: Option<bool>,
 }
 
+/// Une taille lisible : « 25 o », « 11,7 Ko », « 3,2 Mo » (par 1024, une
+/// décimale à la française). Le même que l'iPhone (`formatBytes`).
+pub fn format_bytes(n: f64) -> String {
+    let units = ["o", "Ko", "Mo", "Go"];
+    let mut n = if n.is_finite() { n.max(0.0) } else { 0.0 };
+    let mut i = 0;
+    while n >= 1024.0 && i < units.len() - 1 {
+        n /= 1024.0;
+        i += 1;
+    }
+    let s = if i == 0 {
+        format!("{n:.0}")
+    } else {
+        format!("{n:.1}")
+    };
+    format!("{} {}", s.replace('.', ","), units[i])
+}
+
 /// Une description de groupe : 500 caractères au plus.
 pub const MAX_GROUP_DESC: usize = 500;
 
@@ -1277,6 +1295,17 @@ mod tests {
                 ("https://a.fr".to_owned(), "2")
             ]
         );
+    }
+
+    #[test]
+    fn sizes_like_the_iphone() {
+        assert_eq!(format_bytes(0.0), "0 o");
+        assert_eq!(format_bytes(25.0), "25 o");
+        assert_eq!(format_bytes(1023.0), "1023 o");
+        assert_eq!(format_bytes(1024.0), "1,0 Ko");
+        assert_eq!(format_bytes(12_000.0), "11,7 Ko");
+        assert_eq!(format_bytes(1_572_864.0), "1,5 Mo");
+        assert_eq!(format_bytes(-3.0), "0 o");
     }
 
     #[test]
