@@ -692,6 +692,11 @@ pub struct GroupInfo {
 /// Une description de groupe : 500 caractères au plus.
 pub const MAX_GROUP_DESC: usize = 500;
 
+/// Un message : 20 000 caractères au plus, arrêtés à la saisie (comme
+/// `maxlength`) plutôt que coupés en silence à l'envoi. Le même que l'iPhone
+/// (`maxMessageText`).
+pub const MAX_TEXT: usize = 20_000;
+
 /// La description d'un groupe telle qu'elle est gardée.
 pub fn group_desc(d: &str) -> String {
     d.trim().chars().take(MAX_GROUP_DESC).collect()

@@ -1953,7 +1953,7 @@ pub fn render_composer(focus_it: bool) {
                 },
             )
             .attr("aria-label", "Message")
-            .attr("maxlength", "20000")
+            .attr("maxlength", crate::model::MAX_TEXT.to_string())
             .el()
             .unchecked_into();
         ta.set_value(&old.unwrap_or(chat.draft.clone()));
