@@ -2202,6 +2202,55 @@ async fn open_new_group() {
     );
 }
 
+/// « Gérer le stockage », comme WhatsApp : les discussions qui gardent le
+/// plus de photos, documents et vocaux sur cet appareil, de la plus lourde à
+/// la plus légère ; toucher en ouvre la fiche (où les voir et les enregistrer).
+async fn storage_screen() {
+    let mut rows = Vec::new();
+    for c in core::chats() {
+        let st = crate::model::Storage::of(&core::messages(&c.id, usize::MAX).await);
+        if st.bytes > 0.0 {
+            rows.push((c.id.clone(), core::chat_title(&c), st));
+        }
+    }
+    rows.sort_by(|a, b| b.2.bytes.total_cmp(&a.2.bytes));
+    let total: f64 = rows.iter().map(|r| r.2.bytes).sum();
+    modal(
+        "Gérer le stockage",
+        move |md| {
+            if rows.is_empty() {
+                return h("p.muted.center.pad")
+                    .text("Aucune photo, aucun document, aucun vocal pour l'instant.")
+                    .into();
+            }
+            h("div")
+                .child(h("p.muted.small.pad").text(format!(
+                    "Photos, documents et vocaux : {} sur cet appareil.",
+                    bytes(total)
+                )))
+                .child(h("div.list").children(rows.iter().map(|(id, title, st)| {
+                    let (id, md) = (id.clone(), md.clone());
+                    h("button.list-item")
+                        .attr("type", "button")
+                        .child(avatar(&id, 40))
+                        .child(
+                            h("div.grow")
+                                .child(h("div.strong.ellipsis").text(title))
+                                .child(h("div.muted.small").text(st.detail())),
+                        )
+                        .child(h("span.muted.small").text(bytes(st.bytes)))
+                        .click(move || {
+                            md.close();
+                            let id = id.clone();
+                            spawn(async move { open_info(&id).await })
+                        })
+                })))
+                .into()
+        },
+        ModalOpts::default(),
+    );
+}
+
 // ----- Les fiches -----------------------------------------------------------------
 
 pub async fn open_info(id: &str) {
@@ -3994,7 +4043,8 @@ pub async fn open_settings() {
                         .child(h("h3").text("Stockage et sauvegarde"))
                         .child(h("p.muted.small.pad").text(format!("Talka n'a pas de base de données : tout est gardé dans ce navigateur{}.", used.map(|u| format!(" ({} utilisés)", bytes(u))).unwrap_or_default())))
                         .child(setting("download", "Exporter une sauvegarde chiffrée", "Un fichier protégé par mot de passe : vos clés, contacts et discussions", false, || spawn(export_backup())))
-                        .child(setting("upload", "Importer une sauvegarde", "Remplace tout ce qui est sur cet appareil", false, || spawn(import_backup()))),
+                        .child(setting("upload", "Importer une sauvegarde", "Remplace tout ce qui est sur cet appareil", false, || spawn(import_backup())))
+                        .child(setting("file", "Gérer le stockage", "Les discussions qui prennent le plus de place", false, || spawn(storage_screen()))),
                 )
                 .child(
                     h("div.settings-group")

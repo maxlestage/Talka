@@ -37,4 +37,35 @@ final class SaveNameTests: XCTestCase {
         XCTAssertEqual(f("v1.2 compte rendu final").fileDetail(size: "1 Ko"), "1 Ko")
         XCTAssertEqual(f("v1.2 fin").fileDetail(size: "1 Ko"), "1 Ko")
     }
+
+    /// Une taille s'affiche comme dans le navigateur (par 1024, virgule).
+    func testSizesLikeTheBrowser() {
+        XCTAssertEqual(formatBytes(0), "0 o")
+        XCTAssertEqual(formatBytes(25), "25 o")
+        XCTAssertEqual(formatBytes(1023), "1023 o")
+        XCTAssertEqual(formatBytes(1024), "1,0 Ko")
+        XCTAssertEqual(formatBytes(12_000), "11,7 Ko")
+        XCTAssertEqual(formatBytes(1_572_864), "1,5 Mo")
+        XCTAssertEqual(formatBytes(-3), "0 o")
+    }
+
+    /// « Gérer le stockage » compte comme le navigateur.
+    func testStorageCountsTheAttachments() {
+        func m(_ kind: String, _ data: String, _ size: Double, deleted: Bool = false) -> Message {
+            var x = Message(chat: "c", id: UUID().uuidString, from: "x", at: 0, content: Content())
+            x.kind = kind; x.data = data; x.size = size; x.deleted = deleted
+            return x
+        }
+        let st = Storage.of([
+            m("image", "data:image/jpeg;base64,AAAAAAAA", 0),
+            m("image", "data:image/jpeg;base64,AAAA", 0),
+            m("file", "data:application/pdf;base64,AA==", 1000),
+            m("voice", "data:audio/webm;base64,AAAA", 500),
+            m("voice", "data:audio/webm;base64,AAAA", 500, deleted: true),
+            m("text", "", 0),
+        ])
+        XCTAssertEqual(st, Storage(bytes: 6 + 3 + 1000 + 500, photos: 2, files: 1, voices: 1))
+        XCTAssertEqual(st.detail, "2 photos · 1 document · 1 vocal")
+        XCTAssertEqual(Storage().detail, "")
+    }
 }

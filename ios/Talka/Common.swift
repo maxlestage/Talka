@@ -320,9 +320,6 @@ enum Dates {
     }
 }
 
-func formatBytes(_ n: Double) -> String {
-    ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .file)
-}
 
 // MARK: QR code
 
