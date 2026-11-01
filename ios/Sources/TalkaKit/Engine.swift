@@ -2001,7 +2001,10 @@ public func exportStamp(_ ms: Double) -> String {
     return f.string(from: Date(timeIntervalSince1970: ms / 1000))
 }
 
+/// « 1:05 ». Une durée reçue d'un autre appareil peut être n'importe quoi :
+/// bornée (0 à 99 h) avant de devenir un entier, pour ne jamais planter
+/// (`Int(1e300)` arrête l'application). Le même que le navigateur (`fmt_dur`).
 public func formatDuration(_ s: Double) -> String {
-    let t = max(0, Int(s.rounded()))
+    let t = s.isFinite ? Int(min(max(s, 0), 359_999).rounded()) : 0
     return "\(t / 60):" + String(format: "%02d", t % 60)
 }
