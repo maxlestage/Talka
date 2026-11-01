@@ -3526,3 +3526,20 @@ body.locked .lock-screen {
   margin-top: 8px;
   width: 100%;
 }
+
+/* Le nombre de nouveaux messages sur « Derniers messages », comme WhatsApp. */
+.to-bottom-count {
+  position: absolute;
+  top: -6px;
+  right: -4px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--accent, #00a884);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+}
