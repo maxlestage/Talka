@@ -2258,7 +2258,7 @@ async fn media_grid(chat_id: &str) -> Option<Element> {
                             .child(h("div.strong.ellipsis").text(&shown))
                             .child(h("div.muted.small").text(format!(
                                 "{} · {}",
-                                bytes(m.size),
+                                m.file_detail(&bytes(m.size)),
                                 day_label(m.at)
                             ))),
                     )

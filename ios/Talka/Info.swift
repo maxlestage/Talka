@@ -788,7 +788,7 @@ struct DocumentsSection: View {
                             Image(systemName: "doc.fill").font(.title3).foregroundStyle(Color.talkaGreen)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(m.name.isEmpty ? "Fichier" : m.name).foregroundStyle(.primary).lineLimit(1)
-                                Text("\(formatBytes(m.size)) · \(Dates.separator(m.at))").font(.caption).foregroundStyle(.secondary)
+                                Text("\(m.fileDetail(size: formatBytes(m.size))) · \(Dates.separator(m.at))").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 0)
                             Image(systemName: "square.and.arrow.down").foregroundStyle(.secondary)

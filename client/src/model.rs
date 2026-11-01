@@ -479,6 +479,23 @@ impl Message {
         self.open_at > now && self.from != me
     }
 
+    /// La ligne sous le nom d'un document : « 12 Ko · PDF », ou la taille
+    /// seule quand le nom n'a pas d'extension (« README », « .profile »).
+    /// `size` est déjà mise en forme. Le même que l'iPhone (`Message.fileDetail`).
+    pub fn file_detail(&self, size: &str) -> String {
+        match self.name.rsplit_once('.') {
+            Some((base, ext))
+                if !base.is_empty()
+                    && !ext.is_empty()
+                    && ext.len() <= 8
+                    && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
+            {
+                format!("{size} · {}", ext.to_uppercase())
+            }
+            _ => size.to_owned(),
+        }
+    }
+
     /// Le nom d'une pièce jointe enregistrée (« Enregistrer ») : le sien, ou
     /// `photo-talka` / `vocal-talka` / `fichier-talka` avec l'extension de son
     /// vrai type (un vocal de l'iPhone est en m4a). Le même que l'iPhone
@@ -1151,6 +1168,22 @@ mod tests {
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(ids, ["5", "1"]);
+    }
+
+    #[test]
+    fn file_detail_shows_a_real_extension_only() {
+        let f = |name: &str| Message {
+            name: name.into(),
+            ..Default::default()
+        };
+        assert_eq!(f("devis.pdf").file_detail("12 Ko"), "12 Ko · PDF");
+        assert_eq!(f("archive.tar.gz").file_detail("3 Mo"), "3 Mo · GZ");
+        assert_eq!(f("README").file_detail("1 Ko"), "1 Ko");
+        assert_eq!(f("").file_detail("1 Ko"), "1 Ko");
+        assert_eq!(f(".profile").file_detail("1 Ko"), "1 Ko");
+        assert_eq!(f("fin.").file_detail("1 Ko"), "1 Ko");
+        assert_eq!(f("v1.2 compte rendu final").file_detail("1 Ko"), "1 Ko");
+        assert_eq!(f("v1.2 fin").file_detail("1 Ko"), "1 Ko");
     }
 
     #[test]

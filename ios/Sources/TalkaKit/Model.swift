@@ -656,6 +656,17 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         reply = content.reply; fwd = content.fwd; openAt = content.openAt; mentions = content.mentions
     }
 
+    /// La ligne sous le nom d'un document : « 12 Ko · PDF », ou la taille
+    /// seule quand le nom n'a pas d'extension (« README », « .profile »).
+    /// `size` est déjà mise en forme. Le même que le navigateur
+    /// (`Message::file_detail`).
+    public func fileDetail(size: String) -> String {
+        guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return size }
+        let ext = name[name.index(after: dot)...]
+        guard !ext.isEmpty, ext.count <= 8, ext.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { return size }
+        return "\(size) · \(ext.uppercased())"
+    }
+
     /// Le nom d'une pièce jointe enregistrée (« Enregistrer ») : le sien, ou
     /// `photo-talka` / `vocal-talka` / `fichier-talka` avec l'extension de son
     /// vrai type. Le même que le navigateur (`Message::save_name`).
