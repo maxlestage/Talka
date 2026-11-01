@@ -52,6 +52,9 @@ struct ConversationView: View {
     /// descendre ; sinon le bouton « Derniers messages » apparaît, comme dans
     /// le navigateur, et la lecture plus haut n'est pas interrompue.
     @State private var atBottom = true
+    /// Le dernier message affiché quand on a quitté le bas : ce qui arrive
+    /// ensuite se compte sur le bouton (`Message.newBelow`).
+    @State private var seenAtLeave: String?
 
     var body: some View {
         if let e = model.engine, let chat = e.chat(chatId) {
@@ -121,6 +124,7 @@ struct ConversationView: View {
                     }
                     .overlay(alignment: .bottomTrailing) {
                         if !atBottom {
+                            let below = seenAtLeave.map { Message.newBelow(messages, seen: $0, me: e.me.code) } ?? 0
                             Button {
                                 withAnimation { proxy.scrollTo("fil-bas", anchor: .bottom) }
                             } label: {
@@ -130,11 +134,26 @@ struct ConversationView: View {
                                     .frame(width: 40, height: 40)
                                     .background(.regularMaterial, in: Circle())
                                     .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+                                    // Les messages arrivés depuis, comme WhatsApp (et le navigateur).
+                                    .overlay(alignment: .topTrailing) {
+                                        if below > 0 {
+                                            Text("\(below)")
+                                                .font(.caption2.bold())
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 5)
+                                                .frame(minWidth: 20, minHeight: 20)
+                                                .background(Color.talkaGreen, in: Capsule())
+                                                .offset(x: 4, y: -6)
+                                        }
+                                    }
                             }
                             .padding(12)
-                            .accessibilityLabel("Derniers messages")
+                            .accessibilityLabel(below == 0 ? "Derniers messages" : below == 1 ? "Derniers messages, 1 nouveau" : "Derniers messages, \(below) nouveaux")
                             .transition(.opacity)
                         }
+                    }
+                    .onChange(of: atBottom) { _, bottom in
+                        seenAtLeave = bottom ? nil : messages.last?.id
                     }
                     .onChange(of: messages.last?.id) { _, id in
                         guard let id else { return }

@@ -129,6 +129,15 @@ final class GroupsInCommonTests: XCTestCase {
         XCTAssertEqual(Message.documents(msgs, me: "MOI", now: 0).map(\.id), ["5", "1"])
     }
 
+    /// « Derniers messages » compte les messages des autres arrivés depuis.
+    func testNewMessagesBelowCountTheOthersOnly() {
+        func m(_ id: String, _ from: String) -> Message { Message(chat: "c", id: id, from: from, at: 0, content: Content()) }
+        let msgs = [m("1", "LEA"), m("2", "MOI"), m("3", "LEA"), m("4", "system"), m("5", "MOI"), m("6", "BOB")]
+        XCTAssertEqual(Message.newBelow(msgs, seen: "2", me: "MOI"), 2)
+        XCTAssertEqual(Message.newBelow(msgs, seen: "6", me: "MOI"), 0)
+        XCTAssertEqual(Message.newBelow(msgs, seen: "inconnu", me: "MOI"), 0)
+    }
+
     /// Les liens de la fiche : la règle des bulles, chacun une fois, le plus
     /// récent d'abord (comme le navigateur).
     func testLinksLikeTheBubbles() {
