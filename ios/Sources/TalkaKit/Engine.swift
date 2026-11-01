@@ -360,6 +360,15 @@ public final class Engine {
         Message.documents(messages(chat, limit: 500), me: me.code, now: nowMs())
     }
 
+    /// « Gérer le stockage » : les discussions qui gardent des pièces
+    /// jointes, de la plus lourde à la plus légère.
+    public func storageByChat() -> [ChatStorage] {
+        chats.values
+            .map { ChatStorage(chat: $0, storage: Storage.of(messages($0.id))) }
+            .filter { $0.storage.bytes > 0 }
+            .sorted { $0.storage.bytes > $1.storage.bytes }
+    }
+
     /// Les liens de la discussion, le plus récent d'abord (mêmes 500
     /// derniers messages).
     public func links(in chat: String) -> [ChatLink] {
