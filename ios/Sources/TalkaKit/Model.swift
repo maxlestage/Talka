@@ -920,6 +920,21 @@ public struct GroupInfo: Codable, Equatable, Sendable {
     }
 }
 
+/// Une taille lisible : « 25 o », « 11,7 Ko », « 3,2 Mo » (par 1024, une
+/// décimale à la française). Le même que le navigateur (`format_bytes`) :
+/// un même fichier affiche la même taille des deux côtés.
+public func formatBytes(_ n: Double) -> String {
+    let units = ["o", "Ko", "Mo", "Go"]
+    var n = n.isFinite ? max(n, 0) : 0
+    var i = 0
+    while n >= 1024, i < units.count - 1 {
+        n /= 1024
+        i += 1
+    }
+    let s = i == 0 ? String(format: "%.0f", n) : String(format: "%.1f", n)
+    return "\(s.replacingOccurrences(of: ".", with: ",")) \(units[i])"
+}
+
 /// Une description de groupe : 500 caractères au plus.
 public let maxGroupDesc = 500
 

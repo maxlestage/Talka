@@ -37,4 +37,15 @@ final class SaveNameTests: XCTestCase {
         XCTAssertEqual(f("v1.2 compte rendu final").fileDetail(size: "1 Ko"), "1 Ko")
         XCTAssertEqual(f("v1.2 fin").fileDetail(size: "1 Ko"), "1 Ko")
     }
+
+    /// Une taille s'affiche comme dans le navigateur (par 1024, virgule).
+    func testSizesLikeTheBrowser() {
+        XCTAssertEqual(formatBytes(0), "0 o")
+        XCTAssertEqual(formatBytes(25), "25 o")
+        XCTAssertEqual(formatBytes(1023), "1023 o")
+        XCTAssertEqual(formatBytes(1024), "1,0 Ko")
+        XCTAssertEqual(formatBytes(12_000), "11,7 Ko")
+        XCTAssertEqual(formatBytes(1_572_864), "1,5 Mo")
+        XCTAssertEqual(formatBytes(-3), "0 o")
+    }
 }
