@@ -167,7 +167,17 @@ extension Message {
     /// capsule encore scellée pour nous. `messages` va du plus ancien au plus
     /// récent. Le même que le navigateur (`model::photos`).
     public static func photos(_ messages: [Message], me: String, now: Double) -> [Message] {
-        messages.reversed().filter { $0.kind == "image" && !$0.deleted && !$0.data.isEmpty && !$0.sealed(for: me, now: now) }
+        attachments(messages, kind: "image", me: me, now: now)
+    }
+
+    /// Les documents (fichiers) d'une discussion, pour sa fiche, avec la même
+    /// règle que les photos. Le même que le navigateur (`model::documents`).
+    public static func documents(_ messages: [Message], me: String, now: Double) -> [Message] {
+        attachments(messages, kind: "file", me: me, now: now)
+    }
+
+    static func attachments(_ messages: [Message], kind: String, me: String, now: Double) -> [Message] {
+        messages.reversed().filter { $0.kind == kind && !$0.deleted && !$0.data.isEmpty && !$0.sealed(for: me, now: now) }
     }
 }
 
