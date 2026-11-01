@@ -923,6 +923,11 @@ public struct GroupInfo: Codable, Equatable, Sendable {
 /// Une description de groupe : 500 caractères au plus.
 public let maxGroupDesc = 500
 
+/// Un message : 20 000 caractères au plus, arrêtés à la saisie plutôt que
+/// coupés en silence à l'envoi. Le même que le navigateur (`MAX_TEXT`, le
+/// `maxlength` de son champ).
+public let maxMessageText = 20_000
+
 /// La description d'un groupe telle qu'elle est gardée (comme le navigateur).
 public func groupDesc(_ d: String) -> String {
     String(d.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxGroupDesc))
