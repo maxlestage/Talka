@@ -2211,14 +2211,16 @@ pub async fn open_info(id: &str) {
     }
 }
 
-/// Les photos et les documents de la discussion, dans sa fiche (comme
-/// WhatsApp) : toucher une photo l'ouvre, un document l'enregistre.
+/// Les photos, les documents et les liens de la discussion, dans sa fiche
+/// (comme WhatsApp) : toucher une photo l'ouvre, un document l'enregistre,
+/// un lien s'ouvre dans un nouvel onglet.
 async fn media_grid(chat_id: &str) -> Option<Element> {
     let msgs = core::messages(chat_id, 500).await;
     let (me, t) = (core::my_code(), now());
     let photos = crate::model::photos(&msgs, &me, t);
     let docs = crate::model::documents(&msgs, &me, t);
-    if photos.is_empty() && docs.is_empty() {
+    let links = crate::model::links(&msgs, &me, t);
+    if photos.is_empty() && docs.is_empty() && links.is_empty() {
         return None;
     }
     let photos = (!photos.is_empty()).then(|| {
@@ -2266,7 +2268,29 @@ async fn media_grid(chat_id: &str) -> Option<Element> {
                     .click(move || download(&name, &data))
             })))
     });
-    Some(h("div").child(photos).child(docs).el())
+    let links = (!links.is_empty()).then(|| {
+        h("div.info-section")
+            .child(h("h3").text(format!("Liens ({})", links.len())))
+            .child(
+                h("div.list").children(links.iter().take(20).map(|(url, m)| {
+                    h("a.list-item")
+                        .attr("href", url)
+                        .attr("target", "_blank")
+                        .attr("rel", "noopener noreferrer")
+                        .child(h("span.file-icon").child(icon("link")))
+                        .child(
+                            h("div.grow")
+                                .child(h("div.strong.ellipsis").text(url))
+                                .child(h("div.muted.small").text(format!(
+                                    "{} · {}",
+                                    core::display_name(&m.from),
+                                    day_label(m.at)
+                                ))),
+                        )
+                })),
+            )
+    });
+    Some(h("div").child(photos).child(docs).child(links).el())
 }
 
 async fn contact_info(code: &str) {

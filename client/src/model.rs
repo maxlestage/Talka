@@ -446,6 +446,58 @@ pub fn documents<'a>(msgs: &'a [Message], me: &str, now: f64) -> Vec<&'a Message
     attachments(msgs, "file", me, now)
 }
 
+/// Les liens d'un texte, avec la règle des liens cliquables des bulles
+/// (`dom::rich_text`) : `http://` ou `https://` en début de mot (ou après une
+/// parenthèse, un guillemet), jusqu'à l'espace, sans la ponctuation finale.
+/// Le même que l'iPhone (`Message.findLinks`).
+pub fn find_links(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let rest: String = chars[i..].iter().take(8).collect();
+        let at_word_start =
+            i == 0 || chars[i - 1].is_whitespace() || "([{«\"'“‘".contains(chars[i - 1]);
+        if at_word_start && (rest.starts_with("https://") || rest.starts_with("http://")) {
+            let mut j = i;
+            while j < chars.len() && !chars[j].is_whitespace() && chars[j] != '<' {
+                j += 1;
+            }
+            while j > i && ".,;:!?)]}'\"»”’".contains(chars[j - 1]) {
+                j -= 1;
+            }
+            let url: String = chars[i..j].iter().collect();
+            if url.len() > "https://".len() {
+                out.push(url);
+            }
+            i = j.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Les liens d'une discussion, pour sa fiche (« Liens », comme WhatsApp) : le
+/// plus récent d'abord, chacun une fois, avec son message ; sans les messages
+/// supprimés ni une capsule encore scellée pour nous. Le même que l'iPhone
+/// (`Message.links`).
+pub fn links<'a>(msgs: &'a [Message], me: &str, now: f64) -> Vec<(String, &'a Message)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for m in msgs.iter().rev() {
+        if m.from == "system" || m.deleted || m.sealed_for(me, now) {
+            continue;
+        }
+        for url in find_links(&m.text) {
+            if seen.insert(url.clone()) {
+                out.push((url, m));
+            }
+        }
+    }
+    out
+}
+
 fn attachments<'a>(msgs: &'a [Message], kind: &str, me: &str, now: f64) -> Vec<&'a Message> {
     msgs.iter()
         .rev()
@@ -1184,6 +1236,42 @@ mod tests {
         assert_eq!(f("fin.").file_detail("1 Ko"), "1 Ko");
         assert_eq!(f("v1.2 compte rendu final").file_detail("1 Ko"), "1 Ko");
         assert_eq!(f("v1.2 fin").file_detail("1 Ko"), "1 Ko");
+    }
+
+    #[test]
+    fn links_like_the_bubbles() {
+        assert_eq!(
+            find_links("Regarde https://talka.example/a?b=1, et (http://x.org/y)."),
+            ["https://talka.example/a?b=1", "http://x.org/y"]
+        );
+        assert_eq!(find_links("«https://a.fr»"), ["https://a.fr"]);
+        assert!(find_links("pas un lien : xhttps://a.fr ni https://").is_empty());
+        let m = |id: &str, from: &str, text: &str, deleted: bool, open_at: f64| Message {
+            id: id.into(),
+            from: from.into(),
+            text: text.into(),
+            deleted,
+            open_at,
+            ..Default::default()
+        };
+        let msgs = vec![
+            m("1", "LEA", "https://a.fr", false, 0.0),
+            m("2", "LEA", "https://b.fr https://a.fr", false, 0.0),
+            m("3", "LEA", "https://supprime.fr", true, 0.0),
+            m("4", "LEA", "https://capsule.fr", false, 5_000.0),
+            m("5", "system", "https://systeme.fr", false, 0.0),
+        ];
+        let got: Vec<_> = links(&msgs, "MOI", 1_000.0)
+            .into_iter()
+            .map(|(u, m)| (u, m.id.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("https://b.fr".to_owned(), "2"),
+                ("https://a.fr".to_owned(), "2")
+            ]
+        );
     }
 
     #[test]
