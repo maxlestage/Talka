@@ -40,11 +40,27 @@ fn main() -> ExitCode {
     }
 }
 
-/// Ajouté à la fin de la colle générée.
-const BOOT: &str = "
+/// Ajouté à la fin de la colle générée. Si le module ne démarre pas (réseau
+/// coupé, WebAssembly bloqué), l'écran de chargement le dit au lieu de
+/// tourner sans fin.
+const BOOT: &str = r#"
 // Démarrage du module, ajouté par `cargo xtask web`.
-__wbg_init({ module_or_path: new URL(\"talka_web_bg.wasm\" + new URL(import.meta.url).search, import.meta.url) });
-";
+__wbg_init({ module_or_path: new URL("talka_web_bg.wasm" + new URL(import.meta.url).search, import.meta.url) }).catch((e) => {
+    console.error(e);
+    const step = document.getElementById("boot-step");
+    if (!step) return;
+    step.textContent = typeof WebAssembly === "undefined"
+        ? "Ce navigateur bloque WebAssembly, dont Talka a besoin (sur iPhone : mode Isolement)."
+        : "Talka n'a pas pu démarrer. Vérifiez votre connexion.";
+    document.querySelector(".splash-bar")?.remove();
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "splash-retry";
+    retry.textContent = "Réessayer";
+    retry.addEventListener("click", () => location.reload());
+    step.after(retry);
+});
+"#;
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
