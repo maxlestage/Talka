@@ -2212,20 +2212,15 @@ pub async fn open_info(id: &str) {
 }
 
 async fn media_grid(chat_id: &str) -> Option<Element> {
-    let list: Vec<_> = core::messages(chat_id, 500)
-        .await
-        .into_iter()
-        .rev()
-        .filter(|m| m.kind == "image" && !m.deleted)
-        .take(24)
-        .collect();
-    if list.is_empty() {
+    let msgs = core::messages(chat_id, 500).await;
+    let all = crate::model::photos(&msgs, &core::my_code(), now());
+    if all.is_empty() {
         return None;
     }
     Some(
         h("div.info-section")
-            .child(h("h3").text("Photos"))
-            .child(h("div.media-grid").children(list.iter().map(|m| {
+            .child(h("h3").text(format!("Photos ({})", all.len())))
+            .child(h("div.media-grid").children(all.iter().take(24).map(|m| {
                 let (d, t) = (m.data.clone(), m.text.clone());
                 h("button")
                     .attr("type", "button")
