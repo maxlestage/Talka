@@ -2226,71 +2226,119 @@ async fn media_grid(chat_id: &str) -> Option<Element> {
     let photos = (!photos.is_empty()).then(|| {
         h("div.info-section")
             .child(h("h3").text(format!("Photos ({})", photos.len())))
-            .child(
-                h("div.media-grid").children(photos.iter().take(24).map(|m| {
-                    let (d, t) = (m.data.clone(), m.text.clone());
-                    h("button")
-                        .attr("type", "button")
-                        .child(
-                            h("img")
-                                .attr("src", &m.data)
-                                .attr("alt", "")
-                                .attr("loading", "lazy"),
-                        )
-                        .click(move || open_image(&d, &t))
-                })),
-            )
+            .child(foldable(
+                "div.media-grid",
+                photos
+                    .iter()
+                    .map(|m| {
+                        let (d, t) = (m.data.clone(), m.text.clone());
+                        h("button")
+                            .attr("type", "button")
+                            .child(
+                                h("img")
+                                    .attr("src", &m.data)
+                                    .attr("alt", "")
+                                    .attr("loading", "lazy"),
+                            )
+                            .click(move || open_image(&d, &t))
+                    })
+                    .collect(),
+                24,
+            ))
     });
     let docs = (!docs.is_empty()).then(|| {
         h("div.info-section")
             .child(h("h3").text(format!("Documents ({})", docs.len())))
-            .child(h("div.list").children(docs.iter().take(20).map(|m| {
-                let (name, data) = (m.save_name(), m.data.clone());
-                let shown = if m.name.is_empty() {
-                    "Fichier".to_owned()
-                } else {
-                    m.name.clone()
-                };
-                h("button.list-item")
-                    .attr("type", "button")
-                    .attr("aria-label", format!("Enregistrer {shown}"))
-                    .child(h("span.file-icon").child(icon("file")))
-                    .child(
-                        h("div.grow")
-                            .child(h("div.strong.ellipsis").text(&shown))
-                            .child(h("div.muted.small").text(format!(
-                                "{} · {}",
-                                m.file_detail(&bytes(m.size)),
-                                day_label(m.at)
-                            ))),
-                    )
-                    .child(icon("download"))
-                    .click(move || download(&name, &data))
-            })))
+            .child(foldable(
+                "div.list",
+                docs.iter()
+                    .map(|m| {
+                        let (name, data) = (m.save_name(), m.data.clone());
+                        let shown = if m.name.is_empty() {
+                            "Fichier".to_owned()
+                        } else {
+                            m.name.clone()
+                        };
+                        h("button.list-item")
+                            .attr("type", "button")
+                            .attr("aria-label", format!("Enregistrer {shown}"))
+                            .child(h("span.file-icon").child(icon("file")))
+                            .child(
+                                h("div.grow")
+                                    .child(h("div.strong.ellipsis").text(&shown))
+                                    .child(h("div.muted.small").text(format!(
+                                        "{} · {}",
+                                        m.file_detail(&bytes(m.size)),
+                                        day_label(m.at)
+                                    ))),
+                            )
+                            .child(icon("download"))
+                            .click(move || download(&name, &data))
+                    })
+                    .collect(),
+                20,
+            ))
     });
     let links = (!links.is_empty()).then(|| {
         h("div.info-section")
             .child(h("h3").text(format!("Liens ({})", links.len())))
-            .child(
-                h("div.list").children(links.iter().take(20).map(|(url, m)| {
-                    h("a.list-item")
-                        .attr("href", url)
-                        .attr("target", "_blank")
-                        .attr("rel", "noopener noreferrer")
-                        .child(h("span.file-icon").child(icon("link")))
-                        .child(
-                            h("div.grow")
-                                .child(h("div.strong.ellipsis").text(url))
-                                .child(h("div.muted.small").text(format!(
-                                    "{} · {}",
-                                    core::display_name(&m.from),
-                                    day_label(m.at)
-                                ))),
-                        )
-                })),
-            )
+            .child(foldable(
+                "div.list",
+                links
+                    .iter()
+                    .map(|(url, m)| {
+                        h("a.list-item")
+                            .attr("href", url)
+                            .attr("target", "_blank")
+                            .attr("rel", "noopener noreferrer")
+                            .child(h("span.file-icon").child(icon("link")))
+                            .child(
+                                h("div.grow")
+                                    .child(h("div.strong.ellipsis").text(url))
+                                    .child(h("div.muted.small").text(format!(
+                                        "{} · {}",
+                                        core::display_name(&m.from),
+                                        day_label(m.at)
+                                    ))),
+                            )
+                    })
+                    .collect(),
+                20,
+            ))
     });
     Some(h("div").child(photos).child(docs).child(links).el())
+}
+
+/// Une liste de la fiche : les `limit` premiers, puis « Tout voir (N) » qui
+/// déplie le reste sur place, comme WhatsApp. Les photos cachées ne se
+/// chargent qu'une fois dépliées (`loading="lazy"`).
+fn foldable(spec: &str, items: Vec<El>, limit: usize) -> Vec<Child> {
+    let n = items.len();
+    let list = h(spec)
+        .class_if("folded", n > limit)
+        .children(
+            items
+                .into_iter()
+                .enumerate()
+                .map(|(i, it)| it.class_if("extra", i >= limit)),
+        )
+        .el();
+    let mut out: Vec<Child> = vec![list.clone().into()];
+    if n > limit {
+        out.push(
+            h("button.btn.ghost.see-all")
+                .attr("type", "button")
+                .text(format!("Tout voir ({n})"))
+                .click(move || {
+                    toggle_class(&list, "folded", false);
+                    if let Some(b) = list.next_element_sibling() {
+                        b.remove();
+                    }
+                })
+                .into(),
+        );
+    }
+    out
 }
 
 async fn contact_info(code: &str) {
