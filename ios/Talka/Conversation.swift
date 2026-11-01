@@ -1100,7 +1100,7 @@ struct FileBubble: View {
                 Image(systemName: "doc.fill").font(.title).foregroundStyle(Color.talkaGreen)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(message.name.isEmpty ? "Fichier" : message.name).font(.subheadline.weight(.medium)).lineLimit(2)
-                    Text("\(formatBytes(message.size)) · \((message.name as NSString).pathExtension.uppercased())")
+                    Text(message.fileDetail(size: formatBytes(message.size)))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
