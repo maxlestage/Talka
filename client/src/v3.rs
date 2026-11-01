@@ -30,12 +30,26 @@
 //! côtés écrivent le premier message en même temps (deux contacts qui
 //! s'ajoutent, chacun envoie son profil), chacun lit l'autre, et l'envoi
 //! suit la dernière session qui a servi.
+//!
+//! **Le triple cliquet** (le protocole v4 de la messagerie,
+//! `docs/SECURITE.md` §9 de Messagerie-) : ML-KEM-768 mélangé à **chaque**
+//! tour du cliquet, en-têtes chiffrés (plus d'identifiant de session en
+//! clair), identité de l'expéditeur chiffrée dans le premier message. Un
+//! appareil qui le parle l'annonce (`"v4":1`) dans les `Wire` qu'il envoie en
+//! v3 — l'annonce voyage donc dans une session authentifiée, le relais ne peut
+//! ni la lire ni l'ôter. Dès qu'un contact l'a annoncé (ou qu'un jeton
+//! `[[BROCOLIS:v4:…]]` est arrivé de lui), on ne lui écrit plus qu'en v4, et
+//! c'est définitif : il n'y a pas de retour au v3 avec lui (sauf faute de
+//! paquet pour ouvrir la session v4). Les anciennes versions et l'iPhone d'avant
+//! restent en v3, lisibles comme avant.
 
 use std::collections::{HashMap, HashSet};
 
 pub use brocolis_proto::KeyBundle;
 pub use brocolis_proto::session::MAX_PLAINTEXT;
-use brocolis_proto::{Content, Device, Erreur, Session, Token, hasard, jeton_v3};
+use brocolis_proto::{
+    Content, Device, Erreur, Session, Session4, Token, Token4, hasard, jeton_v3, jeton_v4,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -117,9 +131,32 @@ pub fn verify_bundle(
     KeyBundle::from_bytes(&bytes).ok()
 }
 
-/// Vrai si ce texte (le contenu d'une enveloppe Talka) est un jeton v3.
+/// Vrai si ce texte (le contenu d'une enveloppe Talka) est un jeton v3 ou
+/// v4 (triple cliquet).
 pub fn is_token(text: &str) -> bool {
-    text.starts_with(jeton_v3::HEAD) && text.ends_with("]]")
+    (text.starts_with(jeton_v3::HEAD) || is_v4(text)) && text.ends_with("]]")
+}
+
+/// Vrai si ce texte est un jeton v4 (triple cliquet).
+pub fn is_v4(text: &str) -> bool {
+    text.starts_with(jeton_v4::HEAD)
+}
+
+/// Le champ du `Wire` qui annonce le triple cliquet (v4).
+pub const V4_FIELD: &str = "v4";
+
+/// Ajoute l'annonce du triple cliquet à un `Wire` JSON (`None` : ce n'est
+/// pas un objet JSON).
+fn with_v4_advert(plain: &str) -> Option<String> {
+    let mut wire: Value = serde_json::from_str(plain).ok()?;
+    wire.as_object_mut()?
+        .insert(V4_FIELD.into(), Value::from(1));
+    serde_json::to_string(&wire).ok()
+}
+
+/// Le `Wire` annonce-t-il le triple cliquet ?
+fn announces_v4(wire: &str) -> bool {
+    wire.contains("\"v4\"") && serde_json::from_str::<Value>(wire).is_ok_and(|v| v[V4_FIELD] == 1)
 }
 
 /// Une enveloppe ouverte.
@@ -165,6 +202,8 @@ pub struct Sealed {
 /// La protection d'une discussion avec un contact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protection {
+    /// Le triple cliquet (v4) : ML-KEM à chaque tour, en-têtes chiffrés.
+    Triple,
     /// Une session à double cliquet ; `pq` : établie avec ML-KEM.
     Ratchet { pq: bool },
     /// L'ancien chiffrement (le contact n'a pas la mise à jour).
@@ -178,6 +217,12 @@ struct Peer {
     /// La session qui sert à l'envoi (la dernière qui a servi).
     current: Option<[u8; 8]>,
     pq: PqPeer,
+    /// Les sessions à triple cliquet (deux au plus, comme les v3).
+    sessions4: Vec<Session4>,
+    current4: Option<[u8; 8]>,
+    /// Le contact parle le triple cliquet (annoncé, ou un jeton v4 reçu) :
+    /// on ne lui écrit plus qu'en v4.
+    v4: bool,
 }
 
 /// Le cliquet post-quantique avec un appareil (v6, [`pq6`]).
@@ -211,6 +256,14 @@ struct StoredPeer {
     sessions: Vec<Value>,
     #[serde(skip_serializing_if = "PqPeer::is_empty")]
     pq: PqPeer,
+    /// Le triple cliquet : la session d'envoi, les sessions, et si le contact
+    /// le parle.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    current4: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sessions4: Vec<Value>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    v4: bool,
 }
 
 fn hex(id: &[u8; 8]) -> String {
@@ -232,10 +285,23 @@ impl Peer {
             .iter()
             .map(Session::session_id)
             .find(|id| hex(id) == stored.current);
+        let sessions4: Vec<Session4> = stored
+            .sessions4
+            .iter()
+            .filter_map(|v| Session4::from_json(&v.to_string()).ok())
+            .take(2)
+            .collect();
+        let current4 = sessions4
+            .iter()
+            .map(Session4::session_id)
+            .find(|id| hex(id) == stored.current4);
         Peer {
             sessions,
             current,
             pq: stored.pq,
+            sessions4,
+            current4,
+            v4: stored.v4,
         }
     }
 
@@ -248,6 +314,13 @@ impl Peer {
                 .filter_map(|s| serde_json::from_str(&s.to_json()).ok())
                 .collect(),
             pq: self.pq.clone(),
+            current4: self.current4.as_ref().map(hex).unwrap_or_default(),
+            sessions4: self
+                .sessions4
+                .iter()
+                .filter_map(|s| serde_json::from_str(&s.to_json()).ok())
+                .collect(),
+            v4: self.v4,
         };
         serde_json::to_string(&stored).unwrap_or_default()
     }
@@ -279,6 +352,27 @@ impl Peer {
         }
         self.current = Some(id);
     }
+
+    /// La session v4 d'envoi : la courante, sinon la plus récente.
+    fn sending4(&mut self) -> Option<&mut Session4> {
+        let id = self
+            .current4
+            .filter(|id| self.sessions4.iter().any(|s| s.session_id() == *id))
+            .or_else(|| self.sessions4.last().map(Session4::session_id))?;
+        self.sessions4.iter_mut().find(|s| s.session_id() == id)
+    }
+
+    /// Range une session v4 (comme [`Peer::put`]) ; le contact parle v4.
+    fn put4(&mut self, s: Session4) {
+        let id = s.session_id();
+        self.sessions4.retain(|x| x.session_id() != id);
+        self.sessions4.push(s);
+        if self.sessions4.len() > 2 {
+            self.sessions4.remove(0);
+        }
+        self.current4 = Some(id);
+        self.v4 = true;
+    }
 }
 
 /// L'état v3 de l'appareil : son [`Device`] et ses sessions, contact par
@@ -296,6 +390,9 @@ pub struct Engine {
     pq_dirty: bool,
     /// L'heure (secondes) de la dernière opération.
     clock: u64,
+    /// Le triple cliquet (v4) : annoncé, parlé. Toujours, sauf dans les
+    /// tests qui jouent une version d'avant.
+    v4: bool,
 }
 
 /// Ce qu'il faut garder après une opération.
@@ -325,7 +422,13 @@ impl Engine {
             pq: None,
             pq_dirty: false,
             clock: now,
+            v4: true,
         }
+    }
+
+    /// Le triple cliquet est-il de notre côté (un appareil avec ML-KEM) ?
+    fn v4_on(&self) -> bool {
+        self.v4 && self.device.supports_pq()
     }
 
     /// Active le cliquet post-quantique (v6, §7.17) avec les clés gardées
@@ -477,6 +580,9 @@ impl Engine {
     /// `None` (pas encore de session).
     pub fn session_protection(&self, code: &str) -> Option<Protection> {
         let peer = self.peers.get(code)?;
+        if peer.v4 && self.v4_on() {
+            return Some(Protection::Triple);
+        }
         let id = peer
             .current
             .or_else(|| peer.sessions.last().map(Session::session_id))?;
@@ -487,14 +593,36 @@ impl Engine {
     }
 
     /// Une session existe-t-elle avec ce contact ?
+    /// Avec un contact qui parle le triple cliquet, une session v4 : sans
+    /// elle, l'appelant va chercher son paquet pour en ouvrir une.
     pub fn has_session(&self, code: &str) -> bool {
-        self.peers.get(code).is_some_and(|p| !p.sessions.is_empty())
+        self.peers.get(code).is_some_and(|p| {
+            if p.v4 && self.v4_on() {
+                !p.sessions4.is_empty()
+            } else {
+                !p.sessions.is_empty()
+            }
+        })
+    }
+
+    /// Le contact (cette adresse) parle-t-il le triple cliquet ?
+    pub fn speaks_v4(&self, code: &str) -> bool {
+        self.peers.get(code).is_some_and(|p| p.v4)
     }
 
     /// Oublie les sessions d'un contact : le prochain envoi en ouvre une
     /// neuve (après une session perdue de l'un ou l'autre côté).
+    /// Ce qu'on sait de sa version (le triple cliquet) reste : la session
+    /// neuve sera v4 s'il le parlait, pas de retour au v3.
     pub fn forget(&mut self, code: &str) {
-        if self.peers.remove(code).is_some() {
+        if let Some(old) = self.peers.remove(code) {
+            if old.v4 {
+                let peer = Peer {
+                    v4: true,
+                    ..Peer::default()
+                };
+                self.peers.insert(code.to_owned(), peer);
+            }
             self.dirty.insert(code.to_owned());
         }
     }
@@ -535,7 +663,16 @@ impl Engine {
             .pq_advert_for(addr)
             .and_then(|a| pq6::with_advert(plain, &a))
             .filter(|p| p.len() <= MAX_PLAINTEXT);
-        let token = self.encrypt(addr, bundle, with_advert.as_deref().unwrap_or(plain));
+        let plain = with_advert.as_deref().unwrap_or(plain);
+        // Le triple cliquet s'il le parle ; sinon le v3, avec notre annonce.
+        let token = self.encrypt4(addr, bundle, plain).or_else(|| {
+            let announced = self
+                .v4_on()
+                .then(|| with_v4_advert(plain))
+                .flatten()
+                .filter(|p| p.len() <= MAX_PLAINTEXT);
+            self.encrypt(addr, bundle, announced.as_deref().unwrap_or(plain))
+        });
         match token {
             Some(token) => {
                 if with_advert.is_some() {
@@ -561,6 +698,31 @@ impl Engine {
         m.copy_from_slice(&crypto::random_bytes(32));
         nonce.copy_from_slice(&crypto::random_bytes(12));
         pq6::wrap(&peer.pq.ek, &token, &m, &nonce).unwrap_or(token)
+    }
+
+    /// Chiffre en v4 pour un contact qui parle le triple cliquet : par sa
+    /// session v4, ou une neuve vers son paquet. `None` : il ne le parle pas,
+    /// ou pas de session ni de paquet (le v3 prend le relais).
+    fn encrypt4(&mut self, code: &str, bundle: Option<&KeyBundle>, plain: &str) -> Option<String> {
+        if !self.v4_on() {
+            return None;
+        }
+        let peer = self.peers.get_mut(code).filter(|p| p.v4)?;
+        if let Some(s) = peer.sending4() {
+            match s.encrypt(plain) {
+                Ok(token) => {
+                    self.dirty.insert(code.to_owned());
+                    return Some(token);
+                }
+                Err(_) => peer.sessions4.clear(),
+            }
+        }
+        let bundle = bundle.filter(|b| b.pq.is_some())?;
+        let mut s = self.device.initiate4(bundle, &mut hasard::system()).ok()?;
+        let token = s.encrypt(plain).ok()?;
+        peer.put4(s);
+        self.dirty.insert(code.to_owned());
+        Some(token)
     }
 
     fn encrypt(&mut self, code: &str, bundle: Option<&KeyBundle>, plain: &str) -> Option<String> {
@@ -647,6 +809,13 @@ impl Engine {
                     }
                 }
                 self.pq_learn(addr, &wire);
+                if self.v4_on() && announces_v4(&wire) {
+                    let peer = self.peers.entry(addr.to_owned()).or_default();
+                    if !peer.v4 {
+                        peer.v4 = true;
+                        self.dirty.insert(addr.to_owned());
+                    }
+                }
                 Opened::V3(wire)
             }
             // Talka ne se sert pas (encore) des chaînes de groupe.
@@ -657,6 +826,9 @@ impl Engine {
     }
 
     fn decrypt(&mut self, code: &str, text: &str, now: u64) -> Result<Content, Erreur> {
+        if is_v4(text) {
+            return self.decrypt4(code, text, now);
+        }
         let token = Token::decode(text)?;
         let id = token.session_id().ok_or(Erreur::SessionInconnue)?;
         let rng = &mut hasard::system();
@@ -702,6 +874,54 @@ impl Engine {
         self.dirty.insert(code.to_owned());
         Ok(content)
     }
+
+    /// Un jeton v4 : rien en clair ne dit de quelle session il est. On essaie
+    /// les sessions v4 de l'adresse, puis (v4 multi-appareils) celles rangées
+    /// sous le code seul — celle qui l'ouvre passe alors à l'adresse ; sinon,
+    /// un premier message ouvre une session ([`Device::accept4`]).
+    fn decrypt4(&mut self, code: &str, text: &str, now: u64) -> Result<Content, Erreur> {
+        if !self.v4_on() {
+            return Err(Erreur::PqIndisponible);
+        }
+        let token = Token4::decode(text)?;
+        let rng = &mut hasard::system();
+        let base = code.split_once('/').map(|(b, _)| b);
+        for key in std::iter::once(code).chain(base) {
+            let Some(peer) = self.peers.get_mut(key) else {
+                continue;
+            };
+            for i in 0..peer.sessions4.len() {
+                match peer.sessions4[i].decrypt(&token, now, rng) {
+                    Ok(content) => {
+                        self.dirty.insert(key.to_owned());
+                        if key == code {
+                            peer.current4 = Some(peer.sessions4[i].session_id());
+                            peer.v4 = true;
+                        } else {
+                            let s = peer.sessions4.remove(i);
+                            if peer.current4 == Some(s.session_id()) {
+                                peer.current4 = None;
+                            }
+                            self.peers.entry(code.to_owned()).or_default().put4(s);
+                            self.dirty.insert(code.to_owned());
+                        }
+                        return Ok(content);
+                    }
+                    // Pas de cette session : la suivante.
+                    Err(Erreur::SessionInconnue) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        if !matches!(token, Token4::Initial(..)) {
+            return Err(Erreur::SessionInconnue);
+        }
+        let (s, content) = self.device.accept4(&token, now, rng)?;
+        self.peers.entry(code.to_owned()).or_default().put4(s);
+        self.device_dirty = true;
+        self.dirty.insert(code.to_owned());
+        Ok(content)
+    }
 }
 
 #[cfg(test)]
@@ -713,7 +933,16 @@ mod tests {
         engine: Engine,
     }
 
+    /// Un appareil qui ne parle que le double cliquet (une version d'avant
+    /// le triple cliquet) : les tests du v3.
     fn side() -> Side {
+        let mut s = side4();
+        s.engine.v4 = false;
+        s
+    }
+
+    /// Un appareil à jour : triple cliquet.
+    fn side4() -> Side {
         Side {
             id: Identity::create(0.0),
             engine: Engine::start(None, 1_000),
@@ -988,6 +1217,7 @@ mod tests {
             id: b.id.clone(),
             engine: Engine::start(Some(&device), 2_000),
         };
+        b2.engine.v4 = false;
         assert!(!b2.engine.is_loaded(&a.id.code));
         b2.engine.load(&a.id.code, Some(&dirty.peers[0].1));
         assert!(b2.engine.take_dirty().device.is_none());
@@ -1003,6 +1233,7 @@ mod tests {
             id: b.id.clone(),
             engine: Engine::start(Some(&device), 3_000),
         };
+        b3.engine.v4 = false;
         let lost = send(&mut a, &b3, false, "{\"k\":3}");
         assert!(matches!(
             recv(&mut b3, &a, &lost),
@@ -1112,6 +1343,206 @@ mod tests {
             a.engine
                 .open_from(&a.id, &b_dev, &b.id.code, &b.id.dh, &again.body, 2_000),
             Opened::V3("{\"k\":3}".into())
+        );
+    }
+
+    /// Le jeton v3 ou v4 que porte une enveloppe (sans cliquet v6).
+    fn token_of(to: &Side, from: &Side, s: &Sealed) -> String {
+        let t = inner(to, from, s);
+        assert!(is_token(&t), "{t}");
+        t
+    }
+
+    /// Le triple cliquet se négocie dans une session v3 : A écrit en v3 (avec
+    /// l'annonce), B passe au v4, et tout le reste de la discussion est v4.
+    #[test]
+    fn the_triple_ratchet_is_negotiated_then_sticks() {
+        let (mut a, mut b) = (side4(), side4());
+        let m1 = send(&mut a, &b, true, "{\"k\":1}");
+        assert!(!is_v4(&token_of(&b, &a, &m1)));
+        assert_eq!(text(recv(&mut b, &a, &m1)), "1");
+        assert!(b.engine.speaks_v4(&a.id.code));
+        assert_eq!(
+            b.engine.session_protection(&a.id.code),
+            Some(Protection::Triple)
+        );
+        // B n'a pas encore de session v4 : il lui faut le paquet de A.
+        assert!(!b.engine.has_session(&a.id.code));
+        let r1 = send(&mut b, &a, true, "{\"k\":2}");
+        let t = token_of(&a, &b, &r1);
+        assert!(is_v4(&t));
+        // Plus d'identifiant de session en clair, et pas d'annonce dans le v4.
+        assert_eq!(text(recv(&mut a, &b, &r1)), "2");
+        assert!(a.engine.speaks_v4(&b.id.code));
+        assert!(a.engine.has_session(&b.id.code));
+        // A répond par la session v4 de B, sans paquet.
+        let m2 = send(&mut a, &b, false, "{\"k\":3}");
+        let m3 = send(&mut a, &b, false, "{\"k\":4}");
+        assert!(is_v4(&token_of(&b, &a, &m2)));
+        // Dans le désordre, puis un doublon.
+        assert_eq!(text(recv(&mut b, &a, &m3)), "4");
+        assert_eq!(text(recv(&mut b, &a, &m2)), "3");
+        assert_eq!(recv(&mut b, &a, &m2), Opened::Replay);
+        assert_eq!(
+            recv(&mut b, &a, &m3),
+            Opened::Replay,
+            "un message déjà lu ne se relit pas"
+        );
+        // Plusieurs tours de cliquet.
+        for i in 0..5 {
+            let x = send(&mut b, &a, false, &format!("{{\"b\":{i}}}"));
+            assert!(is_v4(&token_of(&a, &b, &x)));
+            assert_eq!(recv(&mut a, &b, &x), Opened::V3(format!("{{\"b\":{i}}}")));
+            let y = send(&mut a, &b, false, &format!("{{\"a\":{i}}}"));
+            assert!(is_v4(&token_of(&b, &a, &y)));
+            assert_eq!(recv(&mut b, &a, &y), Opened::V3(format!("{{\"a\":{i}}}")));
+        }
+        // Le premier message v3 rejoué ne fait pas revenir en arrière.
+        assert_eq!(recv(&mut b, &a, &m1), Opened::Replay);
+        let after = send(&mut b, &a, false, "{\"k\":5}");
+        assert!(is_v4(&token_of(&a, &b, &after)));
+        assert_eq!(text(recv(&mut a, &b, &after)), "5");
+        // Pas pour lui : illisible.
+        let mut c = side4();
+        assert_eq!(recv(&mut c, &b, &after), Opened::Failed(Failure::Envelope));
+    }
+
+    #[test]
+    fn triple_ratchet_sessions_survive_a_reload() {
+        let (mut a, mut b) = (side4(), side4());
+        let m1 = send(&mut a, &b, true, "{\"k\":1}");
+        recv(&mut b, &a, &m1);
+        let r1 = send(&mut b, &a, true, "{\"k\":2}");
+        assert_eq!(text(recv(&mut a, &b, &r1)), "2");
+        let dirty = a.engine.take_dirty();
+        let device = a.engine.device.to_json().to_string();
+        let peer = &dirty.peers.iter().find(|(c, _)| *c == b.id.code).unwrap().1;
+        assert!(peer.contains("\"v4\":true"));
+        let mut a2 = Side {
+            id: a.id.clone(),
+            engine: Engine::start(Some(&device), 2_000),
+        };
+        a2.engine.load(&b.id.code, Some(peer));
+        assert!(a2.engine.speaks_v4(&b.id.code));
+        let m2 = send(&mut a2, &b, false, "{\"k\":3}");
+        assert!(is_v4(&token_of(&b, &a2, &m2)));
+        assert_eq!(text(recv(&mut b, &a2, &m2)), "3");
+        // Une ancienne version de l'état (sans v4) se relit toujours.
+        let old = Peer::from_json("{\"current\":\"\",\"sessions\":[]}");
+        assert!(!old.v4 && old.sessions4.is_empty());
+    }
+
+    /// Une session v4 perdue se répare en v4 : `forget` garde ce qu'on sait
+    /// de sa version.
+    #[test]
+    fn a_lost_triple_ratchet_session_heals_in_v4() {
+        let (mut a, mut b) = (side4(), side4());
+        let m1 = send(&mut a, &b, true, "{\"k\":1}");
+        recv(&mut b, &a, &m1);
+        let r1 = send(&mut b, &a, true, "{\"k\":2}");
+        recv(&mut a, &b, &r1);
+        // A répond : la session de B est confirmée (plus de premier message).
+        let ok = send(&mut a, &b, false, "{\"k\":\"ok\"}");
+        assert_eq!(text(recv(&mut b, &a, &ok)), "\"ok\"");
+        // A perd ses sessions (mais garde son appareil).
+        let device = a.engine.device.to_json().to_string();
+        a.engine = Engine::start(Some(&device), 3_000);
+        let lost = send(&mut b, &a, false, "{\"k\":3}");
+        match recv(&mut a, &b, &lost) {
+            Opened::Failed(Failure::V3(e)) => assert!(needs_repair(&e), "{e}"),
+            other => panic!("{other:?}"),
+        }
+        // B, à qui A renvoie son profil en v3, oublie ses sessions : la
+        // suivante est v4, vers le paquet de A.
+        b.engine.forget(&a.id.code);
+        assert!(b.engine.speaks_v4(&a.id.code));
+        assert!(!b.engine.has_session(&a.id.code));
+        let heal = send(&mut b, &a, true, "{\"k\":4}");
+        assert!(is_v4(&token_of(&a, &b, &heal)));
+        assert_eq!(text(recv(&mut a, &b, &heal)), "4");
+        let back = send(&mut a, &b, false, "{\"k\":5}");
+        assert!(is_v4(&token_of(&b, &a, &back)));
+        assert_eq!(text(recv(&mut b, &a, &back)), "5");
+    }
+
+    /// Sans paquet ni session v4 (le relais ne le rend pas), le v3 prend le
+    /// relais : le message part quand même, en double cliquet.
+    #[test]
+    fn without_a_bundle_the_double_ratchet_takes_over() {
+        let (mut a, mut b) = (side4(), side4());
+        let m1 = send(&mut a, &b, true, "{\"k\":1}");
+        recv(&mut b, &a, &m1);
+        assert!(b.engine.speaks_v4(&a.id.code));
+        let r = send(&mut b, &a, false, "{\"k\":2}");
+        assert!(r.v3);
+        assert!(!is_v4(&token_of(&a, &b, &r)));
+        assert_eq!(text(recv(&mut a, &b, &r)), "2");
+    }
+
+    /// Le triple cliquet et le cliquet post-quantique v6 vont ensemble.
+    #[test]
+    fn the_triple_ratchet_inside_the_post_quantum_wrap() {
+        let (mut a, mut b) = (side4(), side4());
+        a.engine.start_pq(None, 1_000);
+        b.engine.start_pq(None, 1_000);
+        let m1 = send(&mut a, &b, true, "{\"k\":1}");
+        assert_eq!(text(recv(&mut b, &a, &m1)), "1");
+        let r1 = send(&mut b, &a, true, "{\"k\":2}");
+        assert!(pq6::is_wrapped(&inner(&a, &b, &r1)));
+        assert_eq!(text(recv(&mut a, &b, &r1)), "2");
+        let m2 = send(&mut a, &b, false, "{\"k\":3}");
+        assert_eq!(text(recv(&mut b, &a, &m2)), "3");
+        assert!(a.engine.has_session(&b.id.code) && a.engine.speaks_v4(&b.id.code));
+    }
+
+    /// v4 multi-appareils : une session v4 ouverte vers le code seul passe à
+    /// l'adresse de l'appareil dès qu'un message dit lequel c'est.
+    #[test]
+    fn a_triple_ratchet_session_moves_to_the_device() {
+        let (mut a, mut b) = (side4(), side4());
+        let a_dev = format!("{}/00000000000000a1", a.id.code);
+        let b_dev = format!("{}/00000000000000b1", b.id.code);
+        // B a appris le v4 de A (sous le code de A), puis lui écrit en v4.
+        let m = send(&mut a, &b, true, "{\"k\":0}");
+        recv(&mut b, &a, &m);
+        let first = send(&mut b, &a, true, "{\"k\":1}");
+        assert!(is_v4(&token_of(&a, &b, &first)));
+        assert_eq!(
+            a.engine
+                .open_from(&a.id, &b_dev, &b.id.code, &b.id.dh, &first.body, 2_000),
+            Opened::V3("{\"k\":1}".into())
+        );
+        let reply = a
+            .engine
+            .seal_to(&a.id, &b_dev, &b.id.code, &b.id.dh, None, "{\"k\":2}")
+            .unwrap();
+        assert!(is_v4(&token_of(&b, &a, &reply)));
+        assert_eq!(
+            b.engine
+                .open_from(&b.id, &a_dev, &a.id.code, &a.id.dh, &reply.body, 2_000),
+            Opened::V3("{\"k\":2}".into())
+        );
+        assert!(b.engine.has_session(&a_dev) && b.engine.speaks_v4(&a_dev));
+    }
+
+    /// Avec une version d'avant (ou un iPhone qui ne le parle pas encore),
+    /// rien ne change : double cliquet dans les deux sens, et elle lit nos
+    /// messages (l'annonce n'est qu'un champ de plus dans le `Wire`).
+    #[test]
+    fn with_an_older_version_the_double_ratchet_stays() {
+        let (mut a, mut b) = (side4(), side());
+        let m1 = send(&mut a, &b, true, "{\"k\":1}");
+        assert_eq!(text(recv(&mut b, &a, &m1)), "1");
+        let r1 = send(&mut b, &a, true, "{\"k\":2}");
+        assert!(!is_v4(&token_of(&a, &b, &r1)));
+        assert_eq!(text(recv(&mut a, &b, &r1)), "2");
+        assert!(!a.engine.speaks_v4(&b.id.code));
+        let m2 = send(&mut a, &b, false, "{\"k\":3}");
+        assert!(!is_v4(&token_of(&b, &a, &m2)));
+        assert_eq!(text(recv(&mut b, &a, &m2)), "3");
+        assert_eq!(
+            a.engine.session_protection(&b.id.code),
+            Some(Protection::Ratchet { pq: true })
         );
     }
 
