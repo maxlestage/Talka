@@ -205,6 +205,15 @@ extension Message {
     /// WhatsApp) : le plus récent d'abord, chacun une fois, avec son
     /// message ; sans les messages supprimés ni une capsule encore scellée
     /// pour nous. Le même que le navigateur (`model::links`).
+    /// Combien de messages des autres sont arrivés après `seen` (le dernier
+    /// message affiché quand on a quitté le bas de la discussion) : le nombre
+    /// du bouton « Derniers messages », comme WhatsApp. Le même que le
+    /// navigateur (`model::new_below`).
+    public static func newBelow(_ messages: [Message], seen: String, me: String) -> Int {
+        guard let i = messages.firstIndex(where: { $0.id == seen }) else { return 0 }
+        return messages[(i + 1)...].filter { $0.from != me && $0.from != "system" }.count
+    }
+
     public static func links(_ messages: [Message], me: String, now: Double) -> [ChatLink] {
         var seen = Set<String>()
         var out: [ChatLink] = []
