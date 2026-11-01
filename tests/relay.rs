@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use futures_util::{SinkExt, StreamExt};
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -22,19 +22,27 @@ struct Device {
     code: String,
 }
 
+/// Une clé P-256 tirée au hasard (32 octets, refusés seulement s'ils sortent
+/// de l'ordre de la courbe).
+fn random_key() -> SigningKey {
+    loop {
+        let mut seed = [0u8; 32];
+        OsRng.fill_bytes(&mut seed);
+        if let Ok(key) = SigningKey::from_slice(&seed) {
+            return key;
+        }
+    }
+}
+
 fn device() -> Device {
-    let sign = SigningKey::random(&mut OsRng);
-    let dh = SigningKey::random(&mut OsRng);
+    let sign = random_key();
+    let dh = random_key();
     let sign_raw = sign
         .verifying_key()
-        .to_encoded_point(false)
+        .to_sec1_point(false)
         .as_bytes()
         .to_vec();
-    let dh_raw = dh
-        .verifying_key()
-        .to_encoded_point(false)
-        .as_bytes()
-        .to_vec();
+    let dh_raw = dh.verifying_key().to_sec1_point(false).as_bytes().to_vec();
     Device {
         code: talka::code::derive(&sign_raw, &dh_raw),
         sign,
