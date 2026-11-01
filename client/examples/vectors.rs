@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 
 use serde_json::json;
 use talka_web::crypto::{self, Identity};
@@ -19,8 +19,8 @@ fn main() {
     let a = Identity::create(1_700_000_000_000.0);
     let b = Identity::create(1_700_000_000_000.0);
     // La clé de notification de B (celle que tire son service worker).
-    let nk_priv = p256::SecretKey::random(&mut rand_core::OsRng);
-    let nk = crypto::b64(nk_priv.public_key().to_encoded_point(false).as_bytes());
+    let nk_priv = talka_web::crypto::new_secret_key();
+    let nk = crypto::b64(nk_priv.public_key().to_sec1_point(false).as_bytes());
 
     let msg = Wire {
         body: Body::Msg {
@@ -297,11 +297,11 @@ fn main() {
     // v4 : boîtes tournantes, liaison, paquet d'appareil, expéditeur
     // scellé avec l'appareil (docs/SECURITE.md §7.11 à §7.13).
     let boites = crypto::boites_key(&a, &b.code, &b.dh).unwrap();
-    let lk = p256::SecretKey::random(&mut rand_core::OsRng);
+    let lk = talka_web::crypto::new_secret_key();
     let offer = crypto::LinkOffer {
         dev: "00000000000000c3".into(),
         lid: [7u8; 16],
-        lk: lk.public_key().to_encoded_point(false).as_bytes().to_vec(),
+        lk: lk.public_key().to_sec1_point(false).as_bytes().to_vec(),
     };
     let (ek, link_key) = crypto::link_answer(&offer).unwrap();
     let link_chunks = crypto::link_seal(
