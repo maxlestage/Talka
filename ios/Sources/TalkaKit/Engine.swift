@@ -354,6 +354,12 @@ public final class Engine {
         Message.photos(messages(chat, limit: 500), me: me.code, now: nowMs())
     }
 
+    /// Les documents de la discussion, le plus récent d'abord (mêmes 500
+    /// derniers messages).
+    public func documents(in chat: String) -> [Message] {
+        Message.documents(messages(chat, limit: 500), me: me.code, now: nowMs())
+    }
+
     // ----- Contacts -----
 
     func saveContact(_ c: Contact) {

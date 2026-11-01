@@ -111,6 +111,23 @@ final class GroupsInCommonTests: XCTestCase {
         XCTAssertEqual(Message.photos(msgs, me: "MOI", now: 1_000).map(\.id), ["6", "5", "1"])
         XCTAssertEqual(Message.photos(msgs, me: "MOI", now: 9_000).map(\.id), ["6", "5", "4", "1"])
     }
+
+    /// Les documents de la fiche : les fichiers seulement, avec leur contenu.
+    func testDocumentsAreTheFilesOnly() {
+        func m(_ id: String, _ kind: String, _ data: String) -> Message {
+            var x = Message(chat: "LEA", id: id, from: "LEA", at: 0, content: Content())
+            x.kind = kind; x.data = data
+            return x
+        }
+        let msgs = [
+            m("1", "file", "data:application/pdf;base64,AA=="),
+            m("2", "image", "data:image/jpeg;base64,AA=="),
+            m("3", "file", ""),
+            m("4", "voice", "data:audio/webm;base64,AA=="),
+            m("5", "file", "data:text/plain;base64,AA=="),
+        ]
+        XCTAssertEqual(Message.documents(msgs, me: "MOI", now: 0).map(\.id), ["5", "1"])
+    }
 }
 
 final class PresenceTests: XCTestCase {
