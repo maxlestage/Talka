@@ -42,6 +42,11 @@ struct Conv {
     unread_id: Option<String>,
     has_more: bool,
     loading_more: bool,
+    /// Le dernier message affiché quand on a quitté le bas : ce qui arrive
+    /// après se compte sur « Derniers messages » (`model::new_below`).
+    seen: Option<String>,
+    /// Le dernier message du rendu précédent.
+    last_shown: Option<String>,
 }
 
 thread_local! {
@@ -546,6 +551,7 @@ pub async fn open(chat_id: &str, host: &Element) {
         .attr("type", "button")
         .attr("aria-label", "Derniers messages")
         .child(icon("arrowdown"))
+        .child(h("span.to-bottom-count.hidden"))
         .el();
     let search_bar = h("div.conv-search.hidden").el();
     let pin_bar = h("div.pin-bar").el();
@@ -723,6 +729,16 @@ fn on_scroll() {
     if let Some(d) = el(|c| c.down.clone()) {
         toggle_class(&d, "hidden", near_bottom());
     }
+    if near_bottom() {
+        with(|c| c.seen = None);
+        show_below(0);
+    } else {
+        with(|c| {
+            if c.seen.is_none() {
+                c.seen = c.last_shown.clone();
+            }
+        });
+    }
     let Some(l) = el(|c| c.list.clone()) else {
         return;
     };
@@ -818,13 +834,42 @@ async fn render(initial: bool) {
     });
     if stick {
         scroll_bottom(false);
+        with(|c| c.seen = None);
+        show_below(0);
+    } else {
+        // Loin du bas : ce qui arrive se compte sur le bouton, comme WhatsApp.
+        let seen = with(|c| {
+            if c.seen.is_none() {
+                c.seen = c.last_shown.clone();
+            }
+            c.seen.clone().unwrap_or_default()
+        });
+        show_below(crate::model::new_below(&list, &seen, &core::my_code()));
     }
+    with(|c| c.last_shown = list.last().map(|m| m.id.clone()));
     if initial && let Some(sep) = query_in(&list_el, ".unread-sep") {
         center_on(&sep, false);
     }
     if let Some(d) = el(|c| c.down.clone()) {
         toggle_class(&d, "hidden", near_bottom());
     }
+}
+
+/// Le nombre de « Derniers messages » : caché à 0.
+fn show_below(n: usize) {
+    let Some(d) = el(|c| c.down.clone()) else {
+        return;
+    };
+    if let Some(badge) = query_in(&d, ".to-bottom-count") {
+        badge.set_text_content(Some(&n.to_string()));
+        toggle_class(&badge, "hidden", n == 0);
+    }
+    let label = match n {
+        0 => "Derniers messages".to_owned(),
+        1 => "Derniers messages, 1 nouveau".to_owned(),
+        n => format!("Derniers messages, {n} nouveaux"),
+    };
+    let _ = d.set_attribute("aria-label", &label);
 }
 
 fn ticks(m: &Message) -> El {
