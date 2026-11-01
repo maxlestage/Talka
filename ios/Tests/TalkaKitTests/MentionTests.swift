@@ -128,6 +128,30 @@ final class GroupsInCommonTests: XCTestCase {
         ]
         XCTAssertEqual(Message.documents(msgs, me: "MOI", now: 0).map(\.id), ["5", "1"])
     }
+
+    /// Les liens de la fiche : la règle des bulles, chacun une fois, le plus
+    /// récent d'abord (comme le navigateur).
+    func testLinksLikeTheBubbles() {
+        XCTAssertEqual(Message.findLinks("Regarde https://talka.example/a?b=1, et (http://x.org/y)."),
+                       ["https://talka.example/a?b=1", "http://x.org/y"])
+        XCTAssertEqual(Message.findLinks("«https://a.fr»"), ["https://a.fr"])
+        XCTAssertTrue(Message.findLinks("pas un lien : xhttps://a.fr ni https://").isEmpty)
+        func m(_ id: String, _ from: String, _ text: String, deleted: Bool = false, openAt: Double? = nil) -> Message {
+            var x = Message(chat: "LEA", id: id, from: from, at: 0, content: Content())
+            x.text = text; x.deleted = deleted; x.openAt = openAt
+            return x
+        }
+        let msgs = [
+            m("1", "LEA", "https://a.fr"),
+            m("2", "LEA", "https://b.fr https://a.fr"),
+            m("3", "LEA", "https://supprime.fr", deleted: true),
+            m("4", "LEA", "https://capsule.fr", openAt: 5_000),
+            m("5", "system", "https://systeme.fr"),
+        ]
+        let got = Message.links(msgs, me: "MOI", now: 1_000)
+        XCTAssertEqual(got.map(\.url), ["https://b.fr", "https://a.fr"])
+        XCTAssertEqual(got.map(\.message.id), ["2", "2"])
+    }
 }
 
 final class PresenceTests: XCTestCase {
