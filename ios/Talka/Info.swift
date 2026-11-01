@@ -74,7 +74,10 @@ struct ContactInfoView: View {
                         StarredRow(engine: e, chatId: code, shown: $showStarred)
                     }
                 }
-                if chat != nil { PhotosSection(engine: e, chatId: code) }
+                if chat != nil {
+                    PhotosSection(engine: e, chatId: code)
+                    DocumentsSection(engine: e, chatId: code)
+                }
                 // Les groupes en commun, comme WhatsApp (et le navigateur).
                 let common = e.groupsInCommon(code)
                 if !common.isEmpty {
@@ -391,6 +394,7 @@ struct GroupInfoView: View {
                     StarredRow(engine: e, chatId: chatId, shown: $showStarred)
                 }
                 PhotosSection(engine: e, chatId: chatId)
+                DocumentsSection(engine: e, chatId: chatId)
                 Section("\(chat.members.count) membres") {
                     if admin {
                         Button { adding = true } label: { Label("Ajouter des membres", systemImage: "person.badge.plus") }
@@ -762,5 +766,40 @@ struct PhotosSection: View {
             }
         }
         .fullScreenCover(item: $viewing) { m in ImageViewer(engine: engine, message: m) }
+    }
+}
+
+/// Les documents de la discussion dans sa fiche, comme WhatsApp (et le
+/// navigateur) : les 20 plus récents ; toucher en partage ou enregistre un.
+struct DocumentsSection: View {
+    let engine: Engine
+    let chatId: String
+    @State private var exported: URL?
+
+    var body: some View {
+        let docs = engine.documents(in: chatId)
+        if !docs.isEmpty {
+            Section("Documents (\(docs.count))") {
+                ForEach(docs.prefix(20)) { m in
+                    Button {
+                        if let data = Data(dataURL: m.data) { exported = temporaryFile(data, name: m.saveName) }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "doc.fill").font(.title3).foregroundStyle(Color.talkaGreen)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(m.name.isEmpty ? "Fichier" : m.name).foregroundStyle(.primary).lineLimit(1)
+                                Text("\(formatBytes(m.size)) · \(Dates.separator(m.at))").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            Image(systemName: "square.and.arrow.down").foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityLabel("Enregistrer \(m.name.isEmpty ? "le fichier" : m.name)")
+                }
+            }
+            .sheet(item: Binding(get: { exported.map(SharedURL.init) }, set: { exported = $0?.url })) { shared in
+                ActivityView(items: [shared.url]).presentationDetents([.medium, .large])
+            }
+        }
     }
 }
