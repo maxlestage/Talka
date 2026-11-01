@@ -77,6 +77,7 @@ struct ContactInfoView: View {
                 if chat != nil {
                     PhotosSection(engine: e, chatId: code)
                     DocumentsSection(engine: e, chatId: code)
+                    LinksSection(engine: e, chatId: code)
                 }
                 // Les groupes en commun, comme WhatsApp (et le navigateur).
                 let common = e.groupsInCommon(code)
@@ -395,6 +396,7 @@ struct GroupInfoView: View {
                 }
                 PhotosSection(engine: e, chatId: chatId)
                 DocumentsSection(engine: e, chatId: chatId)
+                LinksSection(engine: e, chatId: chatId)
                 Section("\(chat.members.count) membres") {
                     if admin {
                         Button { adding = true } label: { Label("Ajouter des membres", systemImage: "person.badge.plus") }
@@ -788,7 +790,7 @@ struct DocumentsSection: View {
                             Image(systemName: "doc.fill").font(.title3).foregroundStyle(Color.talkaGreen)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(m.name.isEmpty ? "Fichier" : m.name).foregroundStyle(.primary).lineLimit(1)
-                                Text("\(formatBytes(m.size)) · \(Dates.separator(m.at))").font(.caption).foregroundStyle(.secondary)
+                                Text("\(m.fileDetail(size: formatBytes(m.size))) · \(Dates.separator(m.at))").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 0)
                             Image(systemName: "square.and.arrow.down").foregroundStyle(.secondary)
@@ -799,6 +801,36 @@ struct DocumentsSection: View {
             }
             .sheet(item: Binding(get: { exported.map(SharedURL.init) }, set: { exported = $0?.url })) { shared in
                 ActivityView(items: [shared.url]).presentationDetents([.medium, .large])
+            }
+        }
+    }
+}
+
+/// Les liens de la discussion dans sa fiche, comme WhatsApp (et le
+/// navigateur) : les 20 plus récents ; toucher en ouvre un.
+struct LinksSection: View {
+    @Environment(\.openURL) private var openURL
+    let engine: Engine
+    let chatId: String
+
+    var body: some View {
+        let links = engine.links(in: chatId)
+        if !links.isEmpty {
+            Section("Liens (\(links.count))") {
+                ForEach(links.prefix(20)) { l in
+                    Button {
+                        if let url = URL(string: l.url) { openURL(url) }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "link").font(.title3).foregroundStyle(Color.talkaGreen)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(l.url).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
+                                Text("\(engine.displayName(l.message.from)) · \(Dates.separator(l.message.at))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
             }
         }
     }

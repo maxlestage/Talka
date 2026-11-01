@@ -176,6 +176,46 @@ extension Message {
         attachments(messages, kind: "file", me: me, now: now)
     }
 
+    /// Les liens d'un texte, avec la règle des liens cliquables des bulles
+    /// (`richText`) : `http://` ou `https://` en début de mot (ou après une
+    /// parenthèse, un guillemet), jusqu'à l'espace, sans la ponctuation
+    /// finale. Le même que le navigateur (`model::find_links`).
+    public static func findLinks(_ text: String) -> [String] {
+        let chars = Array(text)
+        var out: [String] = []
+        var i = 0
+        while i < chars.count {
+            let atStart = i == 0 || chars[i - 1].isWhitespace || "([{«\"'“‘".contains(chars[i - 1])
+            let rest = String(chars[i..<min(i + 8, chars.count)])
+            if atStart, rest.hasPrefix("https://") || rest.hasPrefix("http://") {
+                var j = i
+                while j < chars.count, !chars[j].isWhitespace, chars[j] != "<" { j += 1 }
+                while j > i, ".,;:!?)]}'\"»”’".contains(chars[j - 1]) { j -= 1 }
+                let url = String(chars[i..<j])
+                if url.utf8.count > "https://".utf8.count { out.append(url) }
+                i = max(j, i + 1)
+            } else {
+                i += 1
+            }
+        }
+        return out
+    }
+
+    /// Les liens d'une discussion, pour sa fiche (« Liens », comme
+    /// WhatsApp) : le plus récent d'abord, chacun une fois, avec son
+    /// message ; sans les messages supprimés ni une capsule encore scellée
+    /// pour nous. Le même que le navigateur (`model::links`).
+    public static func links(_ messages: [Message], me: String, now: Double) -> [ChatLink] {
+        var seen = Set<String>()
+        var out: [ChatLink] = []
+        for m in messages.reversed() where m.from != "system" && !m.deleted && !m.sealed(for: me, now: now) {
+            for url in findLinks(m.text) where seen.insert(url).inserted {
+                out.append(ChatLink(url: url, message: m))
+            }
+        }
+        return out
+    }
+
     static func attachments(_ messages: [Message], kind: String, me: String, now: Double) -> [Message] {
         messages.reversed().filter { $0.kind == kind && !$0.deleted && !$0.data.isEmpty && !$0.sealed(for: me, now: now) }
     }
@@ -599,6 +639,13 @@ public struct Content: Codable, Equatable, Sendable {
     }
 }
 
+/// Un lien d'une discussion, avec le message qui le contient (fiche).
+public struct ChatLink: Identifiable, Sendable {
+    public let url: String
+    public let message: Message
+    public var id: String { url }
+}
+
 public struct Message: Codable, Equatable, Identifiable, Sendable {
     public var chat = ""
     public var id = ""
@@ -654,6 +701,17 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         kind = content.kind; text = content.text; data = content.data; name = content.name; mime = content.mime
         size = content.size; dur = content.dur; w = content.w; h = content.h; code = content.code
         reply = content.reply; fwd = content.fwd; openAt = content.openAt; mentions = content.mentions
+    }
+
+    /// La ligne sous le nom d'un document : « 12 Ko · PDF », ou la taille
+    /// seule quand le nom n'a pas d'extension (« README », « .profile »).
+    /// `size` est déjà mise en forme. Le même que le navigateur
+    /// (`Message::file_detail`).
+    public func fileDetail(size: String) -> String {
+        guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return size }
+        let ext = name[name.index(after: dot)...]
+        guard !ext.isEmpty, ext.count <= 8, ext.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { return size }
+        return "\(size) · \(ext.uppercased())"
     }
 
     /// Le nom d'une pièce jointe enregistrée (« Enregistrer ») : le sien, ou
