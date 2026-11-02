@@ -1754,6 +1754,13 @@ pub fn open_brocolis(chat_id: &str, text: &str) -> jetons::Opened {
     o
 }
 
+/// Le message porte encore un jeton Brocolis fermé.
+pub async fn still_locked(chat_id: &str, msg_id: &str) -> bool {
+    get_message(chat_id, msg_id)
+        .await
+        .is_some_and(|m| jetons::has_token(&m.text))
+}
+
 /// « Déchiffrer 🥦 » sur un message resté chiffré : toutes vos clés
 /// Brocolis s'y essaient (c'est vous qui le demandez, pour ce message-là),
 /// pas seulement celles de la discussion. `true` s'il s'est ouvert.
