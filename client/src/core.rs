@@ -90,6 +90,8 @@ thread_local! {
     static RECEIPT_TIMER: Cell<i32> = const { Cell::new(0) };
     /// L'appareil v3 et les sessions (chargées contact par contact).
     static V3: RefCell<Option<Engine>> = const { RefCell::new(None) };
+    /// Les sessions « double cliquet, clé partagée » du clavier Brocolis.
+    static BRO3: RefCell<crate::bro3::Psk> = RefCell::new(crate::bro3::Psk::default());
     /// Les paquets v3 demandés au relais : (paquet vérifié ou aucun, heure).
     static BUNDLES: RefCell<HashMap<String, (Option<KeyBundle>, f64)>> = RefCell::new(HashMap::new());
     /// La dernière session réparée, contact par contact.
@@ -302,6 +304,17 @@ pub async fn start() {
         s.chats = chats.into_iter().map(|c| (c.id.clone(), c)).collect();
     });
     start_v3().await;
+    let psk = store::get_raw("kv", crate::bro3::KV).await;
+    BRO3.with(|b| *b.borrow_mut() = crate::bro3::Psk::from_json(psk.as_deref()));
+    // Une fois : les messages reçus avant que Talka sache lire le « double
+    // cliquet » du clavier Brocolis s'ouvrent maintenant (dans l'ordre).
+    if BRO3.with(|b| b.borrow_mut().first_scan()) {
+        spawn(async {
+            reopen_messages().await;
+            let json = BRO3.with(|b| b.borrow().to_json());
+            write_json(crate::bro3::KV, &json).await;
+        });
+    }
     ensure_device().await;
     net::start(identity, hidden, &my_dev());
     sweep().await;
@@ -955,7 +968,14 @@ async fn send_cover() {
 fn device_only(key: &str) -> bool {
     matches!(
         key,
-        "dev" | "nk" | "pin" | "appareils" | "boites_jour" | "brocolis_sealed" | "couverture"
+        "dev"
+            | "nk"
+            | "pin"
+            | "appareils"
+            | "boites_jour"
+            | "brocolis_sealed"
+            | "couverture"
+            | crate::bro3::KV
     ) || key == v3::DEVICE_KEY
         || key == pq6::KEYS
         || key.starts_with(v3::SESSION_PREFIX)
@@ -1681,7 +1701,22 @@ pub fn open_brocolis(chat_id: &str, text: &str) -> jetons::Opened {
             .cloned()
             .collect::<Vec<_>>()
     });
-    jetons::open(text, &raw_keys(&keys))
+    let raw = raw_keys(&keys);
+    let mut o = jetons::open(text, &raw);
+    // Un « double cliquet, clé partagée » du clavier Brocolis (v3).
+    if jetons::has_ratchet_token(&o.text) {
+        let (t, n) = BRO3.with(|b| b.borrow_mut().open(&o.text, &raw, v3::secs(now())));
+        if n > 0 {
+            o.text = t;
+            o.opened += n;
+            o.locked = o.locked.saturating_sub(n);
+        }
+        if BRO3.with(|b| b.borrow_mut().take_dirty()) {
+            let json = BRO3.with(|b| b.borrow().to_json());
+            spawn(async move { write_json(crate::bro3::KV, &json).await });
+        }
+    }
+    o
 }
 
 /// Ouvre les jetons d'un message et de sa citation ; `true` si l'un l'a été.
@@ -4437,9 +4472,9 @@ pub async fn export_backup(password: &str) -> Option<String> {
     // une restauration, chaque contact ouvre (ou reçoit) une session neuve.
     if let Some(kv) = dump.get_mut("kv").and_then(Value::as_array_mut) {
         kv.retain(|r| {
-            r.get(0)
-                .and_then(Value::as_str)
-                .is_none_or(|k| !k.starts_with(v3::SESSION_PREFIX) && k != pq6::KEYS)
+            r.get(0).and_then(Value::as_str).is_none_or(|k| {
+                !k.starts_with(v3::SESSION_PREFIX) && k != pq6::KEYS && k != crate::bro3::KV
+            })
         });
     }
     let data = serde_json::json!({ "app": "talka", "at": now(), "data": dump });
