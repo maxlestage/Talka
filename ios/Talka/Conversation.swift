@@ -1063,16 +1063,14 @@ struct MessageRow: View {
         case "contact":
             ContactBubble(engine: e, message: m)
         default:
-            if m.from != e.me.code, Brocolis.hasToken(m.text) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(richText(m.text, mentions: mentionLabels(e, m)))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(richText(m.text, mentions: mentionLabels(e, m)))
+                    .font(.system(size: big ? 46 : size))
+                    .textSelection(.enabled)
+                if m.from != e.me.code, Brocolis.hasToken(m.text) {
                     LockedBrocolisHelp(who: e.displayName(m.from))
                 }
-            } else {
-                Text(richText(m.text, mentions: mentionLabels(e, m)))
             }
-                .font(.system(size: big ? 46 : size))
-                .textSelection(.enabled)
         }
     }
 }
