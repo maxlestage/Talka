@@ -393,7 +393,7 @@ extension Engine {
             bump(c.id)
         case let .edit(id, text):
             guard var m = store.message(c.id, id), m.from == me.code, !m.deleted else { return }
-            let opened = Brocolis.open(String(text.prefix(65_536)), keys: brocolisKeys(for: c.id))
+            let opened = openBrocolis(String(text.prefix(65_536)), chat: c.id)
             m.text = opened.text
             m.bro = opened.opened > 0
             m.edited = true
@@ -502,7 +502,7 @@ extension Engine {
     /// Ce qu'un nouvel appareil ne doit pas recevoir : ce qui est propre à
     /// cet appareil-ci.
     nonisolated static func deviceOnly(_ key: String) -> Bool {
-        ["dev", "nk", "pin", "appareils", "boites_jour", "brocolis_sealed", "couverture"].contains(key)
+        ["dev", "nk", "pin", "appareils", "boites_jour", "brocolis_sealed", "couverture", BrocolisPsk.kv].contains(key)
             || key == V3.deviceKey || key == Pq6.keysKey || key.hasPrefix(V3.sessionPrefix)
     }
 
