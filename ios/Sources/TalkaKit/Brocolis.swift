@@ -133,17 +133,27 @@ public enum Brocolis {
     /// texte. Un texte qui porte déjà un jeton (collé depuis le clavier
     /// Brocolis) part tel quel.
     public static func seal(_ text: String, keys: [SymmetricKey]) -> String {
-        if text.isEmpty || keys.isEmpty || hasToken(text) { return text }
+        if keys.isEmpty { return text }
+        return sealWith(text) { sealToken($0, keys: keys) }
+    }
+
+    /// La règle de `seal` (les passages `((…))` s'il y en a, sinon tout le
+    /// texte ; un texte qui porte déjà un jeton part tel quel), avec `token`
+    /// pour chiffrer chaque morceau : le « double cliquet » du clavier
+    /// Brocolis (`BrocolisPsk`) la suit aussi. Le même que le navigateur
+    /// (`jetons::seal_with`).
+    public static func sealWith(_ text: String, token: (String) -> String?) -> String {
+        if text.isEmpty || hasToken(text) { return text }
         var out = ""
         var rest = Substring(text)
         var marked = false
         while let open = rest.range(of: "(("), let close = rest[open.upperBound...].range(of: "))") {
             out += rest[..<open.lowerBound]
-            out += sealToken(String(rest[open.upperBound..<close.lowerBound]), keys: keys) ?? String(rest[open.lowerBound..<close.upperBound])
+            out += token(String(rest[open.upperBound..<close.lowerBound])) ?? String(rest[open.lowerBound..<close.upperBound])
             marked = true
             rest = rest[close.upperBound...]
         }
-        if !marked { return sealToken(text, keys: keys) ?? text }
+        if !marked { return token(text) ?? text }
         return out + rest
     }
 
