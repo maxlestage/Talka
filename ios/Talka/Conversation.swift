@@ -1063,7 +1063,14 @@ struct MessageRow: View {
         case "contact":
             ContactBubble(engine: e, message: m)
         default:
-            Text(richText(m.text, mentions: mentionLabels(e, m)))
+            if m.from != e.me.code, Brocolis.hasToken(m.text) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(richText(m.text, mentions: mentionLabels(e, m)))
+                    LockedBrocolisHelp(who: e.displayName(m.from))
+                }
+            } else {
+                Text(richText(m.text, mentions: mentionLabels(e, m)))
+            }
                 .font(.system(size: big ? 46 : size))
                 .textSelection(.enabled)
         }
@@ -1396,5 +1403,31 @@ struct LatestButton: View {
         }
         .padding(12)
         .accessibilityLabel(below == 0 ? "Derniers messages" : below == 1 ? "Derniers messages, 1 nouveau" : "Derniers messages, \(below) nouveaux")
+    }
+}
+
+/// Un message Brocolis qu'aucune de vos clés n'ouvre : pourquoi, et quoi
+/// faire. Le même texte que le navigateur (`locked_help`).
+struct LockedBrocolisHelp: View {
+    let who: String
+    @State private var shown = false
+
+    var body: some View {
+        Button("Pourquoi je ne peux pas le lire ?") { shown = true }
+            .font(.footnote)
+            .underline()
+            .foregroundStyle(Color.talkaGreen)
+            .buttonStyle(.plain)
+            .alert("Message chiffré par Brocolis 🥦", isPresented: $shown) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("""
+                \(who) a chiffré ce message avec une clé Brocolis que cet appareil n'a pas.
+
+                • Si vous lui avez partagé une clé : \(who) doit toucher « Ajouter la clé » sous la carte 🥦 de cette discussion. Ses prochains messages seront lisibles.
+
+                • Pour lire celui-ci : demandez-lui de vous partager sa clé (menu ⋮ → Brocolis 🥦), puis touchez « Ajouter la clé ». Le message s'ouvrira tout seul.
+                """)
+            }
     }
 }
