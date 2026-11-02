@@ -12,6 +12,7 @@
 //!   gardé dans IndexedDB), le relais (`net`), la logique (`core`), l'interface (`ui`,
 //!   `conv`), les appels WebRTC (`calls`), le site (`site`).
 
+pub mod bro3;
 pub mod crypto;
 pub mod jetons;
 pub mod model;

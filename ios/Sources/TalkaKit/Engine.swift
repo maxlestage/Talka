@@ -34,6 +34,8 @@ public final class Engine {
     public private(set) var chats: [String: Chat] = [:]
     /// Les clés Brocolis 🥦 de l'appareil.
     public private(set) var brocolisKeys: [BrocolisKey] = []
+    /// Les sessions « double cliquet, clé partagée » du clavier Brocolis.
+    @ObservationIgnored let brocolisPsk: BrocolisPsk
     /// code → (en ligne, vu pour la dernière fois).
     public private(set) var presence: [String: (online: Bool, seen: Double?)] = [:]
     /// discussion → codes en train d'écrire.
@@ -116,6 +118,7 @@ public final class Engine {
         profile = store.read("kv", "profile", as: Profile.self) ?? Profile()
         settings = store.read("kv", "settings", as: Settings.self) ?? Settings()
         brocolisKeys = Self.loadBrocolis(store)
+        brocolisPsk = BrocolisPsk(json: store.readRaw("kv", BrocolisPsk.kv))
         relay = Relay(identity: identity, server: server)
         for c in store.all("contacts", as: Contact.self) { contacts[c.code] = c }
         for c in store.all("chats", as: Chat.self) { chats[c.id] = c }
@@ -140,6 +143,12 @@ public final class Engine {
         relay.onUnprovenRelay = { [weak self] in self?.onUnprovenRelay?() }
         startV3()
         ensureDevice()
+        // Une fois : les messages reçus avant que Talka sache lire le « double
+        // cliquet » du clavier Brocolis s'ouvrent maintenant (dans l'ordre).
+        if brocolisPsk.firstScan() {
+            reopenMessages()
+            store.writeRaw("kv", BrocolisPsk.kv, brocolisPsk.toJson())
+        }
     }
 
     public func start() {
@@ -578,6 +587,24 @@ public final class Engine {
             .compactMap { Brocolis.key(base64: $0.key) }
     }
 
+    /// Ouvre aussi les jetons « double cliquet, clé partagée » (v3) du
+    /// clavier Brocolis, avec les clés de la discussion, et garde l'état.
+    func openBrocolis(_ text: String, chat: String) -> Brocolis.Opened {
+        let keys = brocolisKeys(for: chat)
+        var o = Brocolis.open(text, keys: keys)
+        if Brocolis.hasRatchetToken(o.text) {
+            let raw = keys.map { $0.withUnsafeBytes { [UInt8]($0) } }
+            let r = brocolisPsk.open(o.text, keys: raw, now: V3.secs(nowMs()))
+            if r.opened > 0 {
+                o.text = r.text
+                o.opened += r.opened
+                o.locked = max(0, o.locked - r.opened)
+            }
+            if brocolisPsk.takeDirty() { store.writeRaw("kv", BrocolisPsk.kv, brocolisPsk.toJson()) }
+        }
+        return o
+    }
+
     func sealText(_ c: Chat, _ text: String) -> String {
         Brocolis.seal(text, keys: chatBrocolis(c).compactMap { Brocolis.key(base64: $0.key) })
     }
@@ -600,13 +627,12 @@ public final class Engine {
     @discardableResult
     func openMessage(_ m: inout Message) -> Bool {
         var changed = false
-        let keys = brocolisKeys(for: m.chat)
         if Brocolis.hasToken(m.text) {
-            let o = Brocolis.open(m.text, keys: keys)
+            let o = openBrocolis(m.text, chat: m.chat)
             if o.opened > 0 { m.text = o.text; m.bro = true; changed = true }
         }
         if var r = m.reply, Brocolis.hasToken(r.text) {
-            let o = Brocolis.open(r.text, keys: keys)
+            let o = openBrocolis(r.text, chat: m.chat)
             if o.opened > 0 { r.text = o.text; m.reply = r; changed = true }
         }
         return changed
@@ -1810,7 +1836,7 @@ public final class Engine {
             if m.from == me.code, !emoji.isEmpty { onReaction?(c, from, emoji) }
         case let .edit(id, text):
             guard var m = store.message(c.id, id), m.from == from, !m.deleted else { return }
-            let opened = Brocolis.open(String(text.prefix(65_536)), keys: brocolisKeys(for: c.id))
+            let opened = openBrocolis(String(text.prefix(65_536)), chat: c.id)
             m.text = opened.text
             m.bro = opened.opened > 0
             m.edited = true
@@ -1921,6 +1947,7 @@ public final class Engine {
         var kv = (dump["kv"] as? [[Any]] ?? []).filter {
             let key = $0.first as? String ?? ""
             return !key.hasPrefix(V3.sessionPrefix) && key != V3.deviceKey && key != Pq6.keysKey
+                && key != BrocolisPsk.kv
         }
         if let device = try? loadV3Device() { kv.append([V3.deviceKey, device]) }
         dump["kv"] = kv
