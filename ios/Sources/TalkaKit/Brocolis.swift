@@ -98,6 +98,10 @@ public enum Brocolis {
 
     public static func hasToken(_ text: String) -> Bool { text.contains(head) }
 
+    /// Un jeton « double cliquet » (v3) du clavier Brocolis, que Talka
+    /// n'ouvre pas encore. Le même que le navigateur (`has_ratchet_token`).
+    public static func hasRatchetToken(_ text: String) -> Bool { text.contains(head + "v3:") }
+
     static func sealRaw(_ plain: Data, _ key: SymmetricKey) -> Data? {
         try? AES.GCM.seal(plain, using: key).combined
     }

@@ -150,6 +150,14 @@ pub fn has_token(text: &str) -> bool {
     text.contains(HEAD)
 }
 
+/// Un jeton « double cliquet » (v3) du clavier Brocolis : une session qui
+/// change de clé à chaque message, que Talka n'ouvre pas encore (il ne lit
+/// que les jetons v1/v2, chiffrés par la clé partagée elle-même). Le même
+/// que l'iPhone (`Brocolis.hasRatchetToken`).
+pub fn has_ratchet_token(text: &str) -> bool {
+    text.contains("[[BROCOLIS:v3:")
+}
+
 fn seal_raw(key: &Key, plain: &[u8]) -> Option<Vec<u8>> {
     let nonce = random_bytes(12);
     let mut out = nonce.clone();
@@ -423,6 +431,14 @@ mod tests {
         assert_eq!(f, fingerprint(&k).unwrap());
         assert_ne!(f, fingerprint(&b64(&[8u8; 32])).unwrap());
         assert_eq!(fingerprint("pas une clé"), None);
+    }
+
+    #[test]
+    fn ratchet_tokens_are_told_apart() {
+        assert!(has_ratchet_token("[[BROCOLIS:v3:AQID]]"));
+        assert!(has_token("[[BROCOLIS:v3:AQID]]"));
+        assert!(!has_ratchet_token("[[BROCOLIS:v1:AQID]]"));
+        assert!(!has_ratchet_token("rien"));
     }
 
     #[test]

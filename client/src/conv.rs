@@ -1373,10 +1373,11 @@ fn content(m: &Message) -> El {
             .child(
                 (m.from != core::my_code() && crate::jetons::has_token(&m.text)).then(|| {
                     let who = core::display_name(&m.from);
+                    let ratchet = crate::jetons::has_ratchet_token(&m.text);
                     h("button.locked-help")
                         .attr("type", "button")
                         .text("Pourquoi je ne peux pas le lire ?")
-                        .click(move || locked_help(&who))
+                        .click(move || locked_help(&who, ratchet))
                 }),
             ),
     }
@@ -1384,12 +1385,20 @@ fn content(m: &Message) -> El {
 
 /// Un message Brocolis qu'aucune de vos clés n'ouvre : pourquoi, et quoi
 /// faire. Le même texte que l'iPhone (`LockedBrocolisHelp`).
-fn locked_help(who: &str) {
-    let text = format!(
-        "{who} a chiffré ce message avec une clé Brocolis que cet appareil n'a pas.\n\n\
+fn locked_help(who: &str, ratchet: bool) {
+    let text = if ratchet {
+        format!(
+            "{who} a chiffré ce message avec le clavier Brocolis en mode « double cliquet » : la clé change à chaque message, et Talka ne sait pas encore les ouvrir (il lit les messages chiffrés par la clé partagée elle-même).\n\n\
+             • Pour le lire : appuyez longuement dessus → Copier, puis touchez « Lire » sur le clavier Brocolis.\n\n\
+             • Pour que Talka les lise directement : {who} choisit, dans les réglages du clavier Brocolis (⚙️), la clé partagée simple au lieu du double cliquet."
+        )
+    } else {
+        format!(
+            "{who} a chiffré ce message avec une clé Brocolis que cet appareil n'a pas.\n\n\
          • Si vous lui avez partagé une clé : {who} doit toucher « Ajouter la clé » sous la carte 🥦 de cette discussion. Ses prochains messages seront lisibles.\n\n\
          • Pour lire celui-ci : demandez-lui de vous partager sa clé (menu ⋮ → Brocolis 🥦), puis touchez « Ajouter la clé ». Le message s'ouvrira tout seul."
-    );
+        )
+    };
     modal(
         "Message chiffré par Brocolis 🥦",
         move |_| h("p.pre-line").text(&text).into(),
