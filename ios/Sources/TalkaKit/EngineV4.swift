@@ -394,6 +394,7 @@ extension Engine {
         case let .edit(id, text):
             guard var m = store.message(c.id, id), m.from == me.code, !m.deleted else { return }
             let opened = openBrocolis(String(text.prefix(65_536)), chat: c.id)
+            if opened.opened > 0 { rememberOriginal(m, String(text.prefix(65_536))) }
             m.text = opened.text
             m.bro = opened.opened > 0
             m.edited = true
