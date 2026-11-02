@@ -1431,6 +1431,19 @@ pub fn download(name: &str, url: &str) {
 }
 
 /// Copie dans le presse-papiers.
+/// Le texte du presse-papiers (le navigateur peut demander la permission) ;
+/// `None` s'il refuse ou n'en a pas.
+pub async fn paste() -> Option<String> {
+    let clipboard = get(&window().navigator(), "clipboard");
+    if clipboard.is_undefined() {
+        return None;
+    }
+    await_promise(call(&clipboard, "readText", &[]))
+        .await
+        .ok()
+        .and_then(|v| v.as_string())
+}
+
 pub async fn copy(text: &str, done: &str) {
     let clipboard = get(&window().navigator(), "clipboard");
     let ok = !clipboard.is_undefined()
