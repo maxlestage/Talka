@@ -1415,11 +1415,11 @@ struct LockedBrocolisHelp: View {
     var explanation: String {
         if ratchet {
             return """
-            \(who) a chiffré ce message avec le clavier Brocolis en mode « double cliquet » : la clé change à chaque message, et Talka ne sait pas encore les ouvrir (il lit les messages chiffrés par la clé partagée elle-même).
+            \(who) a chiffré ce message avec le clavier Brocolis en mode « double cliquet, clé partagée », avec une clé que cet appareil n'a pas.
 
-            • Pour le lire : appuyez longuement dessus → Copier, puis touchez « Lire » sur le clavier Brocolis.
+            • Ajoutez la clé Brocolis partagée avec \(who) (touchez « Ajouter la clé » sous sa carte 🥦, ou collez-la dans Réglages → Clés Brocolis) : le message s'ouvrira tout seul, et les suivants aussi.
 
-            • Pour que Talka les lise directement : \(who) choisit, dans les réglages du clavier Brocolis (⚙️), la clé partagée simple au lieu du double cliquet.
+            • Si rien ne s'ouvre avec la bonne clé, le début de la conversation Brocolis n'est pas arrivé ici : \(who) peut repartir d'une session neuve dans le clavier Brocolis.
             """
         }
         return """
