@@ -167,6 +167,13 @@ pub fn keys_dialog() {
 }
 
 async fn add_key() {
+    add_key_flow().await;
+    keys_dialog();
+}
+
+/// Ajoute une clé collée (protégée par une phrase ou non) ; `true` si elle
+/// l'a été. Les messages qu'elle ouvre s'ouvrent aussitôt.
+pub async fn add_key_flow() -> bool {
     let Some(pasted) = prompt_box(
         "Ajouter une clé Brocolis",
         "Collez la clé, protégée ou non (ou toute l'invitation reçue de l'app Brocolis)",
@@ -177,7 +184,7 @@ async fn add_key() {
     )
     .await
     else {
-        return keys_dialog();
+        return false;
     };
     // Une clé protégée par une phrase secrète : la phrase d'abord.
     let pasted = if jetons::has_protected_key(&pasted) {
@@ -191,7 +198,7 @@ async fn add_key() {
         )
         .await
         else {
-            return keys_dialog();
+            return false;
         };
         toast("Ouverture de la clé…");
         sleep(30).await;
@@ -199,7 +206,7 @@ async fn add_key() {
             Some(key) => key,
             None => {
                 toast("Phrase incorrecte, ou clé abîmée.");
-                return keys_dialog();
+                return false;
             }
         }
     } else {
@@ -215,17 +222,22 @@ async fn add_key() {
     )
     .await
     else {
-        return keys_dialog();
+        return false;
     };
     match core::add_brocolis_key(&name, &pasted).await {
-        Ok(k) => toast(format!(
-            "🥦 Clé « {} » ajoutée · empreinte {}",
-            k.name,
-            fingerprint(&k)
-        )),
-        Err(e) => toast(e),
+        Ok(k) => {
+            toast(format!(
+                "🥦 Clé « {} » ajoutée · empreinte {}",
+                k.name,
+                fingerprint(&k)
+            ));
+            true
+        }
+        Err(e) => {
+            toast(e);
+            false
+        }
     }
-    keys_dialog();
 }
 
 /// Crée une clé ; pour une discussion, l'y active et l'y envoie par Talka.
