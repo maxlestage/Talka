@@ -208,7 +208,18 @@ pub fn seal_token(text: &str, keys: &[Key]) -> Option<String> {
 /// texte. Un texte qui porte déjà un jeton (collé depuis le clavier
 /// Brocolis) part tel quel.
 pub fn seal(text: &str, keys: &[Key]) -> String {
-    if text.is_empty() || keys.is_empty() || has_token(text) {
+    if keys.is_empty() {
+        return text.to_owned();
+    }
+    seal_with(text, |clear| seal_token(clear, keys))
+}
+
+/// La règle de [`seal`] (les passages `((…))` s'il y en a, sinon tout le
+/// texte ; un texte qui porte déjà un jeton part tel quel), avec `token` pour
+/// chiffrer chaque morceau : le « double cliquet » du clavier Brocolis
+/// (`bro3`) la suit aussi.
+pub fn seal_with(text: &str, mut token: impl FnMut(&str) -> Option<String>) -> String {
+    if text.is_empty() || has_token(text) {
         return text.to_owned();
     }
     let mut out = String::new();
@@ -220,15 +231,15 @@ pub fn seal(text: &str, keys: &[Key]) -> String {
             break;
         };
         out.push_str(&rest[..start]);
-        match seal_token(&after[..end], keys) {
-            Some(token) => out.push_str(&token),
+        match token(&after[..end]) {
+            Some(t) => out.push_str(&t),
             None => out.push_str(&rest[start..start + MARK_OPEN.len() + end + MARK_CLOSE.len()]),
         }
         marked = true;
         rest = &after[end + MARK_CLOSE.len()..];
     }
     if !marked {
-        return seal_token(text, keys).unwrap_or_else(|| text.to_owned());
+        return token(text).unwrap_or_else(|| text.to_owned());
     }
     out.push_str(rest);
     out

@@ -5,8 +5,14 @@
 //! (`BrocolisV3.open`) : une session connue par son identifiant, sinon un
 //! premier message essayé avec chaque clé de la discussion.
 //!
-//! L'état (les sessions, la garde contre le rejeu des premiers messages)
-//! reste sur cet appareil : il ne va pas dans la sauvegarde, comme les
+//! Talka écrit aussi dans ce format, pour que le clavier « déchiffre » ce
+//! qui part d'ici : une discussion à deux, avec une seule clé Brocolis,
+//! envoie par la session de cette clé (celle que l'autre a ouverte, sinon une
+//! neuve). Et il garde le jeton d'origine de chaque message ouvert ou
+//! scellé, pour « Copier chiffré 🥦 » (à coller dans le clavier).
+//!
+//! L'état (les sessions, la garde contre le rejeu des premiers messages, les
+//! jetons d'origine) reste sur cet appareil : il ne va pas dans la sauvegarde, comme les
 //! sessions v3 de Talka (restauré plus tard, il reprendrait des clés de
 //! message déjà servies). Le même que l'iPhone (`BrocolisPsk`).
 
@@ -19,6 +25,8 @@ pub const KV: &str = "brocolis3";
 
 /// Au plus tant de sessions gardées (les plus anciennes partent).
 const MAX_SESSIONS: usize = 64;
+/// Au plus tant de jetons d'origine gardés (les plus anciens partent).
+const MAX_ORIGINALS: usize = 500;
 
 #[derive(Default, Serialize, Deserialize)]
 struct Stored {
@@ -30,6 +38,12 @@ struct Stored {
     /// Talka sache lire ces jetons).
     #[serde(default)]
     scanned: bool,
+    /// La session de chaque clé (son identifiant de clé → la session).
+    #[serde(default)]
+    by_key: Vec<(String, String)>,
+    /// Les jetons d'origine des messages ouverts ou scellés ici.
+    #[serde(default)]
+    originals: Vec<(String, String)>,
 }
 
 /// Les sessions PSK ouvertes par des messages reçus.
@@ -38,6 +52,8 @@ pub struct Psk {
     sessions: Vec<Session>,
     guard: ReplayGuard,
     scanned: bool,
+    by_key: Vec<(String, String)>,
+    originals: Vec<(String, String)>,
     dirty: bool,
 }
 
@@ -55,6 +71,8 @@ impl Psk {
                 .collect(),
             guard: stored.guard,
             scanned: stored.scanned,
+            by_key: stored.by_key,
+            originals: stored.originals,
             dirty: false,
         }
     }
@@ -68,6 +86,8 @@ impl Psk {
                 .collect(),
             guard: self.guard.clone(),
             scanned: self.scanned,
+            by_key: self.by_key.clone(),
+            originals: self.originals.clone(),
         };
         serde_json::to_string(&stored).unwrap_or_default()
     }
@@ -126,17 +146,99 @@ impl Psk {
         if first.mode != brocolis_proto::Mode::Psk || keys.is_empty() {
             return None;
         }
-        let (session, content) =
-            Session::accept_psk(keys, first, &mut self.guard, now, rng).ok()?;
+        // Clé par clé, comme l'app Brocolis : on sait laquelle a ouvert.
+        for key in keys {
+            match Session::accept_psk(&[*key], first, &mut self.guard, now, rng) {
+                Ok((session, content)) => {
+                    self.keep(session, key);
+                    return Some(text_of(content));
+                }
+                Err(Erreur::SessionInconnue) => continue,
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// Garde une session, et en fait celle de `key` (la plus récente sert).
+    fn keep(&mut self, session: Session, key: &[u8; 32]) {
+        let sid = hex(&session.session_id());
         self.sessions
             .retain(|s| s.session_id() != session.session_id());
         self.sessions.push(session);
         if self.sessions.len() > MAX_SESSIONS {
             self.sessions.remove(0);
         }
+        let kid = key_id(key);
+        self.by_key.retain(|(k, _)| *k != kid);
+        self.by_key.push((kid, sid));
         self.dirty = true;
-        Some(text_of(content))
     }
+
+    /// Chiffre `text` au format du clavier (« double cliquet, clé
+    /// partagée ») par la session de `key` : celle que l'autre a ouverte, ou
+    /// une neuve. Les passages `((…))` seuls s'il y en a (comme
+    /// `jetons::seal`). `None` si rien n'a pu être chiffré.
+    pub fn seal(&mut self, text: &str, key: &[u8; 32]) -> Option<String> {
+        let kid = key_id(key);
+        let current = self
+            .by_key
+            .iter()
+            .find(|(k, _)| *k == kid)
+            .map(|(_, sid)| sid.clone());
+        let known = current.and_then(|sid| {
+            self.sessions
+                .iter()
+                .position(|s| hex(&s.session_id()) == sid)
+        });
+        let i = match known {
+            Some(i) => i,
+            None => {
+                let s = Session::initiate_psk(key, &mut hasard::system()).ok()?;
+                self.keep(s, key);
+                self.sessions.len() - 1
+            }
+        };
+        let session = &mut self.sessions[i];
+        let mut failed = false;
+        let sealed = crate::jetons::seal_with(text, |clear| {
+            let t = session.encrypt(clear).ok();
+            failed |= t.is_none();
+            t
+        });
+        self.dirty = true;
+        (!failed && sealed != text).then_some(sealed)
+    }
+
+    /// Retient le jeton d'origine du message `id` (ouvert ou scellé ici).
+    pub fn remember(&mut self, id: &str, token: &str) {
+        self.originals.retain(|(k, _)| k != id);
+        self.originals.push((id.to_owned(), token.to_owned()));
+        if self.originals.len() > MAX_ORIGINALS {
+            self.originals.remove(0);
+        }
+        self.dirty = true;
+    }
+
+    /// Le jeton d'origine du message `id`, s'il est connu.
+    pub fn original(&self, id: &str) -> Option<&str> {
+        self.originals
+            .iter()
+            .rev()
+            .find(|(k, _)| k == id)
+            .map(|(_, t)| t.as_str())
+    }
+}
+
+/// L'identifiant d'une clé (8 premiers octets de son SHA-256, en hex) : la
+/// clé elle-même ne va pas dans cet état.
+fn key_id(key: &[u8; 32]) -> String {
+    use sha2::{Digest, Sha256};
+    hex(&Sha256::digest(key)[..8])
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Le clair d'un message ; une chaîne de groupe (type 0x03) ne s'affiche pas.
@@ -187,6 +289,59 @@ mod tests {
         // Les messages d'avant ne se rouvrent qu'une fois.
         assert!(back.first_scan());
         assert!(!Psk::from_json(Some(&back.to_json())).first_scan());
+    }
+
+    #[test]
+    fn talka_writes_what_the_keyboard_reads() {
+        let key = [7u8; 32];
+        let mut talka = Psk::default();
+        let first = talka.seal("Depuis Talka 🥦", &key).unwrap();
+        let second = talka.seal("Rendez-vous ((au parc)) !", &key).unwrap();
+        assert!(first.starts_with("[[BROCOLIS:v3:"));
+        assert!(second.starts_with("Rendez-vous [[BROCOLIS:v3:") && !second.contains("parc"));
+        // Le clavier (la référence) ouvre le premier message avec la clé…
+        let Ok(Token::Initial(i)) = Token::decode(&first) else {
+            panic!()
+        };
+        let rng = &mut hasard::system();
+        let (mut kb, c) =
+            Session::accept_psk(&[key], &i, &mut ReplayGuard::default(), 0, rng).unwrap();
+        assert_eq!(text_of(c), "Depuis Talka 🥦");
+        // … puis la suite par la session.
+        let token = second
+            .trim_start_matches("Rendez-vous ")
+            .trim_end_matches(" !");
+        assert_eq!(text_of(kb.decrypt_text(token, 0, rng).unwrap()), "au parc");
+        // Sa réponse revient par la même session chez Talka, qui continue.
+        let reply = kb.encrypt("Bien reçu").unwrap();
+        assert_eq!(talka.open(&reply, &[], 1).0, "Bien reçu");
+        assert_eq!(talka.sessions.len(), 1);
+        assert!(talka.seal("Encore", &key).is_some());
+        assert_eq!(talka.sessions.len(), 1);
+    }
+
+    #[test]
+    fn a_keyboard_session_is_answered_in_it() {
+        let key = [7u8; 32];
+        let mut kb = keyboard(&key);
+        let mut talka = Psk::default();
+        talka.open(&kb.encrypt("Salut").unwrap(), &[key], 0);
+        // Talka répond par la session que le clavier a ouverte.
+        let answer = talka.seal("Salut à toi", &key).unwrap();
+        assert_eq!(
+            text_of(kb.decrypt_text(&answer, 0, &mut hasard::system()).unwrap()),
+            "Salut à toi"
+        );
+        assert_eq!(talka.sessions.len(), 1);
+    }
+
+    #[test]
+    fn originals_are_kept_for_copying() {
+        let mut psk = Psk::default();
+        psk.remember("c/1", "[[BROCOLIS:v3:AQ]]");
+        let back = Psk::from_json(Some(&psk.to_json()));
+        assert_eq!(back.original("c/1"), Some("[[BROCOLIS:v3:AQ]]"));
+        assert_eq!(back.original("c/2"), None);
     }
 
     #[test]
