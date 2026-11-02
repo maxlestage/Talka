@@ -1370,16 +1370,49 @@ fn content(m: &Message) -> El {
                     .map(|c| core::mention_label(c))
                     .collect::<Vec<_>>(),
             ))
-            .child(
-                (m.from != core::my_code() && crate::jetons::has_token(&m.text)).then(|| {
-                    let who = core::display_name(&m.from);
-                    let ratchet = crate::jetons::has_ratchet_token(&m.text);
-                    h("button.locked-help")
-                        .attr("type", "button")
-                        .text("Pourquoi je ne peux pas le lire ?")
-                        .click(move || locked_help(&who, ratchet))
-                }),
-            ),
+            .child(crate::jetons::has_token(&m.text).then(|| {
+                let who = core::display_name(&m.from);
+                let ratchet = crate::jetons::has_ratchet_token(&m.text);
+                let (chat, id) = (m.chat.clone(), m.id.clone());
+                h("div.locked-actions")
+                    .child(
+                        h("button.decrypt-btn")
+                            .attr("type", "button")
+                            .text("🔓 Déchiffrer")
+                            .click(move || {
+                                let (chat, id) = (chat.clone(), id.clone());
+                                spawn(async move { decrypt(&chat, &id).await })
+                            }),
+                    )
+                    .child(
+                        h("button.locked-help")
+                            .attr("type", "button")
+                            .text("Pourquoi ?")
+                            .click(move || locked_help(&who, ratchet)),
+                    )
+            })),
+    }
+}
+
+/// « Déchiffrer » : toutes vos clés Brocolis s'essaient sur ce message ; si
+/// aucune ne l'ouvre, on colle celle du clavier Brocolis, et il s'ouvre
+/// aussitôt (avec tous ceux de cette clé).
+async fn decrypt(chat: &str, id: &str) {
+    if core::decrypt_now(chat, id).await {
+        return toast("🔓 Déchiffré");
+    }
+    if !confirm_box(
+        "Aucune de vos clés ne l'ouvre",
+        "Il a été chiffré avec une clé Brocolis que Talka n'a pas encore, par exemple celle choisie dans le clavier Brocolis. Collez-la ici (dans l'app Brocolis : la clé → Copier ou Exporter), une fois pour toutes.",
+        "Coller la clé",
+        false,
+    )
+    .await
+    {
+        return;
+    }
+    if crate::brocoli::add_key_flow().await && !core::decrypt_now(chat, id).await {
+        toast("Cette clé n'ouvre pas ce message.");
     }
 }
 

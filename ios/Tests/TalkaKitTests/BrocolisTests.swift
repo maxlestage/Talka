@@ -186,6 +186,29 @@ final class BrocolisEngineTests: XCTestCase {
         XCTAssertEqual(Engine.preview(stored), "🥦 Clé Brocolis « Nous »")
     }
 
+    /// « Déchiffrer » : un message du clavier, chiffré par une clé liée à une
+    /// autre discussion (que la réception n'essaie pas), s'ouvre à la demande,
+    /// se garde en clair, et « Copier chiffré » rend le jeton.
+    func testDecryptNowTriesEveryKey() async throws {
+        let e = phone()
+        let chat = e.ensureDirectChat("K7Q2MX9PRT")
+        let other = e.ensureDirectChat("WGSEAJNSZJ")
+        let raw = [UInt8](repeating: 5, count: 32)
+        let k = try e.addBrocolisKey(name: "Clavier", pasted: Data(raw).base64EncodedString())
+        e.setChatBrocolis(other.id, [k.id])
+        let token = try Session.initiatePsk(key: raw, rng: Hasard.system()).encrypt("Lu au clavier 🥦")
+        var m = Message(chat: chat.id, id: "m1", from: "K7Q2MX9PRT", at: 1, content: Content(text: token))
+        e.openMessage(&m)
+        e.store.writeMessage(m)
+        XCTAssertTrue(Brocolis.hasToken(e.store.message(chat.id, "m1")!.text), "pas la clé de cette discussion")
+        XCTAssertTrue(e.decryptNow(chat.id, "m1"))
+        let opened = try XCTUnwrap(e.store.message(chat.id, "m1"))
+        XCTAssertEqual(opened.text, "Lu au clavier 🥦")
+        XCTAssertTrue(opened.bro)
+        XCTAssertEqual(e.brocolisOriginal(opened), token)
+        XCTAssertFalse(e.decryptNow(chat.id, "m1"), "déjà ouvert")
+    }
+
     func testAcceptingARenewedKeyRetiresTheOldOne() async throws {
         let e = phone()
         let chat = e.ensureDirectChat("K7Q2MX9PRT")
