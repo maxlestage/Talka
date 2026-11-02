@@ -1401,19 +1401,104 @@ async fn decrypt(chat: &str, id: &str) {
     if core::decrypt_now(chat, id).await {
         return toast("🔓 Déchiffré");
     }
-    if !confirm_box(
-        "Aucune de vos clés ne l'ouvre",
-        "Il a été chiffré avec une clé Brocolis que Talka n'a pas encore, par exemple celle choisie dans le clavier Brocolis. Collez-la ici (dans l'app Brocolis : la clé → Copier ou Exporter), une fois pour toutes.",
-        "Coller la clé",
-        false,
-    )
-    .await
-    {
-        return;
-    }
-    if crate::brocoli::add_key_flow().await && !core::decrypt_now(chat, id).await {
-        toast("Cette clé n'ouvre pas ce message.");
-    }
+    key_from_brocolis(chat.to_owned(), id.to_owned());
+}
+
+/// La clé du clavier Brocolis, sans détour : la coller (bouton « Coller »
+/// ou à la main), et le message s'ouvre aussitôt. Elle prend le nom de la
+/// discussion ; une clé protégée demande seulement sa phrase. Le même que
+/// l'iPhone (`KeyFromBrocolis`).
+fn key_from_brocolis(chat: String, id: String) {
+    let field = h("input.field")
+        .attr("placeholder", "La clé copiée dans Brocolis")
+        .attr("autocomplete", "off")
+        .attr("aria-label", "Clé Brocolis")
+        .el();
+    let phrase = h("input.field.hidden")
+        .attr("type", "password")
+        .attr("placeholder", "Phrase secrète de la clé")
+        .attr("aria-label", "Phrase secrète de la clé")
+        .el();
+    let err = h("p.error").el();
+    let paste_btn = {
+        let field = field.clone();
+        h("button.btn.ghost")
+            .attr("type", "button")
+            .text("📋 Coller")
+            .click(move || {
+                let field = field.clone();
+                spawn(async move {
+                    if let Some(t) = paste().await {
+                        set_value(&field, t.trim());
+                    }
+                })
+            })
+    };
+    let (f, ph, e) = (field.clone(), phrase.clone(), err.clone());
+    modal(
+        "Récupérer la clé du clavier",
+        move |_| {
+            h("div.stack")
+                .child(h("p.muted").text("Ce message vient du clavier Brocolis, avec une clé que Talka n'a pas encore. Dans l'app Brocolis : la clé → « Copier la clé », puis collez-la ici, une fois pour toutes."))
+                .child(h("div.row").child(field.clone()).child(paste_btn))
+                .child(phrase.clone())
+                .child(err.clone())
+                .into()
+        },
+        ModalOpts {
+            actions: vec![
+                action("Annuler", "ghost", |m| m.close()),
+                action("Déchiffrer", "primary", move |m| {
+                    let (m, f, ph, e) = (m.clone(), f.clone(), ph.clone(), e.clone());
+                    let (chat, id) = (chat.clone(), id.clone());
+                    spawn(async move {
+                        let text = value(&f).trim().to_owned();
+                        let key = if crate::jetons::has_protected_key(&text) {
+                            if ph.class_list().contains("hidden") {
+                                toggle_class(&ph, "hidden", false);
+                                e.set_text_content(Some(
+                                    "Cette clé est protégée : sa phrase secrète ?",
+                                ));
+                                return;
+                            }
+                            e.set_text_content(Some("Ouverture de la clé…"));
+                            sleep(30).await;
+                            crate::jetons::unprotect_key(&text, &value(&ph))
+                        } else {
+                            crate::jetons::find_key(&text)
+                        };
+                        let Some(key) = key else {
+                            e.set_text_content(Some(
+                                "Ce n'est pas une clé Brocolis (ou la phrase ne va pas).",
+                            ));
+                            return;
+                        };
+                        let name = core::chat(&chat)
+                            .map(|c| core::chat_title(&c))
+                            .unwrap_or_default();
+                        if let Err(why) =
+                            core::add_brocolis_key(name.trim_start_matches('~'), &key).await
+                        {
+                            e.set_text_content(Some(why));
+                            return;
+                        }
+                        // L'ajout rouvre déjà ce que la clé ouvre ; sinon, on essaie ici.
+                        if core::still_locked(&chat, &id).await
+                            && !core::decrypt_now(&chat, &id).await
+                        {
+                            e.set_text_content(Some(
+                                "Cette clé n'ouvre pas ce message : ce n'est pas celle du clavier.",
+                            ));
+                            return;
+                        }
+                        m.close();
+                        toast("🔓 Déchiffré · la clé est dans Talka");
+                    });
+                }),
+            ],
+            ..Default::default()
+        },
+    );
 }
 
 /// Un message Brocolis qu'aucune de vos clés n'ouvre : pourquoi, et quoi

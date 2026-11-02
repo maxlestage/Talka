@@ -1423,7 +1423,6 @@ struct LockedBrocolisHelp: View {
     let messageId: String
     @State private var shown = false
     @State private var missingKey = false
-    @State private var addingKey = false
 
     var explanation: String {
         if ratchet {
@@ -1465,22 +1464,111 @@ struct LockedBrocolisHelp: View {
                 .foregroundStyle(Color.talkaGreen)
                 .buttonStyle(.plain)
         }
-        .confirmationDialog("Aucune de vos clés ne l'ouvre", isPresented: $missingKey, titleVisibility: .visible) {
-            Button("Coller la clé") { addingKey = true }
-            Button("Annuler", role: .cancel) {}
-        } message: {
-            Text("Il a été chiffré avec une clé Brocolis que Talka n'a pas encore, par exemple celle choisie dans le clavier Brocolis. Collez-la ici (dans l'app Brocolis : la clé → Copier ou Exporter), une fois pour toutes.")
-        }
-        .sheet(isPresented: $addingKey, onDismiss: {
-            guard let e = model.engine, Brocolis.hasToken(e.store.message(chatId, messageId)?.text ?? "") else { return }
-            if e.decryptNow(chatId, messageId) { model.show("🔓 Déchiffré") }
-        }) {
-            AddBrocolisKey()
+        .sheet(isPresented: $missingKey) {
+            KeyFromBrocolis(who: who, chatId: chatId, messageId: messageId)
+                .presentationDetents([.medium])
         }
         .alert("Message chiffré par Brocolis 🥦", isPresented: $shown) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(explanation)
             }
+    }
+}
+
+/// La clé du clavier Brocolis, en deux gestes : « Ouvrir Brocolis » (y
+/// copier la clé), puis « Coller ». Elle s'ajoute au nom du contact et le
+/// message s'ouvre aussitôt ; une clé protégée demande seulement sa phrase.
+struct KeyFromBrocolis: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    let who: String
+    let chatId: String
+    let messageId: String
+    @State private var protected: String?
+    @State private var phrase = ""
+    @State private var working = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Récupérer la clé du clavier").font(.title3.bold())
+            Text("Ce message vient du clavier Brocolis, avec une clé que Talka n'a pas encore. Il suffit de la copier dans Brocolis une fois.")
+                .foregroundStyle(.secondary)
+            if let protected {
+                SecureField("Phrase secrète de la clé", text: $phrase)
+                    .textFieldStyle(.roundedBorder)
+                Button {
+                    Task { await unprotect(protected) }
+                } label: {
+                    Label("Ouvrir avec la phrase", systemImage: "lock.open").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.talkaGreen)
+                .disabled(phrase.isEmpty || working)
+            } else {
+                Button {
+                    openURL(URL(string: "brocolis://")!) { opened in
+                        if !opened { error = "L'app Brocolis n'est pas installée sur cet iPhone." }
+                    }
+                } label: {
+                    Label("1. Ouvrir Brocolis et copier la clé", systemImage: "arrow.up.forward.app").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                PasteButton(payloadType: String.self) { strings in
+                    Task { @MainActor in pasted(strings.first ?? "") }
+                }
+                .labelStyle(.titleAndIcon)
+                .tint(Color.talkaGreen)
+                .frame(maxWidth: .infinity)
+                Text("2. Revenez ici et touchez « Coller » : le message s'ouvre.").font(.footnote).foregroundStyle(.secondary)
+            }
+            if let error { Text(error).font(.footnote).foregroundStyle(.red) }
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+    }
+
+    func pasted(_ text: String) {
+        error = nil
+        if Brocolis.hasProtectedKey(text) {
+            protected = text
+        } else if let key = Brocolis.findKey(in: text) {
+            add(key)
+        } else {
+            error = "Ce n'est pas une clé Brocolis. Dans Brocolis : la clé → Copier la clé."
+        }
+    }
+
+    func unprotect(_ text: String) async {
+        working = true
+        let secret = phrase
+        let key = await Task.detached { Brocolis.unprotectKey(text, phrase: secret) }.value
+        working = false
+        guard let key else {
+            error = "Phrase incorrecte, ou clé abîmée."
+            return
+        }
+        add(key)
+    }
+
+    func add(_ key: String) {
+        guard let e = model.engine else { return }
+        do {
+            let name = e.chat(chatId).map { e.title($0) } ?? who
+            _ = try e.addBrocolisKey(name: name.trimmingCharacters(in: CharacterSet(charactersIn: "~")), pasted: key)
+        } catch let failure {
+            error = failure.localizedDescription
+            return
+        }
+        // L'ajout rouvre déjà ce que la clé ouvre ; sinon, on essaie ici.
+        let still = Brocolis.hasToken(e.store.message(chatId, messageId)?.text ?? "")
+        if still && !e.decryptNow(chatId, messageId) {
+            error = "Cette clé n'ouvre pas ce message : ce n'est pas celle du clavier."
+            return
+        }
+        model.show("🔓 Déchiffré · la clé de \(who) est dans Talka")
+        dismiss()
     }
 }
