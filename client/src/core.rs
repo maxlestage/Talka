@@ -1754,6 +1754,36 @@ pub fn open_brocolis(chat_id: &str, text: &str) -> jetons::Opened {
     o
 }
 
+/// « Déchiffrer 🥦 » sur un message resté chiffré : toutes vos clés
+/// Brocolis s'y essaient (c'est vous qui le demandez, pour ce message-là),
+/// pas seulement celles de la discussion. `true` s'il s'est ouvert.
+pub async fn decrypt_now(chat_id: &str, msg_id: &str) -> bool {
+    let Some(mut m) = get_message(chat_id, msg_id).await else {
+        return false;
+    };
+    if !jetons::has_token(&m.text) {
+        return false;
+    }
+    let raw = raw_keys(&brocolis_keys());
+    let mut o = jetons::open(&m.text, &raw);
+    if jetons::has_ratchet_token(&o.text) {
+        let (t, n) = BRO3.with(|b| b.borrow_mut().open(&o.text, &raw, v3::secs(now())));
+        o.text = t;
+        o.opened += n;
+    }
+    save_bro3();
+    if o.opened == 0 {
+        return false;
+    }
+    remember_original(&m, &m.text.clone());
+    m.text = o.text;
+    m.bro = true;
+    store::write_message(&m).await;
+    refresh_last(chat_id).await;
+    emit(Ev::Messages(chat_id.to_owned()));
+    true
+}
+
 /// Ouvre les jetons d'un message et de sa citation ; `true` si l'un l'a été.
 fn open_message(m: &mut Message) -> bool {
     let mut changed = false;
