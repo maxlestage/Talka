@@ -3543,3 +3543,21 @@ body.locked .lock-screen {
   line-height: 20px;
   text-align: center;
 }
+
+/* Sous un message Brocolis illisible : pourquoi, et quoi faire. */
+.locked-help {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--green);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.pre-line {
+  white-space: pre-line;
+}
