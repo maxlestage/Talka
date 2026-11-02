@@ -499,6 +499,13 @@ struct ConversationView: View {
             if !m.text.isEmpty, !sealed {
                 Button { UIPasteboard.general.string = m.text } label: { Label("Copier", systemImage: "doc.on.doc") }
             }
+            // Le jeton tel qu'il a voyagé : le clavier Brocolis le déchiffre.
+            if let token = e.brocolisOriginal(m) {
+                Button {
+                    UIPasteboard.general.string = token
+                    model.show("Copié chiffré : « Lire » sur le clavier Brocolis")
+                } label: { Label("Copier chiffré 🥦", systemImage: "lock.doc") }
+            }
             if !sealed {
                 Button { forwarding = m } label: { Label("Transférer", systemImage: "arrowshape.turn.up.right") }
             }
