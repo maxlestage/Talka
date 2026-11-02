@@ -5,6 +5,7 @@
 
 import Foundation
 import XCTest
+import BrocolisProto
 @testable import TalkaKit
 
 final class BrocolisTokenTests: XCTestCase {
@@ -76,6 +77,41 @@ final class BrocolisTokenTests: XCTestCase {
         // Les messages d'avant ne se rouvrent qu'une fois.
         XCTAssertTrue(back.firstScan())
         XCTAssertFalse(BrocolisPsk(json: back.toJson()).firstScan())
+    }
+
+    /// Ce que l'iPhone écrit s'ouvre comme le clavier l'ouvre (la même
+    /// bibliothèque, BrocolisProto) ; sa réponse revient par la même session.
+    func testTalkaWritesWhatTheKeyboardReads() throws {
+        let key = [UInt8](repeating: 7, count: 32)
+        let talka = BrocolisPsk()
+        let first = try XCTUnwrap(talka.seal("Depuis Talka 🥦", key: key))
+        let second = try XCTUnwrap(talka.seal("Rendez-vous ((au parc)) !", key: key))
+        XCTAssertTrue(first.hasPrefix("[[BROCOLIS:v3:"))
+        XCTAssertTrue(second.hasPrefix("Rendez-vous [[BROCOLIS:v3:") && !second.contains("parc"))
+        guard case .initial(let i) = try Token.decode(first) else { return XCTFail() }
+        var replay = ReplayGuard()
+        let (kb, c) = try Session.acceptPsk(keys: [key], message: i, guard: &replay, now: 0, rng: Hasard.system())
+        XCTAssertEqual(BrocolisPsk.text(c), "Depuis Talka 🥦")
+        let token = String(second.dropFirst("Rendez-vous ".count).dropLast(" !".count))
+        XCTAssertEqual(BrocolisPsk.text(try kb.decryptText(token, now: 0, rng: Hasard.system())), "au parc")
+        let reply = try kb.encrypt("Bien reçu")
+        XCTAssertEqual(talka.open(reply, keys: [], now: 1).text, "Bien reçu")
+        XCTAssertNotNil(talka.seal("Encore", key: key))
+        XCTAssertEqual(talka.sessions.count, 1)
+        // Les jetons d'origine survivent à une relecture.
+        talka.remember("c/1", token: first)
+        XCTAssertEqual(BrocolisPsk(json: talka.toJson()).original("c/1"), first)
+    }
+
+    /// Une session ouverte par le clavier : Talka y répond.
+    func testAKeyboardSessionIsAnsweredInIt() throws {
+        let key = [UInt8](repeating: 9, count: 32)
+        let kb = try Session.initiatePsk(key: key, rng: Hasard.system())
+        let talka = BrocolisPsk()
+        XCTAssertEqual(talka.open(try kb.encrypt("Salut"), keys: [key], now: 0).opened, 1)
+        let answer = try XCTUnwrap(talka.seal("Salut à toi", key: key))
+        XCTAssertEqual(BrocolisPsk.text(try kb.decryptText(answer, now: 0, rng: Hasard.system())), "Salut à toi")
+        XCTAssertEqual(talka.sessions.count, 1)
     }
 
     func testRatchetTokensAreToldApart() {

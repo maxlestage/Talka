@@ -600,13 +600,38 @@ public final class Engine {
                 o.opened += r.opened
                 o.locked = max(0, o.locked - r.opened)
             }
-            if brocolisPsk.takeDirty() { store.writeRaw("kv", BrocolisPsk.kv, brocolisPsk.toJson()) }
+            saveBrocolisPsk()
         }
         return o
     }
 
     func sealText(_ c: Chat, _ text: String) -> String {
-        Brocolis.seal(text, keys: chatBrocolis(c).compactMap { Brocolis.key(base64: $0.key) })
+        let keys = chatBrocolis(c).compactMap { Brocolis.key(base64: $0.key) }
+        // À deux, avec une seule clé : le format du clavier Brocolis (« double
+        // cliquet, clé partagée »), que l'autre peut « déchiffrer » au clavier.
+        if !c.group, keys.count == 1,
+           let sealed = brocolisPsk.seal(text, key: keys[0].withUnsafeBytes { [UInt8]($0) }) {
+            saveBrocolisPsk()
+            return sealed
+        }
+        return Brocolis.seal(text, keys: keys)
+    }
+
+    /// Écrit l'état du « double cliquet » du clavier Brocolis s'il a changé.
+    func saveBrocolisPsk() {
+        if brocolisPsk.takeDirty() { store.writeRaw("kv", BrocolisPsk.kv, brocolisPsk.toJson()) }
+    }
+
+    /// Le jeton d'origine d'un message Brocolis (ouvert ou scellé ici), pour
+    /// « Copier chiffré 🥦 » : à coller dans le clavier Brocolis.
+    public func brocolisOriginal(_ m: Message) -> String? {
+        brocolisPsk.original(m.chat + "/" + m.id)
+    }
+
+    func rememberOriginal(_ m: Message, _ token: String) {
+        guard Brocolis.hasToken(token) else { return }
+        brocolisPsk.remember(m.chat + "/" + m.id, token: token)
+        saveBrocolisPsk()
     }
 
     /// Scelle le texte et la citation de `content` ; `true` si le texte l'a été.
@@ -629,7 +654,7 @@ public final class Engine {
         var changed = false
         if Brocolis.hasToken(m.text) {
             let o = openBrocolis(m.text, chat: m.chat)
-            if o.opened > 0 { m.text = o.text; m.bro = true; changed = true }
+            if o.opened > 0 { rememberOriginal(m, m.text); m.text = o.text; m.bro = true; changed = true }
         }
         if var r = m.reply, Brocolis.hasToken(r.text) {
             let o = openBrocolis(r.text, chat: m.chat)
@@ -1211,6 +1236,7 @@ public final class Engine {
         // Brocolis 🥦 : le texte part scellé ; l'appareil garde le clair.
         var sealed = content
         m.bro = sealContent(c, &sealed)
+        if m.bro { rememberOriginal(m, sealed.text) }
         // Un jeton collé (clavier Brocolis) s'affiche ouvert, s'il est pour vous.
         openMessage(&m)
         storeMessage(m)
@@ -1254,6 +1280,7 @@ public final class Engine {
         m.edited = true
         let sealed = sealText(c, text)
         m.bro = sealed != text
+        rememberOriginal(m, sealed)
         store.writeMessage(m)
         refreshLast(chat)
         bump(chat)
@@ -1837,6 +1864,7 @@ public final class Engine {
         case let .edit(id, text):
             guard var m = store.message(c.id, id), m.from == from, !m.deleted else { return }
             let opened = openBrocolis(String(text.prefix(65_536)), chat: c.id)
+            if opened.opened > 0 { rememberOriginal(m, String(text.prefix(65_536))) }
             m.text = opened.text
             m.bro = opened.opened > 0
             m.edited = true
