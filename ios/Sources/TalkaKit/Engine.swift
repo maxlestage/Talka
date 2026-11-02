@@ -648,6 +648,31 @@ public final class Engine {
         return bro
     }
 
+    /// « Déchiffrer 🥦 » sur un message resté chiffré : toutes vos clés
+    /// Brocolis s'y essaient (c'est vous qui le demandez, pour ce message-là),
+    /// pas seulement celles de la discussion. `true` s'il s'est ouvert. Le même
+    /// que le navigateur (`decrypt_now`).
+    @discardableResult
+    public func decryptNow(_ chat: String, _ id: String) -> Bool {
+        guard var m = store.message(chat, id), Brocolis.hasToken(m.text) else { return false }
+        let keys = allBrocolisKeys
+        var o = Brocolis.open(m.text, keys: keys)
+        if Brocolis.hasRatchetToken(o.text) {
+            let r = brocolisPsk.open(o.text, keys: keys.map { $0.withUnsafeBytes { [UInt8]($0) } }, now: V3.secs(nowMs()))
+            o.text = r.text
+            o.opened += r.opened
+        }
+        saveBrocolisPsk()
+        guard o.opened > 0 else { return false }
+        rememberOriginal(m, m.text)
+        m.text = o.text
+        m.bro = true
+        store.writeMessage(m)
+        refreshLast(chat)
+        bump(chat)
+        return true
+    }
+
     /// Ouvre les jetons d'un message et de sa citation ; `true` si l'un l'a été.
     @discardableResult
     func openMessage(_ m: inout Message) -> Bool {

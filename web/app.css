@@ -3561,3 +3561,27 @@ body.locked .lock-screen {
 .pre-line {
   white-space: pre-line;
 }
+
+/* Sous un message Brocolis encore chiffré : « Déchiffrer », et pourquoi. */
+.locked-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.decrypt-btn {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--green);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.locked-actions .locked-help {
+  margin-top: 0;
+}
