@@ -1068,7 +1068,7 @@ struct MessageRow: View {
                     .font(.system(size: big ? 46 : size))
                     .textSelection(.enabled)
                 if m.from != e.me.code, Brocolis.hasToken(m.text) {
-                    LockedBrocolisHelp(who: e.displayName(m.from))
+                    LockedBrocolisHelp(who: e.displayName(m.from), ratchet: Brocolis.hasRatchetToken(m.text))
                 }
             }
         }
@@ -1408,7 +1408,28 @@ struct LatestButton: View {
 /// faire. Le même texte que le navigateur (`locked_help`).
 struct LockedBrocolisHelp: View {
     let who: String
+    /// Un jeton « double cliquet » (v3) du clavier Brocolis.
+    let ratchet: Bool
     @State private var shown = false
+
+    var explanation: String {
+        if ratchet {
+            return """
+            \(who) a chiffré ce message avec le clavier Brocolis en mode « double cliquet » : la clé change à chaque message, et Talka ne sait pas encore les ouvrir (il lit les messages chiffrés par la clé partagée elle-même).
+
+            • Pour le lire : appuyez longuement dessus → Copier, puis touchez « Lire » sur le clavier Brocolis.
+
+            • Pour que Talka les lise directement : \(who) choisit, dans les réglages du clavier Brocolis (⚙️), la clé partagée simple au lieu du double cliquet.
+            """
+        }
+        return """
+        \(who) a chiffré ce message avec une clé Brocolis que cet appareil n'a pas.
+
+        • Si vous lui avez partagé une clé : \(who) doit toucher « Ajouter la clé » sous la carte 🥦 de cette discussion. Ses prochains messages seront lisibles.
+
+        • Pour lire celui-ci : demandez-lui de vous partager sa clé (menu ⋮ → Brocolis 🥦), puis touchez « Ajouter la clé ». Le message s'ouvrira tout seul.
+        """
+    }
 
     var body: some View {
         Button("Pourquoi je ne peux pas le lire ?") { shown = true }
@@ -1419,13 +1440,7 @@ struct LockedBrocolisHelp: View {
             .alert("Message chiffré par Brocolis 🥦", isPresented: $shown) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("""
-                \(who) a chiffré ce message avec une clé Brocolis que cet appareil n'a pas.
-
-                • Si vous lui avez partagé une clé : \(who) doit toucher « Ajouter la clé » sous la carte 🥦 de cette discussion. Ses prochains messages seront lisibles.
-
-                • Pour lire celui-ci : demandez-lui de vous partager sa clé (menu ⋮ → Brocolis 🥦), puis touchez « Ajouter la clé ». Le message s'ouvrira tout seul.
-                """)
+                Text(explanation)
             }
     }
 }
