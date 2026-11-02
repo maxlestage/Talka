@@ -53,6 +53,13 @@ final class BrocolisTokenTests: XCTestCase {
         XCTAssertEqual(Brocolis.seal("clair", keys: []), "clair")
     }
 
+    func testRatchetTokensAreToldApart() {
+        XCTAssertTrue(Brocolis.hasRatchetToken("[[BROCOLIS:v3:AQID]]"))
+        XCTAssertTrue(Brocolis.hasToken("[[BROCOLIS:v3:AQID]]"))
+        XCTAssertFalse(Brocolis.hasRatchetToken("[[BROCOLIS:v1:AQID]]"))
+        XCTAssertFalse(Brocolis.hasRatchetToken("rien"))
+    }
+
     func testFindsTheKeyInAnInvitation() throws {
         let key = Brocolis.generateKey()
         XCTAssertEqual(Brocolis.findKey(in: "3) Colle CETTE clé :\n\n\(key)\n\n(C'est notre clé commune.)"), key)
