@@ -1388,9 +1388,9 @@ fn content(m: &Message) -> El {
 fn locked_help(who: &str, ratchet: bool) {
     let text = if ratchet {
         format!(
-            "{who} a chiffré ce message avec le clavier Brocolis en mode « double cliquet » : la clé change à chaque message, et Talka ne sait pas encore les ouvrir (il lit les messages chiffrés par la clé partagée elle-même).\n\n\
-             • Pour le lire : appuyez longuement dessus → Copier, puis touchez « Lire » sur le clavier Brocolis.\n\n\
-             • Pour que Talka les lise directement : {who} choisit, dans les réglages du clavier Brocolis (⚙️), la clé partagée simple au lieu du double cliquet."
+            "{who} a chiffré ce message avec le clavier Brocolis en mode « double cliquet, clé partagée », avec une clé que cet appareil n'a pas.\n\n\
+             • Ajoutez la clé Brocolis partagée avec {who} (touchez « Ajouter la clé » sous sa carte 🥦, ou collez-la dans Réglages → Clés Brocolis) : le message s'ouvrira tout seul, et les suivants aussi.\n\n\
+             • Si rien ne s'ouvre avec la bonne clé, le début de la conversation Brocolis n'est pas arrivé ici : {who} peut repartir d'une session neuve dans le clavier Brocolis."
         )
     } else {
         format!(
