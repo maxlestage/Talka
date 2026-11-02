@@ -1074,8 +1074,9 @@ struct MessageRow: View {
                 Text(richText(m.text, mentions: mentionLabels(e, m)))
                     .font(.system(size: big ? 46 : size))
                     .textSelection(.enabled)
-                if m.from != e.me.code, Brocolis.hasToken(m.text) {
-                    LockedBrocolisHelp(who: e.displayName(m.from), ratchet: Brocolis.hasRatchetToken(m.text))
+                if Brocolis.hasToken(m.text) {
+                    LockedBrocolisHelp(who: e.displayName(m.from), ratchet: Brocolis.hasRatchetToken(m.text),
+                                       chatId: m.chat, messageId: m.id)
                 }
             }
         }
@@ -1414,10 +1415,15 @@ struct LatestButton: View {
 /// Un message Brocolis qu'aucune de vos clés n'ouvre : pourquoi, et quoi
 /// faire. Le même texte que le navigateur (`locked_help`).
 struct LockedBrocolisHelp: View {
+    @Environment(AppModel.self) private var model
     let who: String
     /// Un jeton « double cliquet » (v3) du clavier Brocolis.
     let ratchet: Bool
+    let chatId: String
+    let messageId: String
     @State private var shown = false
+    @State private var missingKey = false
+    @State private var addingKey = false
 
     var explanation: String {
         if ratchet {
@@ -1439,12 +1445,39 @@ struct LockedBrocolisHelp: View {
     }
 
     var body: some View {
-        Button("Pourquoi je ne peux pas le lire ?") { shown = true }
-            .font(.footnote)
-            .underline()
-            .foregroundStyle(Color.talkaGreen)
-            .buttonStyle(.plain)
-            .alert("Message chiffré par Brocolis 🥦", isPresented: $shown) {
+        HStack(spacing: 12) {
+            // Toutes vos clés s'essaient ; sinon, on colle celle du clavier.
+            Button {
+                if model.engine?.decryptNow(chatId, messageId) == true {
+                    model.show("🔓 Déchiffré")
+                } else {
+                    missingKey = true
+                }
+            } label: {
+                Label("Déchiffrer", systemImage: "lock.open.fill").font(.subheadline.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color.talkaGreen)
+            .buttonBorderShape(.capsule)
+            Button("Pourquoi ?") { shown = true }
+                .font(.footnote)
+                .underline()
+                .foregroundStyle(Color.talkaGreen)
+                .buttonStyle(.plain)
+        }
+        .confirmationDialog("Aucune de vos clés ne l'ouvre", isPresented: $missingKey, titleVisibility: .visible) {
+            Button("Coller la clé") { addingKey = true }
+            Button("Annuler", role: .cancel) {}
+        } message: {
+            Text("Il a été chiffré avec une clé Brocolis que Talka n'a pas encore, par exemple celle choisie dans le clavier Brocolis. Collez-la ici (dans l'app Brocolis : la clé → Copier ou Exporter), une fois pour toutes.")
+        }
+        .sheet(isPresented: $addingKey, onDismiss: {
+            guard let e = model.engine, Brocolis.hasToken(e.store.message(chatId, messageId)?.text ?? "") else { return }
+            if e.decryptNow(chatId, messageId) { model.show("🔓 Déchiffré") }
+        }) {
+            AddBrocolisKey()
+        }
+        .alert("Message chiffré par Brocolis 🥦", isPresented: $shown) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(explanation)
