@@ -53,6 +53,31 @@ final class BrocolisTokenTests: XCTestCase {
         XCTAssertEqual(Brocolis.seal("clair", keys: []), "clair")
     }
 
+    /// Le « double cliquet, clé partagée » produit par le navigateur (le même
+    /// code Rust que la référence du clavier Brocolis) s'ouvre sur l'iPhone :
+    /// le premier message ouvre la session, les suivants passent par elle.
+    func testOpensTheKeyboardsDoubleRatchetFromTheBrowser() throws {
+        let v = try vectors()
+        let ks = try keys(v).compactMap { Brocolis.key(base64: $0.key) }.map { $0.withUnsafeBytes { [UInt8]($0) } }
+        let psk3 = try XCTUnwrap(v["psk3"] as? [String: Any])
+        let tokens = try XCTUnwrap(psk3["tokens"] as? [String])
+        let plain = try XCTUnwrap(psk3["plain"] as? [String])
+        let p = BrocolisPsk()
+        // La seule clé « Bob » n'ouvre pas le premier message.
+        XCTAssertEqual(p.open(tokens[0], keys: [ks[0]], now: 100).opened, 0)
+        XCTAssertEqual(p.open(tokens[0], keys: ks, now: 100).text, plain[0])
+        XCTAssertTrue(p.takeDirty())
+        // L'état survit à une relecture ; la suite s'ouvre sans clé.
+        let back = BrocolisPsk(json: p.toJson())
+        XCTAssertEqual(back.open(tokens[1], keys: [], now: 101).text, plain[1])
+        XCTAssertEqual(back.open(tokens[2], keys: [], now: 102).text, plain[2])
+        // Un premier message rejoué ne rouvre rien.
+        XCTAssertEqual(back.open(tokens[0], keys: ks, now: 103).opened, 0)
+        // Les messages d'avant ne se rouvrent qu'une fois.
+        XCTAssertTrue(back.firstScan())
+        XCTAssertFalse(BrocolisPsk(json: back.toJson()).firstScan())
+    }
+
     func testRatchetTokensAreToldApart() {
         XCTAssertTrue(Brocolis.hasRatchetToken("[[BROCOLIS:v3:AQID]]"))
         XCTAssertTrue(Brocolis.hasToken("[[BROCOLIS:v3:AQID]]"))

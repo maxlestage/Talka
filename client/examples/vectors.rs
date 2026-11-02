@@ -264,6 +264,19 @@ fn main() {
     // Brocolis 🥦 : des jetons du navigateur, que l'iPhone doit ouvrir.
     let (k1, k2) = (jetons::generate_key(), jetons::generate_key());
     let keys = [k1.as_str(), k2.as_str()].map(|k| jetons::key_from_b64(k).unwrap());
+    // Le « double cliquet, clé partagée » du clavier Brocolis (v3, PSK), par
+    // la clé « Travail » : un premier message, puis deux autres.
+    let mut kb =
+        brocolis_proto::Session::initiate_psk(&keys[1], &mut brocolis_proto::hasard::system())
+            .unwrap();
+    let psk3 = json!({
+        "tokens": [
+            kb.encrypt("Premier par le clavier 🥦").unwrap(),
+            kb.encrypt("Deuxième").unwrap(),
+            format!("Avant {} après", kb.encrypt("Troisième").unwrap()),
+        ],
+        "plain": ["Premier par le clavier 🥦", "Deuxième", "Avant Troisième après"],
+    });
     let brocolis = json!({
         "keys": [
             { "id": "k1", "name": "Bob", "key": k1 },
@@ -276,6 +289,7 @@ fn main() {
         "marked": jetons::seal("On se voit ((au parc)) demain", &keys[1..]),
         "marked_plain": "On se voit au parc demain",
         "fingerprint_k1": jetons::fingerprint(&k1),
+        "psk3": psk3,
     });
 
     let apercu = msg.apercu(&a.code, "Léa", |m| m.text.clone()).unwrap();
