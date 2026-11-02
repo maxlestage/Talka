@@ -1664,7 +1664,45 @@ fn raw_keys(keys: &[BrocolisKey]) -> Vec<jetons::Key> {
 }
 
 fn seal_text(c: &Chat, text: &str) -> String {
-    jetons::seal(text, &raw_keys(&chat_brocolis(c)))
+    let keys = raw_keys(&chat_brocolis(c));
+    // À deux, avec une seule clé : le format du clavier Brocolis (« double
+    // cliquet, clé partagée »), que l'autre peut « déchiffrer » au clavier.
+    if !c.group
+        && let [key] = keys.as_slice()
+        && let Some(sealed) = BRO3.with(|b| b.borrow_mut().seal(text, key))
+    {
+        save_bro3();
+        return sealed;
+    }
+    jetons::seal(text, &keys)
+}
+
+/// Écrit l'état du « double cliquet » du clavier Brocolis s'il a changé.
+fn save_bro3() {
+    if BRO3.with(|b| b.borrow_mut().take_dirty()) {
+        let json = BRO3.with(|b| b.borrow().to_json());
+        spawn(async move { write_json(crate::bro3::KV, &json).await });
+    }
+}
+
+/// Le jeton d'origine d'un message Brocolis (ouvert ou scellé ici), pour
+/// « Copier chiffré 🥦 » : à coller dans le clavier Brocolis.
+pub fn brocolis_original(m: &Message) -> Option<String> {
+    BRO3.with(|b| {
+        b.borrow()
+            .original(&format!("{}/{}", m.chat, m.id))
+            .map(str::to_owned)
+    })
+}
+
+fn remember_original(m: &Message, token: &str) {
+    if jetons::has_token(token) {
+        BRO3.with(|b| {
+            b.borrow_mut()
+                .remember(&format!("{}/{}", m.chat, m.id), token)
+        });
+        save_bro3();
+    }
 }
 
 /// Scelle le texte et la citation de `content` ; `true` si le texte l'a été.
@@ -1711,10 +1749,7 @@ pub fn open_brocolis(chat_id: &str, text: &str) -> jetons::Opened {
             o.opened += n;
             o.locked = o.locked.saturating_sub(n);
         }
-        if BRO3.with(|b| b.borrow_mut().take_dirty()) {
-            let json = BRO3.with(|b| b.borrow().to_json());
-            spawn(async move { write_json(crate::bro3::KV, &json).await });
-        }
+        save_bro3();
     }
     o
 }
@@ -1726,6 +1761,7 @@ fn open_message(m: &mut Message) -> bool {
     if jetons::has_token(&m.text) {
         let o = open_brocolis(&chat_id, &m.text);
         if o.opened > 0 {
+            remember_original(m, &m.text.clone());
             m.text = o.text;
             m.bro = true;
             changed = true;
@@ -2794,6 +2830,9 @@ pub async fn send_message(chat_id: &str, mut content: Content) -> Option<Message
     if c.timer > 0 {
         m.exp = Some(at + c.timer as f64 * 1000.0);
     }
+    if bro {
+        remember_original(&m, &content.text);
+    }
     // Un jeton collé (clavier Brocolis) s'affiche ouvert, s'il est pour vous.
     open_message(&mut m);
     store_message(&m, true).await;
@@ -2883,6 +2922,7 @@ pub async fn edit_message(chat_id: &str, msg_id: &str, text: &str) {
     m.edited = true;
     let sealed = seal_text(&c, text);
     m.bro = sealed != text;
+    remember_original(&m, &sealed);
     store::write_message(&m).await;
     refresh_last(chat_id).await;
     emit(Ev::Messages(chat_id.to_owned()));
@@ -3929,6 +3969,9 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             }
             let text: String = text.chars().take(65_536).collect();
             let o = open_brocolis(&c.id, &text);
+            if o.opened > 0 {
+                remember_original(&m, &text);
+            }
             m.bro = o.opened > 0;
             m.text = o.text;
             m.edited = true;
@@ -4298,6 +4341,9 @@ async fn apply_own_wire(chat_id: &str, wire: Wire) {
                 && !m.deleted
             {
                 let o = open_brocolis(&c.id, &text);
+                if o.opened > 0 {
+                    remember_original(&m, &text);
+                }
                 m.bro = o.opened > 0;
                 m.text = o.text;
                 m.edited = true;

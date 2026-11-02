@@ -1637,6 +1637,15 @@ fn message_menu(m: &Message, at: At) {
                     spawn(async move { copy(&t, "Copié").await })
                 })
             },
+            // Le jeton tel qu'il a voyagé : le clavier Brocolis le déchiffre.
+            core::brocolis_original(m).and_then(|token| {
+                item("lock", "Copier chiffré 🥦", move || {
+                    let t = token.clone();
+                    spawn(async move {
+                        copy(&t, "Copié chiffré : « Lire » sur le clavier Brocolis").await
+                    })
+                })
+            }),
             if sealed {
                 None
             } else {
