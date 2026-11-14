@@ -36,7 +36,7 @@ usb=(), xr-spatial-tracking=()";
 pub struct Site {
     /// Le chemin du site : vide sur le serveur, `/Talka` sur GitHub Pages.
     pub base: String,
-    /// Le relais, s'il est ailleurs (GitHub Pages) : `https://talka.herokuapp.com`.
+    /// Le relais, s'il est ailleurs (GitHub Pages) : `https://talka-maxlestage-e497dd868a8c.herokuapp.com`.
     pub api: String,
     /// L'export statique (GitHub Pages) : pas de serveur derrière les pages.
     pub export: bool,
