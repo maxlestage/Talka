@@ -253,7 +253,7 @@ codes, et discutez.
   ```
 
   ```sh
-  BASE_PATH=/Talka TALKA_API_URL=https://talka.herokuapp.com cargo run -- export dist
+  BASE_PATH=/Talka TALKA_API_URL=https://talka-maxlestage-e497dd868a8c.herokuapp.com cargo run -- export dist
   ```
 
 Les appels ont besoin d'HTTPS (caméra et micro) : c'est le cas sur Heroku et
