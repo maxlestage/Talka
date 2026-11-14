@@ -3,7 +3,7 @@
 //! parle au relais d'un serveur Talka déployé ailleurs (Heroku…), en HTTPS.
 //!
 //! ```sh
-//! BASE_PATH=/Talka TALKA_API_URL=https://talka.herokuapp.com talka export dist
+//! BASE_PATH=/Talka TALKA_API_URL=https://talka-maxlestage-e497dd868a8c.herokuapp.com talka export dist
 //! ```
 //!
 //! GitHub Pages n'envoie pas d'en-têtes sur mesure : la politique de sécurité
