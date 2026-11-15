@@ -15,6 +15,7 @@
 pub mod assets;
 pub mod code;
 pub mod export;
+pub mod kv;
 pub mod push;
 pub mod relay;
 pub mod serverkey;
@@ -185,7 +186,9 @@ pub fn app() -> App {
         app.trust_proxy(1);
     }
     app.security(shield());
-    let relay = Relay::default();
+    // Avec son double dans le magasin clé-valeur de Nuage DB, s'il est
+    // branché (`TALKA_KV_URL`, voir `kv`).
+    let relay = Relay::from_env();
     app.state(relay);
 
     // Le relais : la seule chose que fait le serveur.
@@ -248,6 +251,8 @@ pub fn app() -> App {
             .json(json!({
                 "online": relay.online_count(),
                 "waiting": relay.waiting_count(),
+                // Le double des boîtes dans Nuage DB : `ok`, `retard`, ou `off`.
+                "kv": relay.kv_status().as_str(),
                 "version": assets::version(),
             }))
     });

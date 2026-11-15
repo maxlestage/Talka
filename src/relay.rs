@@ -8,6 +8,13 @@
 //! (`got`) ; il est alors oublié. Les boîtes ont une taille et une durée
 //! limitées, et disparaissent avec le serveur.
 //!
+//! Sauf si le relais a un double (`TALKA_KV_URL`, voir `crate::kv`) : ce
+//! qu'il retient est alors recopié, scellé, dans le magasin clé-valeur d'un
+//! serveur Nuage DB (en mémoire vive lui aussi), et relu au démarrage. Un
+//! redémarrage du relais (un déploiement, une mise en veille) ne perd plus
+//! les boîtes, les clés, les appareils ni les adresses de notification ;
+//! seuls les messages de plus de 256 Kio ne vivent qu'ici.
+//!
 //! Le protocole, en JSON sur la WebSocket `/ws` :
 //!
 //! | Sens | Message | Effet |
@@ -48,8 +55,9 @@
 //! Les notifications (voir `crate::push`) : quand un message marqué `wake`
 //! arrive pour un code qui n'a aucune connexion ouverte, le relais envoie un
 //! réveil vide à chacune de ses adresses Web Push (au plus une fois toutes
-//! les 20 secondes). Les adresses ne vivent qu'en mémoire, comme le reste ;
-//! un appareil redonne la sienne à chaque connexion.
+//! les 20 secondes). Les adresses ne vivent qu'en mémoire, comme le reste
+//! (et dans le double du relais, s'il en a un) ; un appareil redonne la
+//! sienne à chaque connexion.
 //!
 //! Le paquet v3 (voir `talka_web::v3`) : le relais vérifie seulement qu'il est
 //! signé par la clé du code qui le publie (ECDSA P-256 de
@@ -76,6 +84,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::code;
+use crate::kv::{self, Kv, Mirror, Op};
 
 /// Un message attend au plus 30 jours qu'on vienne le chercher.
 const MAILBOX_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -126,6 +135,19 @@ const MAX_BOITES_ASKED: usize = 8_000;
 /// temps (le jour, la veille et le lendemain suffisent).
 const MAX_BOITE_PUSH: usize = 500_000;
 const BOITE_PUSH_TTL: Duration = Duration::from_secs(3 * 24 * 3600);
+/// Le grand ménage des boîtes (les messages périmés) : une fois par minute au
+/// plus, et quand la place manque.
+const SWEEP_EVERY: Duration = Duration::from_secs(60);
+/// Dans le magasin clé-valeur (voir `crate::kv`) : ce qu'on sait d'un code y
+/// reste 30 jours après sa dernière connexion, comme ses messages.
+const KEPT_TTL: Duration = MAILBOX_TTL;
+/// Les messages y prennent la moitié de la place au plus ; un message de
+/// plus de 256 Kio (une photo, un vocal) n'y va pas.
+const KEPT_MESSAGE: usize = 256 * 1024;
+/// La mémoire du magasin, quand il n'a pas pu la dire (32 Mio par défaut).
+const KEPT_DEFAULT: usize = 32 * 1024 * 1024;
+/// Les boîtes tournantes d'un abonnement Web Push qui y sont recopiées.
+const KEPT_BOITES: usize = 4_000;
 /// Un réveil par code toutes les 20 secondes au plus.
 const WAKE_EVERY: Duration = Duration::from_secs(20);
 /// Avec un aperçu (chaque message compte) : une seconde.
@@ -157,6 +179,15 @@ struct Stored {
     at: Instant,
     /// Combien de temps le garder (`MAILBOX_TTL` au plus).
     ttl: Duration,
+    /// Ce qu'il occupe dans le magasin clé-valeur (0 : il n'y est pas).
+    kept: usize,
+}
+
+impl Stored {
+    /// Pas encore périmé.
+    fn alive(&self) -> bool {
+        self.at.elapsed() <= self.ttl
+    }
 }
 
 #[derive(Default)]
@@ -218,6 +249,11 @@ struct State {
     total_bytes: usize,
     /// code suivi → connexions qui le suivent (code, identifiant de connexion).
     watchers: HashMap<String, HashSet<(String, u64)>>,
+    /// connexion → les codes qu'elle suit (l'inverse de `watchers`).
+    watching: HashMap<u64, HashSet<String>>,
+    /// connexion anonyme → les boîtes tournantes qu'elle suit (l'inverse de
+    /// `boite_subs`).
+    boites_of: HashMap<u64, HashSet<String>>,
     /// boîte (`<code>` ou `<code>/<dev>`) → ses adresses Web Push, la plus
     /// récente en dernier.
     push: HashMap<String, Vec<crate::push::Subscription>>,
@@ -234,6 +270,15 @@ struct State {
     revoked: HashMap<String, HashSet<String>>,
     next_n: u64,
     next_conn: u64,
+    /// Le dernier grand ménage des boîtes (`sweep`).
+    swept: Option<Instant>,
+    /// Le double dans le magasin clé-valeur de Nuage DB (voir `crate::kv`).
+    mirror: Option<Mirror>,
+    /// Ce que les messages y occupent, et ce qu'ils peuvent y occuper.
+    kept_bytes: usize,
+    kept_max: usize,
+    /// Un message plus gros n'y va pas (il ne vit qu'ici).
+    kept_message: usize,
 }
 
 /// Au plus `SENDS_PER_SECOND` envois par seconde et `BYTES_PER_MINUTE`
@@ -332,7 +377,10 @@ enum Dest<'a> {
 /// L'identifiant de ce démarrage du relais. Les boîtes aux lettres ne vivent
 /// qu'en mémoire : quand il change (redémarrage, nouveau déploiement), ce qui
 /// attendait un destinataire hors ligne est perdu, et les appareils renvoient
-/// les messages qui n'ont pas été confirmés (`ready.boot`).
+/// les messages qui n'ont pas été confirmés (`ready.boot`). Avec un double
+/// (`crate::kv`), presque tout est retrouvé ; les appareils renvoient quand
+/// même (ce qui n'avait pas eu le temps d'être recopié, les gros messages),
+/// et le destinataire ignore ce qu'il a déjà.
 pub fn boot_id() -> &'static str {
     static BOOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BOOT.get_or_init(|| {
@@ -348,7 +396,329 @@ pub struct Relay {
     state: Arc<Mutex<State>>,
 }
 
+// ----- Le double dans le magasin clé-valeur (voir `crate::kv`) ---------------
+//
+// Chaque chose retenue y a une fiche (`"k"` : sa sorte), sous un nom que le
+// relais sait retrouver : un message (`m`, `<boîte>#<n>`), les clés d'un
+// code (`k`), un paquet de clés (`b`, `<code>` ou `<code>/<appareil>`), les
+// appareils d'un code (`d`) et ceux qu'il a retirés (`x`), sa dernière
+// connexion (`s`), les adresses Web Push d'une boîte (`p`), ses jetons
+// révoqués (`r`), les boîtes tournantes d'un abonnement Web Push (`q`).
+
+fn message_name(key: &str, n: u64) -> String {
+    format!("{key}#{n}")
+}
+
+fn rec_message(key: &str, n: u64, json: &str, until: u64) -> Value {
+    json!({ "k": "m", "b": key, "n": n, "j": json, "x": until })
+}
+
+fn rec_keys(code: &str, keys: &Keys) -> Value {
+    json!({ "k": "k", "c": code, "s": keys.sign, "d": keys.dh })
+}
+
+fn rec_bundle(code: &str, dev: &str, b: &Bundle) -> Value {
+    json!({ "k": "b", "c": code, "v": dev, "b": b.bundle, "s": b.sig })
+}
+
+fn rec_list(kind: &str, code: &str, items: &HashSet<String>) -> Value {
+    let mut list: Vec<&String> = items.iter().collect();
+    list.sort();
+    json!({ "k": kind, "c": code, "l": list })
+}
+
+fn rec_sub(sub: &crate::push::Subscription) -> Value {
+    json!({ "e": sub.endpoint, "p": B64.encode(&sub.p256dh), "a": B64.encode(&sub.auth) })
+}
+
+fn sub_of(v: &Value) -> Option<crate::push::Subscription> {
+    let endpoint = v["e"].as_str().filter(|e| !e.is_empty())?;
+    Some(crate::push::Subscription {
+        endpoint: endpoint.to_owned(),
+        p256dh: B64.decode(v["p"].as_str().unwrap_or("")).ok()?,
+        auth: B64.decode(v["a"].as_str().unwrap_or("")).ok()?,
+    })
+}
+
+fn rec_push(key: &str, subs: &[crate::push::Subscription]) -> Value {
+    json!({ "k": "p", "b": key, "l": subs.iter().map(rec_sub).collect::<Vec<_>>() })
+}
+
+fn rec_boites(sub: &crate::push::Subscription, addrs: &[&str], until: u64) -> Value {
+    json!({ "k": "q", "s": rec_sub(sub), "l": addrs, "x": until })
+}
+
 impl State {
+    /// Recopie une fiche dans le magasin clé-valeur, s'il y en a un.
+    fn keep(&self, kind: char, name: &str, value: impl FnOnce() -> Value, ttl: Duration) {
+        if let Some(mirror) = &self.mirror {
+            mirror.set(kind, name, value(), ttl);
+        }
+    }
+
+    /// L'en retire.
+    fn unkeep(&self, kind: char, name: &str) {
+        if let Some(mirror) = &self.mirror {
+            mirror.del(kind, name);
+        }
+    }
+
+    /// Recopie un message, s'il y a la place ; renvoie ce qu'il y occupe.
+    fn keep_message(&mut self, key: &str, n: u64, json: &str, ttl: Duration) -> usize {
+        let Some(mirror) = &self.mirror else { return 0 };
+        let size = kv::sealed_size(json.len() + key.len() + 64);
+        if json.len() > self.kept_message || self.kept_bytes + size > self.kept_max {
+            return 0;
+        }
+        let until = now_ms() + ttl.as_millis() as u64;
+        mirror.set(
+            'm',
+            &message_name(key, n),
+            rec_message(key, n, json, until),
+            ttl,
+        );
+        self.kept_bytes += size;
+        size
+    }
+
+    /// Des messages quittent une boîte : ils quittent aussi le magasin
+    /// (`gone` : leur numéro, et ce qu'ils y occupaient).
+    fn unkeep_messages(&mut self, key: &str, gone: &[(u64, usize)]) {
+        for (n, kept) in gone {
+            self.kept_bytes -= kept;
+            self.unkeep('m', &message_name(key, *n));
+        }
+    }
+
+    fn keep_keys(&self, code: &str) {
+        if let Some(keys) = self.keys.get(code) {
+            self.keep('k', code, || rec_keys(code, keys), KEPT_TTL);
+        }
+    }
+
+    /// Les appareils d'un code (`d`), ou ceux qu'il a retirés (`x`).
+    fn keep_devices(&self, kind: char, code: &str) {
+        let map = if kind == 'x' {
+            &self.banned
+        } else {
+            &self.devices
+        };
+        match map.get(code).filter(|set| !set.is_empty()) {
+            Some(set) => self.keep(
+                kind,
+                code,
+                || rec_list(&kind.to_string(), code, set),
+                KEPT_TTL,
+            ),
+            None => self.unkeep(kind, code),
+        }
+    }
+
+    fn keep_push(&self, key: &str) {
+        match self.push.get(key).filter(|list| !list.is_empty()) {
+            Some(list) => self.keep('p', key, || rec_push(key, list), KEPT_TTL),
+            None => self.unkeep('p', key),
+        }
+    }
+
+    /// Tout ce qui est retenu, à recopier d'un coup (après une panne du
+    /// magasin).
+    fn snapshot(&self) -> Vec<Op> {
+        let now = now_ms();
+        let set = |kind: char, name: &str, value: Value, ttl: Duration| Op::Set {
+            kind,
+            name: name.to_owned(),
+            value,
+            ttl,
+        };
+        let mut ops = Vec::new();
+        for (code, keys) in &self.keys {
+            ops.push(set('k', code, rec_keys(code, keys), KEPT_TTL));
+        }
+        for (code, devices) in &self.bundles {
+            for (dev, b) in devices {
+                ops.push(set(
+                    'b',
+                    &box_key(code, dev),
+                    rec_bundle(code, dev, b),
+                    KEPT_TTL,
+                ));
+            }
+        }
+        for (kind, map) in [
+            ('d', &self.devices),
+            ('x', &self.banned),
+            ('r', &self.revoked),
+        ] {
+            for (code, items) in map.iter().filter(|(_, items)| !items.is_empty()) {
+                ops.push(set(
+                    kind,
+                    code,
+                    rec_list(&kind.to_string(), code, items),
+                    KEPT_TTL,
+                ));
+            }
+        }
+        for (code, seen) in &self.seen {
+            ops.push(set(
+                's',
+                code,
+                json!({ "k": "s", "c": code, "t": seen }),
+                KEPT_TTL,
+            ));
+        }
+        for (key, subs) in self.push.iter().filter(|(_, subs)| !subs.is_empty()) {
+            ops.push(set('p', key, rec_push(key, subs), KEPT_TTL));
+        }
+        // Les boîtes tournantes, regroupées par abonnement Web Push.
+        let mut by_sub: HashMap<&str, (&crate::push::Subscription, Vec<&str>, Duration)> =
+            HashMap::new();
+        for (addr, (sub, at)) in &self.boite_push {
+            let left = BOITE_PUSH_TTL.saturating_sub(at.elapsed());
+            let entry =
+                by_sub
+                    .entry(sub.endpoint.as_str())
+                    .or_insert((sub.as_ref(), Vec::new(), left));
+            if entry.1.len() < KEPT_BOITES {
+                entry.1.push(addr);
+            }
+            entry.2 = entry.2.max(left);
+        }
+        for (endpoint, (sub, addrs, left)) in by_sub {
+            if !left.is_zero() {
+                let until = now + left.as_millis() as u64;
+                ops.push(set('q', endpoint, rec_boites(sub, &addrs, until), left));
+            }
+        }
+        // Les messages en dernier : s'il manque de la place, ce sont eux
+        // que le magasin laisse partir.
+        for (key, mb) in &self.mailboxes {
+            for s in mb.queue.iter().filter(|s| s.kept > 0) {
+                let left = s.ttl.saturating_sub(s.at.elapsed());
+                if !left.is_zero() {
+                    let until = now + left.as_millis() as u64;
+                    ops.push(set(
+                        'm',
+                        &message_name(key, s.n),
+                        rec_message(key, s.n, &s.json, until),
+                        left,
+                    ));
+                }
+            }
+        }
+        ops
+    }
+
+    /// Reprend ce que le magasin avait gardé (au démarrage) ; renvoie le
+    /// nombre de messages retrouvés.
+    fn absorb(&mut self, records: Vec<Value>) -> usize {
+        let now = now_ms();
+        let mut messages = 0;
+        for r in records {
+            let text = |name: &str| r[name].as_str().unwrap_or("").to_owned();
+            let list = |name: &str| -> HashSet<String> {
+                r[name]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let code = text("c");
+            match r["k"].as_str().unwrap_or("") {
+                "m" => {
+                    let (key, json) = (text("b"), text("j"));
+                    let (n, until) = (r["n"].as_u64().unwrap_or(0), r["x"].as_u64().unwrap_or(0));
+                    if key.is_empty() || json.is_empty() || n == 0 || until <= now {
+                        continue;
+                    }
+                    let kept = kv::sealed_size(json.len() + key.len() + 64);
+                    let size = json.len();
+                    let mb = self.mailboxes.entry(key).or_default();
+                    mb.queue.push_back(Stored {
+                        n,
+                        json,
+                        at: Instant::now(),
+                        ttl: Duration::from_millis(until - now).min(MAILBOX_TTL),
+                        kept,
+                    });
+                    mb.bytes += size;
+                    self.total_bytes += size;
+                    self.kept_bytes += kept;
+                    self.next_n = self.next_n.max(n);
+                    messages += 1;
+                }
+                "k" if !code.is_empty() => {
+                    self.keys.insert(
+                        code,
+                        Keys {
+                            sign: text("s"),
+                            dh: text("d"),
+                        },
+                    );
+                }
+                "b" if !code.is_empty() => {
+                    self.bundles.entry(code).or_default().insert(
+                        text("v"),
+                        Bundle {
+                            bundle: text("b"),
+                            sig: text("s"),
+                        },
+                    );
+                }
+                "d" if !code.is_empty() => {
+                    self.devices.insert(code, list("l"));
+                }
+                "x" if !code.is_empty() => {
+                    self.banned.insert(code, list("l"));
+                }
+                "r" if !code.is_empty() => {
+                    self.revoked.insert(code, list("l"));
+                }
+                "s" if !code.is_empty() => {
+                    if let Some(seen) = r["t"].as_u64() {
+                        self.seen.insert(code, seen);
+                    }
+                }
+                "p" => {
+                    let subs: Vec<crate::push::Subscription> = r["l"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(sub_of).collect())
+                        .unwrap_or_default();
+                    if !text("b").is_empty() && !subs.is_empty() {
+                        self.push.insert(text("b"), subs);
+                    }
+                }
+                "q" => {
+                    let until = r["x"].as_u64().unwrap_or(0);
+                    let Some(sub) = sub_of(&r["s"]).filter(|_| until > now) else {
+                        continue;
+                    };
+                    // Depuis quand : pour que l'abonnement s'éteigne à l'heure dite.
+                    let left = Duration::from_millis(until - now).min(BOITE_PUSH_TTL);
+                    let at = Instant::now()
+                        .checked_sub(BOITE_PUSH_TTL - left)
+                        .unwrap_or_else(Instant::now);
+                    let sub = Arc::new(sub);
+                    for addr in list("l") {
+                        self.boite_push.insert(addr, (sub.clone(), at));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for mb in self.mailboxes.values_mut() {
+            mb.queue.make_contiguous().sort_by_key(|s| s.n);
+        }
+        // Les numéros ne resservent pas d'une vie du relais à l'autre : un
+        // `got` en retard ne peut pas effacer un autre message.
+        self.next_n = self.next_n.max(now);
+        messages
+    }
+
     fn is_visible(&self, code: &str) -> bool {
         self.online
             .get(code)
@@ -381,20 +751,34 @@ impl State {
 
     fn evict_expired(&mut self) {
         let mut freed = 0;
+        // Dans le magasin clé-valeur, ils expirent d'eux-mêmes.
+        let mut kept = 0;
         self.mailboxes.retain(|_, mb| {
             mb.queue.retain(|s| {
                 let keep = s.at.elapsed() <= s.ttl;
                 if !keep {
                     mb.bytes -= s.json.len();
                     freed += s.json.len();
+                    kept += s.kept;
                 }
                 keep
             });
             !mb.queue.is_empty()
         });
         self.total_bytes -= freed;
+        self.kept_bytes -= kept;
         self.boite_push
             .retain(|_, (_, at)| at.elapsed() < BOITE_PUSH_TTL);
+        self.swept = Some(Instant::now());
+    }
+
+    /// Le grand ménage, une fois par minute au plus : il relit toutes les
+    /// boîtes, ce qu'une connexion de plus n'a pas à payer. Un message
+    /// périmé n'est de toute façon jamais livré (`Stored::alive`).
+    fn sweep(&mut self) {
+        if self.swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY) {
+            self.evict_expired();
+        }
     }
 
     /// Les boîtes où déposer pour `dest`, et les connexions à prévenir
@@ -467,6 +851,67 @@ impl Relay {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Le relais du serveur : avec son double dans le magasin clé-valeur de
+    /// Nuage DB si `TALKA_KV_URL` et `TALKA_KV_TOKEN` sont là (voir
+    /// `crate::kv`), en mémoire seulement sinon.
+    pub fn from_env() -> Relay {
+        match Kv::from_env() {
+            Some(kv) => Relay::with_kv(kv),
+            None => Relay::default(),
+        }
+    }
+
+    /// Un relais doublé par `kv` : il reprend ce qui s'y trouve, puis y
+    /// recopie ce qu'il retient.
+    pub fn with_kv(kv: Kv) -> Relay {
+        let relay = Relay::default();
+        // Nuage DB redémarre en quelques secondes : trois essais.
+        let mut loaded = Err(String::new());
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            loaded = kv
+                .capacity()
+                .and_then(|capacity| Ok((capacity, kv.load()?)));
+            if loaded.is_ok() {
+                break;
+            }
+        }
+        let synced = loaded.is_ok();
+        let (capacity, records) = loaded.unwrap_or_else(|e| {
+            eprintln!("⚠️  {e} : le relais démarre vide, et y recopiera ce qu'il retient");
+            (KEPT_DEFAULT, Vec::new())
+        });
+        let state = Arc::downgrade(&relay.state);
+        let mirror = kv::mirror(kv, synced, move || {
+            let state = state.upgrade()?;
+            let st = state.lock().unwrap_or_else(|e| e.into_inner());
+            Some(st.snapshot())
+        });
+        let mut st = relay.lock();
+        st.kept_max = capacity / 2;
+        st.kept_message = KEPT_MESSAGE.min(st.kept_max / 4);
+        let messages = st.absorb(records);
+        st.mirror = Some(mirror);
+        if synced {
+            println!(
+                "💾 magasin clé-valeur de Nuage DB : {messages} message(s) en attente et {} code(s) retrouvés",
+                st.keys.len()
+            );
+        }
+        drop(st);
+        relay
+    }
+
+    /// L'état du double dans le magasin clé-valeur (pour `/api/stats`).
+    pub fn kv_status(&self) -> kv::Status {
+        self.lock()
+            .mirror
+            .as_ref()
+            .map_or(kv::Status::Off, Mirror::status)
+    }
+
     /// Le nombre de codes connectés (pour `/api/stats`).
     pub fn online_count(&self) -> usize {
         self.lock().online.len()
@@ -514,9 +959,16 @@ impl Relay {
             oldest.sort_by_key(|(_, seen)| *seen);
             for (c, _) in oldest.into_iter().take(MAX_KEYS / 10) {
                 st.keys.remove(&c);
-                st.bundles.remove(&c);
+                st.unkeep('k', &c);
+                if let Some(devs) = st.bundles.remove(&c) {
+                    for dev in devs.keys() {
+                        st.unkeep('b', &box_key(&c, dev));
+                    }
+                }
                 st.devices.remove(&c);
+                st.unkeep('d', &c);
                 st.seen.remove(&c);
+                st.unkeep('s', &c);
                 st.push
                     .retain(|k, _| k.split('/').next() != Some(c.as_str()));
                 st.woke
@@ -524,17 +976,23 @@ impl Relay {
             }
         }
         st.keys.insert(code.to_owned(), Keys { sign, dh });
+        st.keep_keys(code);
         // Un appareil v3 republie son paquet aussitôt connecté ; un appareil
         // qui ne le fait pas (une ancienne version avec la même identité)
         // ne doit pas recevoir de jetons v3 qu'il ne saurait pas lire.
-        if let Some(b) = st.bundles.get_mut(code) {
-            b.remove(dev);
+        if st
+            .bundles
+            .get_mut(code)
+            .is_some_and(|b| b.remove(dev).is_some())
+        {
+            st.unkeep('b', &box_key(code, dev));
         }
         if !dev.is_empty() {
             st.devices
                 .entry(code.to_owned())
                 .or_default()
                 .insert(dev.to_owned());
+            st.keep_devices('d', code);
         }
         let was_visible = st.is_visible(code);
         let conn = Conn {
@@ -545,17 +1003,17 @@ impl Relay {
             overflow: overflow.clone(),
         };
         // Masqué : on ne garde pas non plus l'heure de sa dernière connexion.
-        if hidden {
-            st.seen.remove(code);
+        if hidden && st.seen.remove(code).is_some() {
+            st.unkeep('s', code);
         }
         // Les messages en attente partent tout de suite : ceux de sa boîte,
         // et ceux de la boîte du code (déposés avant que l'appareil soit
         // connu).
-        st.evict_expired();
+        st.sweep();
         let mut pending: Vec<&Stored> = Vec::new();
         for key in [box_key(code, dev), code.to_owned()] {
             if let Some(mb) = st.mailboxes.get(&key) {
-                pending.extend(mb.queue.iter());
+                pending.extend(mb.queue.iter().filter(|s| s.alive()));
             }
             if dev.is_empty() {
                 break;
@@ -583,13 +1041,27 @@ impl Relay {
                 st.online.remove(code);
             }
         }
-        st.watchers.retain(|_, set| {
-            set.remove(&(code.to_owned(), id));
-            !set.is_empty()
-        });
+        // Ce qu'elle suivait : seulement ces codes-là, pas tous ceux que
+        // suit quelqu'un.
+        let me = (code.to_owned(), id);
+        for watched in st.watching.remove(&id).unwrap_or_default() {
+            if let Some(set) = st.watchers.get_mut(&watched) {
+                set.remove(&me);
+                if set.is_empty() {
+                    st.watchers.remove(&watched);
+                }
+            }
+        }
         // « Vu à » : seulement pour qui ne se cache pas.
         if !st.online.contains_key(code) && !was_hidden {
-            st.seen.insert(code.to_owned(), now_ms());
+            let seen = now_ms();
+            st.seen.insert(code.to_owned(), seen);
+            st.keep(
+                's',
+                code,
+                || json!({ "k": "s", "c": code, "t": seen }),
+                KEPT_TTL,
+            );
         }
         if was_visible && !st.is_visible(code) {
             st.notify_watchers(code);
@@ -710,12 +1182,15 @@ impl Relay {
                 conn.send(json.clone());
             }
             let size = json.len();
+            let ttl = ttl.min(MAILBOX_TTL);
+            let kept = st.keep_message(key, n, &json, ttl);
             let mb = st.mailboxes.entry(key.clone()).or_default();
             mb.queue.push_back(Stored {
                 n,
                 json,
                 at: Instant::now(),
-                ttl: ttl.min(MAILBOX_TTL),
+                ttl,
+                kept,
             });
             mb.bytes += size;
             st.total_bytes += size;
@@ -766,6 +1241,7 @@ impl Relay {
         if list.len() > MAX_PUSH {
             list.remove(0);
         }
+        st.keep_push(key);
         true
     }
 
@@ -781,6 +1257,7 @@ impl Relay {
             {
                 // L'adresse a disparu : plus aucune boîte ne la réveille.
                 st.boite_push.retain(|_, (sub, _)| sub.endpoint != endpoint);
+                st.unkeep('q', endpoint);
             }
             return;
         }
@@ -789,6 +1266,7 @@ impl Relay {
             if list.is_empty() {
                 st.push.remove(key);
             }
+            st.keep_push(key);
         }
     }
 
@@ -802,10 +1280,14 @@ impl Relay {
                 continue;
             };
             let mut freed = 0;
+            let mut gone: Vec<(u64, usize)> = Vec::new();
             mb.queue.retain(|s| {
                 let keep = !numbers.contains(&s.n);
                 if !keep {
                     freed += s.json.len();
+                    if s.kept > 0 {
+                        gone.push((s.n, s.kept));
+                    }
                 }
                 keep
             });
@@ -814,6 +1296,7 @@ impl Relay {
                 st.mailboxes.remove(key);
             }
             st.total_bytes -= freed;
+            st.unkeep_messages(key, &gone);
         }
     }
 
@@ -865,18 +1348,29 @@ impl Relay {
         {
             return Err("devices");
         }
-        devices.insert(
-            dev.to_owned(),
-            Bundle {
-                bundle: bundle.to_owned(),
-                sig: sig.to_owned(),
-            },
-        );
-        if !dev.is_empty() {
-            st.devices
+        let published = Bundle {
+            bundle: bundle.to_owned(),
+            sig: sig.to_owned(),
+        };
+        let record = st
+            .mirror
+            .is_some()
+            .then(|| rec_bundle(code, dev, &published));
+        st.bundles
+            .entry(code.to_owned())
+            .or_default()
+            .insert(dev.to_owned(), published);
+        if let Some(record) = record {
+            st.keep('b', &box_key(code, dev), || record, KEPT_TTL);
+        }
+        if !dev.is_empty()
+            && st
+                .devices
                 .entry(code.to_owned())
                 .or_default()
-                .insert(dev.to_owned());
+                .insert(dev.to_owned())
+        {
+            st.keep_devices('d', code);
         }
         Ok(())
     }
@@ -925,17 +1419,31 @@ impl Relay {
         if banned.len() < MAX_BANNED {
             banned.insert(dev.to_owned());
         }
-        if let Some(b) = st.bundles.get_mut(code) {
-            b.remove(dev);
-        }
-        if let Some(d) = st.devices.get_mut(code) {
-            d.remove(dev);
-        }
+        st.keep_devices('x', code);
         let key = box_key(code, dev);
+        if st
+            .bundles
+            .get_mut(code)
+            .is_some_and(|b| b.remove(dev).is_some())
+        {
+            st.unkeep('b', &key);
+        }
+        if st.devices.get_mut(code).is_some_and(|d| d.remove(dev)) {
+            st.keep_devices('d', code);
+        }
         if let Some(mb) = st.mailboxes.remove(&key) {
             st.total_bytes -= mb.bytes;
+            let gone: Vec<(u64, usize)> = mb
+                .queue
+                .iter()
+                .filter(|s| s.kept > 0)
+                .map(|s| (s.n, s.kept))
+                .collect();
+            st.unkeep_messages(&key, &gone);
         }
-        st.push.remove(&key);
+        if st.push.remove(&key).is_some() {
+            st.unkeep('p', &key);
+        }
         if let Some(conns) = st.online.get(code) {
             for c in conns.iter().filter(|c| c.dev == dev) {
                 c.send(crate::serverkey::unlinked(code, dev).to_string());
@@ -956,8 +1464,7 @@ impl Relay {
     fn watch(&self, watcher: &str, conn_id: u64, codes: &[String]) -> Vec<String> {
         let mut st = self.lock();
         // `MAX_WATCH` codes suivis par connexion, en tout.
-        let me = (watcher.to_owned(), conn_id);
-        let already = st.watchers.values().filter(|s| s.contains(&me)).count();
+        let already = st.watching.get(&conn_id).map_or(0, HashSet::len);
         codes
             .iter()
             .take(MAX_WATCH.saturating_sub(already))
@@ -967,6 +1474,7 @@ impl Relay {
                     .entry(c.clone())
                     .or_default()
                     .insert((watcher.to_owned(), conn_id));
+                st.watching.entry(conn_id).or_default().insert(c.clone());
                 st.presence(&c)
             })
             .collect()
@@ -995,8 +1503,12 @@ impl Relay {
             .collect();
         let mut st = self.lock();
         if set.is_empty() {
-            st.revoked.remove(code);
+            if st.revoked.remove(code).is_some() {
+                st.unkeep('r', code);
+            }
         } else {
+            // Redite à chaque connexion : sa fiche repart pour 30 jours.
+            st.keep('r', code, || rec_list("r", code, &set), KEPT_TTL);
             st.revoked.insert(code.to_owned(), set);
         }
     }
@@ -1092,11 +1604,7 @@ impl Relay {
     /// attend part tout de suite.
     fn subscribe(&self, conn_id: u64, msg: &Value) {
         let mut st = self.lock();
-        let already = st
-            .boite_subs
-            .values()
-            .filter(|ids| ids.contains(&conn_id))
-            .count();
+        let already = st.boites_of.get(&conn_id).map_or(0, HashSet::len);
         let room = MAX_BOITES.saturating_sub(already);
         let list: Vec<String> = msg["list"]
             .as_array()
@@ -1126,22 +1634,45 @@ impl Relay {
             (crate::push::vapid().is_some() && crate::push::audience(endpoint).is_some())
                 .then(|| Arc::new(sub))
         });
-        st.evict_expired();
+        st.sweep();
         let mut pending: Vec<String> = Vec::new();
+        // Les boîtes que cet abonnement Web Push réveille désormais.
+        let mut woken: Vec<&str> = Vec::new();
         for addr in &list {
             st.boite_subs
                 .entry(addr.clone())
                 .or_default()
                 .insert(conn_id);
+            st.boites_of
+                .entry(conn_id)
+                .or_default()
+                .insert(addr.clone());
             if let Some(sub) = &push
                 && (st.boite_push.len() < MAX_BOITE_PUSH || st.boite_push.contains_key(addr))
             {
                 st.boite_push
                     .insert(addr.clone(), (sub.clone(), Instant::now()));
+                if woken.len() < KEPT_BOITES {
+                    woken.push(addr);
+                }
             }
             if let Some(mb) = st.mailboxes.get(&boite_key(addr)) {
-                pending.extend(mb.queue.iter().map(|s| s.json.clone()));
+                pending.extend(
+                    mb.queue
+                        .iter()
+                        .filter(|s| s.alive())
+                        .map(|s| s.json.clone()),
+                );
             }
+        }
+        if let Some(sub) = push.as_ref().filter(|_| !woken.is_empty()) {
+            let until = now_ms() + BOITE_PUSH_TTL.as_millis() as u64;
+            st.keep(
+                'q',
+                &sub.endpoint,
+                || rec_boites(sub, &woken, until),
+                BOITE_PUSH_TTL,
+            );
         }
         if let Some(conn) = st.anon_conns.get(&conn_id) {
             for json in pending {
@@ -1153,11 +1684,10 @@ impl Relay {
     /// Les boîtes tournantes que suit une connexion anonyme.
     fn subscribed(&self, conn_id: u64) -> Vec<String> {
         self.lock()
-            .boite_subs
-            .iter()
-            .filter(|(_, ids)| ids.contains(&conn_id))
-            .map(|(addr, _)| boite_key(addr))
-            .collect()
+            .boites_of
+            .get(&conn_id)
+            .map(|addrs| addrs.iter().map(|addr| boite_key(addr)).collect())
+            .unwrap_or_default()
     }
 
     /// Une connexion anonyme : seulement des envois scellés (et `ping`).
@@ -1280,10 +1810,15 @@ impl Relay {
         }
         let mut st = self.lock();
         st.anon_conns.remove(&conn_id);
-        st.boite_subs.retain(|_, ids| {
-            ids.remove(&conn_id);
-            !ids.is_empty()
-        });
+        // Ses boîtes seulement, pas toutes celles que suit quelqu'un.
+        for addr in st.boites_of.remove(&conn_id).unwrap_or_default() {
+            if let Some(ids) = st.boite_subs.get_mut(&addr) {
+                ids.remove(&conn_id);
+                if ids.is_empty() {
+                    st.boite_subs.remove(&addr);
+                }
+            }
+        }
     }
 
     /// Une connexion : la présentation, puis la boucle des messages.
@@ -1879,6 +2414,290 @@ mod tests {
         // La liste redonnée remplace l'ancienne.
         relay.revoke("BBBBBBBBBB", &[]);
         assert!(!relay.is_revoked("BBBBBBBBBB", "abc.sig"));
+    }
+
+    fn offline(relay: &Relay, code: &str, dev: &str) {
+        let (id, _rx, _) = relay.register(code, "s".into(), "d".into(), false, dev);
+        relay.unregister(code, id);
+    }
+
+    fn deposit(relay: &Relay, to: &str, id: &str, body: &str) {
+        relay
+            .store(
+                Some(("AAAAAAAAAA", "")),
+                Dest::Code(to),
+                id,
+                body,
+                false,
+                &Wake::No,
+                MAILBOX_TTL,
+            )
+            .unwrap();
+    }
+
+    /// Ce que le relais retient survit à son redémarrage, dans le magasin
+    /// clé-valeur de Nuage DB : les messages en attente, les clés, les
+    /// appareils, les paquets, les adresses Web Push, les jetons révoqués.
+    #[test]
+    fn a_restarted_relay_finds_what_it_kept() {
+        let nuage = kv::fake::Nuage::start();
+        let b = "BBBBBBBBBB";
+        let first = Relay::with_kv(nuage.kv());
+        offline(&first, b, D1);
+        deposit(&first, b, "m1", "bonjour");
+        deposit(&first, b, "m2", "encore");
+        assert!(first.push(&box_key(b, D1), sub(&format!("{FCM}un"))));
+        first.revoke(b, &["nonce".to_owned()]);
+        first.unlink(b, D2);
+        let seen = first.lock().seen[b];
+        // Le relais s'arrête ; ce qu'il n'avait pas encore recopié part avant.
+        drop(first);
+        nuage.settle("deux messages", |n| n.count('m') == 2);
+        nuage.settle("le reste", |n| {
+            n.count('k') == 1 && n.count('p') == 1 && n.count('r') == 1 && n.count('x') == 1
+        });
+
+        let second = Relay::with_kv(nuage.kv());
+        assert_eq!(second.kv_status(), kv::Status::Ok);
+        assert_eq!(second.waiting_count(), 2);
+        assert_eq!(second.lookup(b)["sign"], "s");
+        assert!(second.taken(b, "autre", "d"));
+        assert!(second.is_revoked(b, "nonce.sig"));
+        assert!(second.is_banned(b, D2));
+        {
+            let st = second.lock();
+            assert_eq!(st.seen[b], seen);
+            assert!(st.devices[b].contains(D1));
+            assert_eq!(st.push[&box_key(b, D1)][0].endpoint, format!("{FCM}un"));
+        }
+        // L'appareil revient : il reçoit ses deux messages, dans l'ordre.
+        let (_id, mut rx, _) = second.register(b, "s".into(), "d".into(), false, D1);
+        let got = drain(&mut rx);
+        assert_eq!(
+            got.iter()
+                .map(|m| m["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["m1", "m2"]
+        );
+        assert_eq!(got[0]["body"], "bonjour");
+        // Un numéro ne ressert pas d'une vie du relais à l'autre.
+        deposit(&second, b, "m3", "nouveau");
+        let n3 = drain(&mut rx)[0]["n"].as_u64().unwrap();
+        assert!(got.iter().all(|m| m["n"].as_u64().unwrap() < n3));
+        // Rangés : ils quittent aussi le magasin.
+        let ns: Vec<u64> = got.iter().map(|m| m["n"].as_u64().unwrap()).collect();
+        second.forget(&[box_key(b, D1)], &ns);
+        nuage.settle("un seul message", |n| n.count('m') == 1);
+        let st = second.lock();
+        assert_eq!(st.kept_bytes, st.mailboxes[&box_key(b, D1)].queue[0].kept);
+    }
+
+    /// Nuage DB ne voit ni les codes, ni les boîtes, ni ce qu'elles
+    /// contiennent.
+    #[test]
+    fn what_the_store_holds_is_sealed() {
+        let nuage = kv::fake::Nuage::start();
+        let relay = Relay::with_kv(nuage.kv());
+        offline(&relay, "BBBBBBBBBB", "");
+        deposit(&relay, "BBBBBBBBBB", "identifiant", "contenu-du-message");
+        assert!(relay.push("BBBBBBBBBB", sub(&format!("{FCM}adresse"))));
+        nuage.settle("tout", |n| {
+            n.count('m') == 1 && n.count('p') == 1 && n.count('s') == 1
+        });
+        let dump = nuage.dump();
+        for secret in [
+            "BBBBBBBBBB",
+            "AAAAAAAAAA",
+            "identifiant",
+            "contenu-du-message",
+            "adresse",
+        ] {
+            assert!(
+                !dump.contains(secret),
+                "{secret} est lisible dans le magasin"
+            );
+        }
+    }
+
+    /// Nuage DB redémarre (sa mémoire est vide) : le relais y recopie tout
+    /// ce qu'il retient, sans rien perdre.
+    #[test]
+    fn the_store_is_filled_again_after_it_restarts() {
+        let nuage = kv::fake::Nuage::start();
+        let relay = Relay::with_kv(nuage.kv());
+        offline(&relay, "BBBBBBBBBB", "");
+        deposit(&relay, "BBBBBBBBBB", "m1", "avant");
+        nuage.settle("le premier", |n| n.count('m') == 1 && n.count('k') == 1);
+        relay
+            .lock()
+            .bundles
+            .entry("BBBBBBBBBB".into())
+            .or_default()
+            .insert(
+                String::new(),
+                Bundle {
+                    bundle: "paquet".into(),
+                    sig: "sig".into(),
+                },
+            );
+        nuage.restart();
+        assert_eq!(nuage.count('m'), 0);
+        deposit(&relay, "BBBBBBBBBB", "m2", "après");
+        nuage.settle("les deux, les clés, le paquet", |n| {
+            n.count('m') == 2 && n.count('k') == 1 && n.count('b') == 1
+        });
+        nuage.settle("de nouveau à jour", |_| {
+            relay.kv_status() == kv::Status::Ok
+        });
+        // Et un autre relais les y retrouve.
+        drop(relay);
+        let next = Relay::with_kv(nuage.kv());
+        assert_eq!(next.waiting_count(), 2);
+        assert_eq!(next.bundle("BBBBBBBBBB")["bundle"], "paquet");
+    }
+
+    /// Un gros message (une photo) ne va pas dans le magasin : il attend en
+    /// mémoire, comme avant.
+    #[test]
+    fn big_messages_stay_in_memory() {
+        let nuage = kv::fake::Nuage::start();
+        let relay = Relay::with_kv(nuage.kv());
+        offline(&relay, "BBBBBBBBBB", "");
+        deposit(&relay, "BBBBBBBBBB", "photo", &"x".repeat(KEPT_MESSAGE + 1));
+        deposit(&relay, "BBBBBBBBBB", "texte", "petit");
+        nuage.settle("le petit", |n| n.count('m') == 1);
+        assert_eq!(relay.waiting_count(), 2);
+        let st = relay.lock();
+        let queue = &st.mailboxes["BBBBBBBBBB"].queue;
+        assert_eq!((queue[0].kept, queue[1].kept > 0), (0, true));
+        assert_eq!(st.kept_bytes, queue[1].kept);
+    }
+
+    /// Sans Nuage DB au démarrage, le relais démarre vide et sert quand même.
+    #[test]
+    fn a_relay_starts_without_its_store() {
+        // Une adresse où personne n'écoute.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let kv = Kv::new(&format!("http://127.0.0.1:{port}"), "jeton", "secret");
+        let relay = Relay::with_kv(kv);
+        assert_eq!(relay.kv_status(), kv::Status::Late);
+        offline(&relay, "BBBBBBBBBB", "");
+        deposit(&relay, "BBBBBBBBBB", "m1", "x");
+        assert_eq!(relay.waiting_count(), 1);
+    }
+
+    /// Le même aller-retour contre un vrai serveur Nuage DB :
+    /// `TALKA_KV_TEST_URL=… TALKA_KV_TEST_TOKEN=… cargo test -- --ignored real_nuage`.
+    #[test]
+    #[ignore = "il faut un serveur Nuage DB (TALKA_KV_TEST_URL, TALKA_KV_TEST_TOKEN)"]
+    fn a_real_nuage_keeps_what_the_relay_holds() {
+        let var = |name: &str| std::env::var(name).expect(name);
+        let store = || {
+            Kv::new(
+                &var("TALKA_KV_TEST_URL"),
+                &var("TALKA_KV_TEST_TOKEN"),
+                "secret des tests",
+            )
+        };
+        let settle = |relay: &Relay| {
+            // La file part en arrière-plan : on attend qu'un témoin soit relu.
+            let start = Instant::now();
+            loop {
+                relay.revoke("ZZZZZZZZZZ", &[format!("{:?}", start.elapsed())]);
+                std::thread::sleep(Duration::from_millis(300));
+                let seen = store().load().unwrap();
+                let witness = relay.lock().revoked["ZZZZZZZZZZ"].iter().next().cloned();
+                if seen
+                    .iter()
+                    .any(|r| r["k"] == "r" && r["l"][0].as_str() == witness.as_deref())
+                {
+                    return seen;
+                }
+                assert!(start.elapsed() < Duration::from_secs(20), "jamais recopié");
+            }
+        };
+        let b = "BBBBBBBBBB";
+        let first = Relay::with_kv(store());
+        assert_eq!(first.kv_status(), kv::Status::Ok);
+        // On repart d'un magasin vide.
+        let old: Vec<u64> = first
+            .lock()
+            .mailboxes
+            .values()
+            .flat_map(|mb| mb.queue.iter().map(|s| s.n))
+            .collect();
+        let boxes: Vec<String> = first.lock().mailboxes.keys().cloned().collect();
+        first.forget(&boxes, &old);
+        offline(&first, b, D1);
+        deposit(&first, b, "m1", "bonjour");
+        deposit(&first, b, "m2", &"x".repeat(100_000));
+        assert!(first.push(&box_key(b, D1), sub(&format!("{FCM}un"))));
+        let seen = settle(&first);
+        assert_eq!(seen.iter().filter(|r| r["k"] == "m").count(), 2);
+        drop(first);
+
+        let second = Relay::with_kv(store());
+        assert_eq!(second.waiting_count(), 2);
+        assert_eq!(second.lookup(b)["sign"], "s");
+        assert_eq!(
+            second.lock().push[&box_key(b, D1)][0].endpoint,
+            format!("{FCM}un")
+        );
+        let (_id, mut rx, _) = second.register(b, "s".into(), "d".into(), false, D1);
+        let got = drain(&mut rx);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1]["body"].as_str().unwrap().len(), 100_000);
+        let ns: Vec<u64> = got.iter().map(|m| m["n"].as_u64().unwrap()).collect();
+        second.forget(&[box_key(b, D1)], &ns);
+        let seen = settle(&second);
+        assert_eq!(seen.iter().filter(|r| r["k"] == "m").count(), 0);
+    }
+
+    /// Un message périmé n'est pas livré, même avant le grand ménage.
+    #[test]
+    fn expired_messages_are_not_delivered() {
+        let relay = Relay::default();
+        let b = "BBBBBBBBBB";
+        offline(&relay, b, "");
+        relay
+            .store(
+                Some(("AAAAAAAAAA", "")),
+                Dest::Code(b),
+                "court",
+                "x",
+                false,
+                &Wake::No,
+                Duration::from_millis(1),
+            )
+            .unwrap();
+        deposit(&relay, b, "long", "y");
+        // Le grand ménage vient de passer : il ne repassera pas tout de suite.
+        relay.lock().swept = Some(Instant::now());
+        std::thread::sleep(Duration::from_millis(5));
+        let (_id, mut rx, _) = relay.register(b, "s".into(), "d".into(), false, "");
+        let got = drain(&mut rx);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["id"], "long");
+    }
+
+    /// Une connexion qui part ne laisse rien de ce qu'elle suivait.
+    #[test]
+    fn a_closed_connection_stops_watching() {
+        let relay = Relay::default();
+        let (a, _rx_a, _) = relay.register("AAAAAAAAAA", "s".into(), "d".into(), false, "");
+        let (c, _rx_c, _) = relay.register("CCCCCCCCCC", "s".into(), "d".into(), false, "");
+        let codes = ["BBBBBBBBBB".to_owned(), "DDDDDDDDDD".to_owned()];
+        assert_eq!(relay.watch("AAAAAAAAAA", a, &codes).len(), 2);
+        assert_eq!(relay.watch("CCCCCCCCCC", c, &codes[..1]).len(), 1);
+        relay.unregister("AAAAAAAAAA", a);
+        let st = relay.lock();
+        assert!(!st.watching.contains_key(&a));
+        assert!(!st.watchers.contains_key("DDDDDDDDDD"));
+        assert_eq!(st.watchers["BBBBBBBBBB"].len(), 1);
     }
 
     fn drain(rx: &mut mpsc::Receiver<String>) -> Vec<Value> {

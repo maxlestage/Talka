@@ -47,6 +47,7 @@ Conséquences :
 |---|---|
 | **Le navigateur** (IndexedDB, [`client/src/store.rs`](client/src/store.rs)) | identité et clés, profil, contacts, discussions, messages, photos, vocaux, statuts, historique des appels, réglages |
 | **Le relais** (mémoire vive, [`src/relay.rs`](src/relay.rs)) | les clés publiques des codes connectés et leur dernier paquet de clés v3 (signé), l'heure de dernière connexion, et les messages chiffrés qui attendent un destinataire hors ligne (30 jours au plus, effacés dès que le destinataire confirme les avoir rangés) |
+| **Le double du relais** (facultatif : la mémoire vive d'un serveur [Nuage DB](https://github.com/maxlestage/Nuage), [`src/kv.rs`](src/kv.rs)) | la même chose, recopiée dans son magasin clé-valeur et relue au démarrage, pour ne plus la perdre quand le relais redémarre ; **scellée** (noms hachés, valeurs chiffrées en AES-256-GCM par une clé que seul le relais détient), jamais écrite sur disque, effacée 30 jours après la dernière connexion ; les messages de plus de 256 Kio n'y vont pas |
 
 Le relais ne peut lire aucun message. Chaque message est chiffré pour chaque
 destinataire (ECDH → HKDF-SHA256 → AES-256-GCM, les deux codes en données
@@ -220,6 +221,25 @@ codes, et discutez.
 - **Heroku** : `app.json`, `Procfile` et `RustConfig` (buildpack `emk/rust`,
   qui compile d'abord le navigateur en WebAssembly). Une seule instance
   (`web: 1`) : le relais vit en mémoire.
+- **Le double du relais** (facultatif) : sans lui, un redémarrage (un
+  déploiement, la mise en veille d'un dyno Eco) vide les boîtes, les clés et
+  les adresses de notification. Avec le magasin clé-valeur d'un serveur
+  [Nuage DB](https://github.com/maxlestage/Nuage) (`/v1/kv`, en mémoire
+  vive), le relais y recopie ce qu'il retient, scellé, et le relit au
+  démarrage (voir [`src/kv.rs`](src/kv.rs) et `docs/SECURITE.md` §7.18).
+  Il lui faut une application réservée à Talka sur ce serveur (son jeton),
+  et un secret à tirer une fois :
+
+  ```sh
+  heroku config:set -a <app> \
+    TALKA_KV_URL=https://<nuage>.herokuapp.com \
+    TALKA_KV_TOKEN=nuage_… \
+    TALKA_KV_KEY=$(openssl rand -hex 32)
+  ```
+
+  `/api/stats` dit où il en est (`"kv"` : `ok`, `retard` si Nuage DB ne
+  répond pas, `off` sans double). Les messages y prennent la moitié de la
+  mémoire du magasin au plus (`NUAGE_KV_MB` sur le serveur Nuage DB).
 - **Docker** : `docker build -t talka . && docker run -p 8080:8080 talka`.
 - **GitHub Pages** ([`.github/workflows/pages.yml`](.github/workflows/pages.yml)) :
   à chaque fusion dans `master`, le site et l'application sont exportés
