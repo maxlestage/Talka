@@ -32,6 +32,18 @@
       "description": "Facultatif : la clé qui signe les notifications quand Talka est fermé (un réveil vide, sans contenu). La fabriquer avec `talka vapid` ; ne jamais la changer ensuite (les navigateurs abonnés devraient se réabonner).",
       "required": false
     },
+    "TALKA_KV_URL": {
+      "description": "Facultatif : un serveur Nuage DB (https://…) dont le magasin clé-valeur garde un double, scellé, de ce que retient le relais : les boîtes ne se vident plus quand il redémarre. Avec TALKA_KV_TOKEN.",
+      "required": false
+    },
+    "TALKA_KV_TOKEN": {
+      "description": "Facultatif : le jeton d'une application Nuage DB réservée à Talka (avec TALKA_KV_URL).",
+      "required": false
+    },
+    "TALKA_KV_KEY": {
+      "description": "Facultatif : le secret qui scelle le double (`openssl rand -hex 32`). Sans lui, il est tiré du jeton.",
+      "required": false
+    },
     "TALKA_ALLOWED_ORIGINS": {
       "description": "Les sites autorisés à utiliser ce relais depuis un autre domaine (la version GitHub Pages), séparés par des virgules.",
       "value": "https://maxlestage.github.io",

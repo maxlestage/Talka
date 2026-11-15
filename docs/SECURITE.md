@@ -495,7 +495,9 @@ Le reste ne change pas :
   ceux qui attendent) ; avec un aperçu, une seconde au moins entre deux ;
   `TTL` d'un jour.
 - Les adresses et leurs clés ne vivent qu'en mémoire (4 par code), redonnées
-  à chaque connexion ; une adresse disparue (404, 410) est oubliée.
+  à chaque connexion ; une adresse disparue (404, 410) est oubliée. Avec le
+  double du relais (§7.18), elles survivent à son redémarrage : un message
+  réveille son destinataire même s'il n'a pas rouvert Talka depuis.
 - Talka à l'écran : pas de notification système, l'application s'en
   occupe.
 
@@ -522,9 +524,10 @@ liste des jetons révoqués de l'appareil (`{"t":"revoke","nonces":[…]}`,
 1 000 au plus), que le relais garde en mémoire et qui lui est redonnée à
 chaque connexion ; l'époque du contact avance (débloqué, il reçoit un
 nouveau jeton). L'ancien jeton commun à tous (avant cette version) est
-révoqué de la même façon. Un relais qui vient de redémarrer ne connaît pas
-encore les révocations d'un appareil hors ligne : le dépôt passe, mais
-l'appareil ignore de toute façon les messages d'un contact bloqué.
+révoqué de la même façon. Un relais qui vient de redémarrer sans double
+(§7.18) ne connaît pas encore les révocations d'un appareil hors ligne : le
+dépôt passe, mais l'appareil ignore de toute façon les messages d'un contact
+bloqué.
 
 **Enveloppe scellée.** Autour de l'enveloppe ordinaire `E` (§7.2–7.6, la
 clé de paire et ses données associées `expéditeur>destinataire`, v3 compris)
@@ -670,8 +673,8 @@ paquet depuis le démarrage du relais), sinon dans la boîte du code.
 `{"t":"unlink","dev"}` (d'un appareil du code) oublie le paquet et la boîte
 de cet appareil, coupe ses connexions et refuse son `hello` : il reçoit
 d'abord `{"t":"unlinked"}`, puis la fermeture 4006. Le relais retient 64
-appareils retirés au plus par code, en mémoire seulement. Les abonnements
-Web Push sont par appareil.
+appareils retirés au plus par code, en mémoire seulement (et dans le double
+du relais, §7.18). Les abonnements Web Push sont par appareil.
 
 **Retirer un appareil** : il reçoit `sync`/`unlink` et efface tout ; il
 quitte la liste (`v` + 1), annoncée aux contacts, et rejoint ses appareils
@@ -869,6 +872,53 @@ d'activité au plus) ; il faut ML-KEM des deux côtés (navigateur, iPhone
 sous iOS 26) ; un appareil sans ML-KEM ne reçoit rien d'enveloppé. La
 fiche du contact montre « cliquet post-quantique (v6) » seulement quand il
 est en place.
+
+### 7.18 Le double du relais (magasin clé-valeur de Nuage DB)
+
+But : qu'un redémarrage du relais (un déploiement, la mise en veille de
+l'hébergeur) ne vide plus les boîtes, sans donner au relais un disque ni
+une base de données. Facultatif (`TALKA_KV_URL`, `TALKA_KV_TOKEN`,
+`TALKA_KV_KEY`) ; sans lui, rien ne change. Voir `src/kv.rs`.
+
+**Ce qui est recopié** dans le magasin clé-valeur d'une application Nuage DB
+réservée à Talka (`/v1/kv`, en mémoire vive : Nuage DB n'en écrit rien sur
+disque, et son redémarrage le vide) : les messages en attente de 256 Kio au
+plus (jusqu'à la moitié de la mémoire du magasin), les clés publiques des
+codes, leurs paquets de clés, leurs appareils et ceux qu'ils ont retirés,
+l'heure de dernière connexion, les adresses Web Push (par boîte, et celles
+des boîtes tournantes), les jetons révoqués. Chaque fiche expire d'elle-même :
+un message à son échéance (30 jours au plus), le reste 30 jours après la
+dernière connexion du code.
+
+**Scellé.** Le relais tire deux clés de `TALKA_KV_KEY` (à défaut, du
+jeton) : `HKDF-SHA256(sel = "talka-kv-v1", secret)`, puis `"noms"` et
+`"valeurs"` (32 octets chacune).
+
+    nom    = "t1:" ‖ sorte ‖ base64url( HKDF-Expand(clé des noms, sorte ‖ nom du relais, 16) )
+    valeur = base64( nonce(12, aléatoire) ‖ AES-256-GCM(clé des valeurs, fiche JSON, AD = nom) )
+
+Nuage DB (et qui le contrôle, ou lit sa mémoire) ne voit donc ni codes, ni
+appareils, ni boîtes, ni adresses de notification, ni expéditeurs : seulement
+la sorte de chaque fiche (une lettre), sa taille, son échéance, et l'heure
+des écritures. Une fiche déplacée sous un autre nom, modifiée, ou écrite par
+un autre que le relais ne s'ouvre pas et est effacée. Les messages restent
+chiffrés de bout en bout par-dessous : la clé du double ne les ouvre pas.
+
+**Ce que cela ne change pas.** Le modèle de menace (§1) : le relais, ou qui
+le contrôle, détient la clé du double et voit ce qu'il voyait. Le double
+garde ces métadonnées plus longtemps qu'un relais sans double (qui les perd
+à chaque redémarrage) : 30 jours après la dernière connexion, au plus.
+
+**Robustesse.** Le relais ne parle pas à Nuage DB pendant qu'il sert : ce
+qu'il change part en arrière-plan, par lots. Un témoin (`t1:epoch`) dit qui
+a rempli le magasin : s'il a disparu (Nuage DB a redémarré) ou si Nuage DB
+n'a pas répondu, le relais efface ses fiches et recopie tout ce qu'il a en
+mémoire. Rien n'est perdu tant que les deux ne tombent pas ensemble ; dans
+ce cas, comme sans double, les appareils renvoient ce qui n'a pas été
+confirmé (`ready.boot`, qui change toujours à chaque démarrage du relais :
+ce qui n'avait pas eu le temps d'être recopié repart aussi). Les numéros de
+message (`n`) repartent de l'heure du démarrage : un `got` en retard ne peut
+pas effacer un message d'une autre vie du relais.
 
 ## 8. Revue de sécurité (octobre 2026)
 
