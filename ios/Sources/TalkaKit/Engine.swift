@@ -270,10 +270,13 @@ public final class Engine {
         // Les messages trop vieux (3 mois par défaut), une fois par heure.
         if settings.keepDays > 0, t - lastPrune >= 3_600_000 {
             lastPrune = t
+            // Seuls les messages d'avant la limite sont lus (par l'index) :
+            // au lancement, pas tout l'historique de toutes les discussions.
+            let limit = t - Double(settings.keepDays) * 86_400_000
             for chat in chats.values {
                 var changed = false
                 var gone: [(String, Double)] = []
-                for m in store.messagesOf(chat.id) where m.tooOld(keepDays: settings.keepDays, now: t) {
+                for m in store.messagesBefore(chat.id, limit) where m.tooOld(keepDays: settings.keepDays, now: t) {
                     store.removeMessage(chat.id, m.id)
                     gone.append((m.id, m.at))
                     changed = true

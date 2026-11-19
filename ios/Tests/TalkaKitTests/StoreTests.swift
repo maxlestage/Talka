@@ -136,6 +136,132 @@ final class StoreTests: XCTestCase {
         // Et une seule fois : rouvrir ne duplique rien.
         XCTAssertEqual(Store(directory: dir).allMessages().count, 1)
     }
+
+    // ----- Lire sans tout charger -----
+
+    /// Une discussion pas ouverte : un message seul, les derniers, ceux
+    /// d'avant une date se lisent par l'index, et une écriture ne charge
+    /// rien. Les mêmes réponses qu'une fois la discussion chargée.
+    func testReadsWithoutLoadingTheChat() {
+        for key in [nil, SymmetricKey(size: .bits256)] {
+            let dir = tempDir()
+            let ats: [Double] = [50, 10, 30, 30, 20, 40, 30]
+            do {
+                let s = Store(directory: dir, key: key)
+                for (i, at) in ats.enumerated() { s.writeMessage(message("AMI", "m\(i)", at: at, "texte \(i)")) }
+                s.writeMessage(message("AUTRE", "m0", at: 25, "ailleurs"))
+                // Écrire n'a rien chargé.
+                XCTAssertNil(s.messages["AMI"])
+            }
+            let want = ["m1", "m4", "m2", "m3", "m6", "m5", "m0"]
+            let cold = Store(directory: dir, key: key)
+            XCTAssertEqual(cold.message("AMI", "m3")?.text, "texte 3")
+            XCTAssertNil(cold.message("AMI", "absent"))
+            XCTAssertNil(cold.message("AUTRE", "m3"))
+            XCTAssertEqual(cold.messagesOf("AMI", limit: 1).map(\.id), ["m0"])
+            XCTAssertEqual(cold.messagesOf("AMI", limit: 4).map(\.id), Array(want.suffix(4)))
+            XCTAssertEqual(cold.messagesOf("AMI", limit: 99).map(\.id), want)
+            XCTAssertTrue(cold.messagesOf("AMI", limit: 0).isEmpty)
+            XCTAssertEqual(cold.messagesBefore("AMI", 30).map(\.id), ["m1", "m4"])
+            XCTAssertEqual(cold.messagesBefore("AMI", 30.5).map(\.id), ["m1", "m4", "m2", "m3", "m6"])
+            XCTAssertTrue(cold.messagesBefore("AMI", 10).isEmpty)
+            XCTAssertNil(cold.messages["AMI"], "rien de tout cela ne charge la discussion")
+
+            // Écrire et effacer sans charger : lu aussitôt, et gardé.
+            var edited = message("AMI", "m3", at: 30, "corrigé")
+            edited.edited = true
+            cold.writeMessage(edited)
+            cold.writeMessage(message("AMI", "m7", at: 60, "nouveau"))
+            cold.removeMessage("AMI", "m1")
+            XCTAssertEqual(cold.message("AMI", "m3")?.text, "corrigé")
+            XCTAssertNil(cold.message("AMI", "m1"))
+            XCTAssertEqual(cold.messagesOf("AMI", limit: 2).map(\.id), ["m0", "m7"])
+            XCTAssertEqual(cold.messagesBefore("AMI", 30).map(\.id), ["m4"])
+            XCTAssertNil(cold.messages["AMI"])
+
+            // Chargée (tous ses messages demandés) : les mêmes réponses.
+            let after = ["m4", "m2", "m3", "m6", "m5", "m0", "m7"]
+            XCTAssertEqual(cold.messagesOf("AMI").map(\.id), after)
+            XCTAssertNotNil(cold.messages["AMI"])
+            XCTAssertEqual(cold.message("AMI", "m3")?.text, "corrigé")
+            XCTAssertNil(cold.message("AMI", "m1"))
+            XCTAssertEqual(cold.messagesOf("AMI", limit: 2).map(\.id), ["m0", "m7"])
+            XCTAssertEqual(cold.messagesBefore("AMI", 30).map(\.id), ["m4"])
+            XCTAssertEqual(cold.messagesBefore("AMI", 30.5).map(\.id), ["m4", "m2", "m3", "m6"])
+            // Et après une réouverture.
+            XCTAssertEqual(Store(directory: dir, key: key).messagesOf("AMI").map(\.text),
+                           ["texte 4", "texte 2", "corrigé", "texte 6", "texte 5", "texte 0", "nouveau"])
+        }
+    }
+
+    /// La liste triée d'une discussion chargée suit chaque écriture (ajout,
+    /// modification, changement d'heure, suppression) : toujours celle qu'un
+    /// tri complet donnerait, et celle que relit une base rouverte.
+    func testOrderedListFollowsEveryWrite() {
+        let dir = tempDir()
+        let s = Store(directory: dir)
+        var ref: [String: Message] = [:]
+        var seed: UInt64 = 42
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        func sorted() -> [Message] { ref.values.sorted { ($0.at, $0.id) < ($1.at, $1.id) } }
+        XCTAssertTrue(s.messagesOf("g:x").isEmpty)
+        for step in 0..<600 {
+            let id = "m\(next(120))"
+            switch next(5) {
+            case 0 where ref[id] != nil:
+                s.removeMessage("g:x", id)
+                ref[id] = nil
+            case 1 where ref[id] != nil:
+                // Modifié, à la même heure.
+                var m = ref[id]!
+                m.text = "étape \(step)"
+                s.writeMessage(m)
+                ref[id] = m
+            default:
+                // Nouveau, ou la même identité à une autre heure (souvent la
+                // même que d'autres : l'identifiant départage).
+                let m = message("g:x", id, at: Double(next(25)), "étape \(step)")
+                s.writeMessage(m)
+                ref[id] = m
+            }
+            XCTAssertEqual(s.messagesOf("g:x"), sorted(), "étape \(step)")
+            if step % 50 == 0 {
+                let want = sorted()
+                XCTAssertEqual(s.messagesOf("g:x", limit: 7), Array(want.suffix(7)))
+                XCTAssertEqual(s.messagesBefore("g:x", 12), want.filter { $0.at < 12 })
+                // Une base rouverte, sans la charger : les mêmes, par l'index.
+                let cold = Store(directory: dir)
+                XCTAssertEqual(cold.messagesOf("g:x", limit: 7), Array(want.suffix(7)))
+                XCTAssertEqual(cold.messagesBefore("g:x", 12), want.filter { $0.at < 12 })
+                XCTAssertEqual(cold.messagesOf("g:x"), want)
+            }
+        }
+        s.deleteMessages(of: "g:x")
+        XCTAssertTrue(s.messagesOf("g:x").isEmpty)
+        s.writeMessage(message("g:x", "seul", at: 3, "seul"))
+        XCTAssertEqual(s.messagesOf("g:x").map(\.id), ["seul"])
+    }
+
+    /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
+    func testDumpKeepsEveryRow() {
+        let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
+        for i in 0..<300 { s.writeMessage(message("AMI", "m\(i)", at: Double(i), "texte \(i)")) }
+        s.write("kv", "profile", Profile(name: "Léa"))
+        let dump = s.dump()
+        XCTAssertEqual((dump["messages"] as? [[Any]])?.count, 300)
+        XCTAssertEqual((dump["kv"] as? [[Any]])?.count, 1)
+        XCTAssertEqual((dump["contacts"] as? [[Any]])?.count, 0)
+        let other = Store(directory: tempDir())
+        other.writeMessage(message("AMI", "avant", at: 1, "effacé par la restauration"))
+        _ = other.messagesOf("AMI")
+        other.restore(dump)
+        XCTAssertEqual(other.messagesOf("AMI").count, 300)
+        XCTAssertNil(other.message("AMI", "avant"))
+        XCTAssertEqual(other.read("kv", "profile", as: Profile.self)?.name, "Léa")
+    }
 }
 
 /// Un membre (ou un ancien membre) ne prend pas un groupe en main ; comme
