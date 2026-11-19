@@ -13,6 +13,13 @@
 // (`transaction`) rend plusieurs écritures atomiques : un message reçu et
 // l'état de session v3 qui l'a ouvert.
 //
+// Une discussion n'est chargée en entier (déchiffrée, décodée) que lorsqu'on
+// demande tous ses messages : l'ouvrir, y chercher. Un message seul, les
+// derniers, ceux d'avant une date se lisent par l'index, et une écriture ne
+// charge rien : le lancement, la liste des discussions et un message qui
+// arrive ne relisent pas tout l'historique. Une discussion chargée garde
+// aussi sa liste triée, tenue à jour à chaque écriture.
+//
 // Chiffrée au repos, en plus de la protection d'iOS : chaque JSON est gardé
 // chiffré (AES-256-GCM, lié à son magasin et à sa clé) avec la clé de
 // l'appareil, tenue dans le trousseau (`StoreVault`, pour cet iPhone
@@ -45,6 +52,13 @@ public final class Store: @unchecked Sendable {
     var rows: [String: [String: String]] = [:]
     /// discussion → identifiant → message (chargé à la demande).
     var messages: [String: [String: Message]] = [:]
+    /// Une discussion chargée → ses messages dans l'ordre (heure, identifiant) :
+    /// triés une fois, puis tenus à jour à chaque écriture.
+    var ordered: [String: [Message]] = [:]
+    /// Des messages lus ou écrits un par un (clé de ligne → message) dans des
+    /// discussions pas chargées : la coche de la liste, un accusé qui arrive.
+    var singles: [String: Message] = [:]
+    static let singlesMax = 64
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
     /// La clé de l'appareil (nil : rien n'est chiffré).
@@ -169,7 +183,7 @@ public final class Store: @unchecked Sendable {
         sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK
     }
 
-    /// Une requête préparée, ses paramètres liés (`String`, `Double`).
+    /// Une requête préparée, ses paramètres liés (`String`, `Data`, `Double`, `Int`).
     func run(_ sql: String, _ params: [Any] = [], each: ((OpaquePointer) -> Void)? = nil) {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return }
@@ -182,6 +196,7 @@ public final class Store: @unchecked Sendable {
             case let d as Data:
                 _ = d.withUnsafeBytes { sqlite3_bind_blob(stmt, index, $0.baseAddress, Int32(d.count), transient) }
             case let d as Double: sqlite3_bind_double(stmt, index, d)
+            case let n as Int: sqlite3_bind_int64(stmt, index, Int64(n))
             default: sqlite3_bind_null(stmt, index)
             }
         }
@@ -269,6 +284,7 @@ public final class Store: @unchecked Sendable {
 
     // ----- Les messages -----
 
+    /// Toute une discussion, lue une fois puis gardée.
     func loadChat(_ chat: String) -> [String: Message] {
         if let m = messages[chat] { return m }
         var out: [String: Message] = [:]
@@ -277,39 +293,136 @@ public final class Store: @unchecked Sendable {
                let m = JSON.decode(Message.self, json) { out[m.id] = m }
         }
         messages[chat] = out
+        forgetSingles(of: chat)
         return out
     }
 
+    /// Les messages d'une discussion (chargée au besoin), dans l'ordre.
+    func inOrder(_ chat: String) -> [Message] {
+        if let kept = ordered[chat] { return kept }
+        let sorted = loadChat(chat).values.sorted { ($0.at, $0.id) < ($1.at, $1.id) }
+        ordered[chat] = sorted
+        return sorted
+    }
+
+    /// Le rang de (heure, identifiant) dans une liste triée : celui du
+    /// premier message qui n'est pas avant.
+    static func rank(_ at: Double, _ id: String, in list: [Message]) -> Int {
+        var lo = 0, hi = list.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if (list[mid].at, list[mid].id) < (at, id) { lo = mid + 1 } else { hi = mid }
+        }
+        return lo
+    }
+
+    /// Tient à jour la liste triée d'une discussion chargée : `old` en sort,
+    /// `new` y prend sa place. Si `old` n'est pas où il devrait, la liste est
+    /// oubliée (retriée à la prochaine lecture).
+    func reorder(_ chat: String, old: Message?, new: Message?) {
+        guard var list = ordered.removeValue(forKey: chat) else { return }
+        if let old {
+            let i = Self.rank(old.at, old.id, in: list)
+            guard i < list.count, list[i].id == old.id else { return }
+            if let new, new.at == old.at {
+                list[i] = new
+                ordered[chat] = list
+                return
+            }
+            list.remove(at: i)
+        }
+        if let new { list.insert(new, at: Self.rank(new.at, new.id, in: list)) }
+        ordered[chat] = list
+    }
+
+    func remember(_ key: String, _ m: Message) {
+        if singles.count >= Self.singlesMax, singles[key] == nil { singles.removeAll(keepingCapacity: true) }
+        singles[key] = m
+    }
+
+    func forgetSingles(of chat: String) {
+        guard !singles.isEmpty else { return }
+        let prefix = chat + "|"
+        singles = singles.filter { !$0.key.hasPrefix(prefix) }
+    }
+
+    /// Les `limit` derniers messages d'une discussion pas chargée, par l'index.
+    func tail(_ chat: String, _ limit: Int) -> [Message] {
+        guard limit > 0 else { return [] }
+        var out: [Message] = []
+        run("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ? ORDER BY at DESC, key DESC LIMIT ?", [chat, limit]) { stmt in
+            if let json = self.value(stmt, 1, store: "messages", key: column(stmt, 0)),
+               let m = JSON.decode(Message.self, json) { out.append(m) }
+        }
+        return out.reversed()
+    }
+
     /// Les messages d'une discussion, du plus ancien au plus récent ; `limit`
-    /// garde les derniers.
+    /// garde les derniers (sans charger la discussion si elle ne l'est pas).
     public func messagesOf(_ chat: String, limit: Int = .max) -> [Message] {
         lock.lock(); defer { lock.unlock() }
-        let sorted = loadChat(chat).values.sorted { ($0.at, $0.id) < ($1.at, $1.id) }
+        if limit != .max, messages[chat] == nil { return tail(chat, limit) }
+        let sorted = inOrder(chat)
         return limit >= sorted.count ? sorted : Array(sorted.suffix(limit))
     }
 
+    /// Les messages d'une discussion datés d'avant `at`, du plus ancien au
+    /// plus récent : par l'index si elle n'est pas chargée (le ménage des
+    /// vieux messages ne relit pas tout l'historique).
+    public func messagesBefore(_ chat: String, _ at: Double) -> [Message] {
+        lock.lock(); defer { lock.unlock() }
+        if messages[chat] != nil {
+            let sorted = inOrder(chat)
+            return Array(sorted.prefix(Self.rank(at, "", in: sorted)))
+        }
+        var out: [Message] = []
+        run("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ? AND at < ? ORDER BY at, key", [chat, at]) { stmt in
+            if let json = self.value(stmt, 1, store: "messages", key: column(stmt, 0)),
+               let m = JSON.decode(Message.self, json) { out.append(m) }
+        }
+        return out
+    }
+
+    /// Un message ; d'une discussion pas chargée, sa seule ligne est lue.
     public func message(_ chat: String, _ id: String) -> Message? {
         lock.lock(); defer { lock.unlock() }
-        return loadChat(chat)[id]
+        if let loaded = messages[chat] { return loaded[id] }
+        let key = "\(chat)|\(id)"
+        if let m = singles[key] { return m }
+        var out: Message?
+        run("SELECT json FROM rows WHERE store = 'messages' AND key = ?", [key]) { stmt in
+            if let json = self.value(stmt, 0, store: "messages", key: key) { out = JSON.decode(Message.self, json) }
+        }
+        if let out { remember(key, out) }
+        return out
     }
 
     public func writeMessage(_ m: Message) {
         lock.lock(); defer { lock.unlock() }
-        _ = loadChat(m.chat)
-        messages[m.chat]?[m.id] = m
+        if messages[m.chat] != nil {
+            let old = messages[m.chat]?.updateValue(m, forKey: m.id) ?? nil
+            reorder(m.chat, old: old, new: m)
+        } else {
+            remember(m.key, m)
+        }
         put("messages", m.key, JSON.encode(m), chat: m.chat, at: m.at)
     }
 
     public func removeMessage(_ chat: String, _ id: String) {
         lock.lock(); defer { lock.unlock() }
-        _ = loadChat(chat)
-        messages[chat]?[id] = nil
+        if messages[chat] != nil {
+            if let old = messages[chat]?.removeValue(forKey: id) ?? nil { reorder(chat, old: old, new: nil) }
+        } else {
+            singles["\(chat)|\(id)"] = nil
+        }
         delete("messages", "\(chat)|\(id)")
     }
 
     public func deleteMessages(of chat: String) {
         lock.lock(); defer { lock.unlock() }
         messages[chat] = [:]
+        ordered[chat] = nil
+        forgetSingles(of: chat)
         run("DELETE FROM rows WHERE store = 'messages' AND chat = ?", [chat])
     }
 
@@ -336,14 +449,14 @@ public final class Store: @unchecked Sendable {
     /// `{ magasin: [[clé, json], …] }` (les messages : `[clé, json, discussion, heure]`).
     public func dump() -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
-        var out: [String: Any] = [:]
-        for name in Self.stores { out[name] = [[Any]]() }
+        var out: [String: [[Any]]] = [:]
+        for name in Self.stores { out[name] = [] }
         run("SELECT store, key, json, chat, at FROM rows ORDER BY store, key") { stmt in
             let store = column(stmt, 0), k = column(stmt, 1)
             guard let json = self.value(stmt, 2, store: store, key: k) else { return }
             var row: [Any] = [k, json]
             if store == "messages" { row += [column(stmt, 3), sqlite3_column_double(stmt, 4)] }
-            out[store] = ((out[store] as? [[Any]]) ?? []) + [row]
+            out[store, default: []].append(row)
         }
         return out
     }
@@ -373,6 +486,8 @@ public final class Store: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         rows = [:]
         messages = [:]
+        ordered = [:]
+        singles = [:]
         exec("DELETE FROM rows")
         exec("VACUUM")
         // Tout est effacé : on peut écrire à nouveau (avec la clé, s'il y en a une).
