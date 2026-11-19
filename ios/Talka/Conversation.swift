@@ -62,7 +62,10 @@ struct ConversationView: View {
             // Les messages éphémères expirés disparaissent tout de suite, comme dans le navigateur.
             let now = nowMs()
             let query = (search ?? "").trimmingCharacters(in: .whitespaces)
-            let messages = e.messages(chatId).filter { (m: Message) -> Bool in
+            // Sans recherche ni message éphémère, rien à écarter : la liste du
+            // cœur est prise telle quelle (pas de copie à chaque frappe).
+            let all = e.messages(chatId)
+            let messages = query.isEmpty && !all.contains(where: { $0.exp != nil }) ? all : all.filter { (m: Message) -> Bool in
                 if let exp = m.exp, exp <= now { return false }
                 return query.isEmpty || Self.matches(m, query, me: e.me.code)
             }
@@ -810,7 +813,8 @@ extension ConversationView {
     /// plus haut, encore visible).
     static func topDay(_ tops: [String: CGFloat], _ messages: [Message]) -> String? {
         guard let top = tops.filter({ $0.value > 0 }).min(by: { $0.value < $1.value }),
-              let m = messages.first(where: { $0.id == top.key })
+              // Cherché depuis la fin : on lit le plus souvent le bas de la discussion.
+              let m = messages.last(where: { $0.id == top.key })
         else { return nil }
         return Dates.separator(m.at)
     }
