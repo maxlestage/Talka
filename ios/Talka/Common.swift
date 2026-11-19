@@ -107,8 +107,25 @@ extension Data {
 }
 
 extension UIImage {
+    /// Les images déjà décodées, par leur adresse `data:`. Un avatar ou une
+    /// photo se redessine à chaque mise à jour de l'écran (défilement, frappe,
+    /// message qui arrive) : sans cela, le base64 et le JPEG seraient relus à
+    /// chaque fois. Bornée par le poids des pixels ; iOS la vide de lui-même
+    /// quand la mémoire manque.
+    private static let decoded: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 64 << 20
+        return cache
+    }()
+
     static func fromDataURL(_ url: String) -> UIImage? {
-        Data(dataURL: url).flatMap(UIImage.init(data:))
+        guard !url.isEmpty else { return nil }
+        let key = url as NSString
+        if let hit = decoded.object(forKey: key) { return hit }
+        guard let image = Data(dataURL: url).flatMap(UIImage.init(data:)) else { return nil }
+        let pixels = image.size.width * image.scale * image.size.height * image.scale
+        decoded.setObject(image, forKey: key, cost: Int(pixels) * 4)
+        return image
     }
 
     /// Réduite (comme dans le navigateur) et sans métadonnées : (JPEG, largeur, hauteur).
