@@ -59,6 +59,8 @@ public final class Store: @unchecked Sendable {
     /// discussions pas chargées : la coche de la liste, un accusé qui arrive.
     var singles: [String: Message] = [:]
     static let singlesMax = 64
+    /// Voir `messagesGeneration`.
+    var generation = 0
     /// Les messages lus un par un dans SQLite, comptés par discussion pas
     /// chargée. Passé `loadAfter`, la discussion sert visiblement beaucoup
     /// (des dizaines de messages attendent un accusé, relus à chaque passage
@@ -315,31 +317,7 @@ public final class Store: @unchecked Sendable {
     func loadChat(_ chat: String) -> [String: Message] {
         if let m = messages[chat] { return m }
         var out: [String: Message] = [:]
-        // Les lignes sont lues par paquets ; chaque paquet est déchiffré et
-        // décodé sur plusieurs cœurs (le gros du temps d'ouverture d'une
-        // longue discussion), puis rangé dans l'ordre où il a été lu.
-        var batch: [MessageRow] = []
-        var bytes = 0
-        func flush() {
-            for m in decode(batch) { out[m.id] = m }
-            batch.removeAll(keepingCapacity: true)
-            bytes = 0
-        }
-        run("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ?", [chat]) { stmt in
-            let k = column(stmt, 0)
-            if sqlite3_column_type(stmt, 1) == SQLITE_BLOB {
-                let n = Int(sqlite3_column_bytes(stmt, 1))
-                guard let p = sqlite3_column_blob(stmt, 1) else { return }
-                batch.append(MessageRow(key: k, sealed: Data(bytes: p, count: n)))
-                bytes += n
-            } else {
-                let json = column(stmt, 1)
-                bytes += json.utf8.count
-                batch.append(MessageRow(key: k, json: json))
-            }
-            if batch.count >= Self.batchRows || bytes >= Self.batchBytes { flush() }
-        }
-        flush()
+        for m in readMessages("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ?", [chat]) { out[m.id] = m }
         messages[chat] = out
         forgetSingles(of: chat)
         tails[chat] = nil
@@ -363,6 +341,36 @@ public final class Store: @unchecked Sendable {
     func decode(_ row: MessageRow) -> Message? {
         let json = row.sealed.map { open($0, store: "messages", key: row.key) } ?? row.json
         return json.flatMap { JSON.decode(Message.self, $0) }
+    }
+
+    /// Les messages d'une requête (`SELECT key, json …`), dans l'ordre de
+    /// ses lignes. Elles sont lues par paquets ; chaque paquet est déchiffré
+    /// et décodé sur plusieurs cœurs (le gros du temps d'ouverture d'une
+    /// longue discussion).
+    func readMessages(_ sql: String, _ params: [Any] = []) -> [Message] {
+        var out: [Message] = []
+        var batch: [MessageRow] = []
+        var bytes = 0
+        run(sql, params) { stmt in
+            let k = column(stmt, 0)
+            if sqlite3_column_type(stmt, 1) == SQLITE_BLOB {
+                let n = Int(sqlite3_column_bytes(stmt, 1))
+                guard let p = sqlite3_column_blob(stmt, 1) else { return }
+                batch.append(MessageRow(key: k, sealed: Data(bytes: p, count: n)))
+                bytes += n
+            } else {
+                let json = column(stmt, 1)
+                bytes += json.utf8.count
+                batch.append(MessageRow(key: k, json: json))
+            }
+            if batch.count >= Self.batchRows || bytes >= Self.batchBytes {
+                out.append(contentsOf: self.decode(batch))
+                batch.removeAll(keepingCapacity: true)
+                bytes = 0
+            }
+        }
+        out.append(contentsOf: decode(batch))
+        return out
     }
 
     /// Les messages d'un paquet de lignes, dans le même ordre ; les lignes
@@ -505,6 +513,7 @@ public final class Store: @unchecked Sendable {
 
     public func writeMessage(_ m: Message) {
         lock.lock(); defer { lock.unlock() }
+        generation += 1
         if messages[m.chat] != nil {
             let old = messages[m.chat]?.updateValue(m, forKey: m.id) ?? nil
             reorder(m.chat, old: old, new: m)
@@ -517,6 +526,7 @@ public final class Store: @unchecked Sendable {
 
     public func removeMessage(_ chat: String, _ id: String) {
         lock.lock(); defer { lock.unlock() }
+        generation += 1
         if messages[chat] != nil {
             if let old = messages[chat]?.removeValue(forKey: id) ?? nil { reorder(chat, old: old, new: nil) }
         } else {
@@ -528,6 +538,7 @@ public final class Store: @unchecked Sendable {
 
     public func deleteMessages(of chat: String) {
         lock.lock(); defer { lock.unlock() }
+        generation += 1
         messages[chat] = [:]
         ordered[chat] = nil
         tails[chat] = nil
@@ -539,12 +550,15 @@ public final class Store: @unchecked Sendable {
     /// Tous les messages de toutes les discussions (favoris, sauvegarde).
     public func allMessages() -> [Message] {
         lock.lock(); defer { lock.unlock() }
-        var out: [Message] = []
-        run("SELECT key, json FROM rows WHERE store = 'messages' ORDER BY chat, at") { stmt in
-            if let json = self.value(stmt, 1, store: "messages", key: column(stmt, 0)),
-               let m = JSON.decode(Message.self, json) { out.append(m) }
-        }
-        return out
+        return readMessages("SELECT key, json FROM rows WHERE store = 'messages' ORDER BY chat, at")
+    }
+
+    /// Change à chaque écriture ou suppression de message (et quand tout est
+    /// effacé ou restauré) : ce qui a été calculé sur tous les messages (les
+    /// messages importants) reste valable tant qu'il n'a pas bougé.
+    public var messagesGeneration: Int {
+        lock.lock(); defer { lock.unlock() }
+        return generation
     }
 
     /// Chaque écriture est déjà dans SQLite ; à l'arrière-plan, on reporte le
@@ -574,6 +588,7 @@ public final class Store: @unchecked Sendable {
     public func restore(_ data: [String: Any]) {
         wipe()
         lock.lock(); defer { lock.unlock() }
+        generation += 1
         exec("BEGIN")
         for name in Self.stores {
             guard let list = data[name] as? [[Any]] else { continue }
@@ -600,6 +615,7 @@ public final class Store: @unchecked Sendable {
         singles = [:]
         tails = [:]
         singleReads = [:]
+        generation += 1
         exec("DELETE FROM rows")
         exec("VACUUM")
         // Tout est effacé : on peut écrire à nouveau (avec la clé, s'il y en a une).

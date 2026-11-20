@@ -178,6 +178,56 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(stored(e, "AMI").count, 20_000)
     }
 
+    /// La liste des messages importants est gardée tant qu'aucun message
+    /// ne change, et jamais périmée : étoile posée ou retirée, message
+    /// supprimé, discussion vidée, tout effacé — elle suit aussitôt.
+    func testStarredListIsKeptUntilAMessageChanges() async throws {
+        let e = phone()
+        let c = e.ensureDirectChat("K7Q2MX9PRT")
+        let other = e.ensureDirectChat("WGSEAJNSZJ")
+        let a = try XCTUnwrap(e.send(c.id, Content(text: "Un")))
+        let b = try XCTUnwrap(e.send(other.id, Content(text: "Deux")))
+        XCTAssertTrue(e.starred().isEmpty)
+        // Relue sans rien changer : la même, sans rien relire.
+        let before = e.store.messagesGeneration
+        XCTAssertTrue(e.starred().isEmpty)
+        _ = e.messages(c.id)
+        _ = e.store.message(other.id, b.id)
+        e.store.write("kv", "sans rapport", 1)
+        XCTAssertEqual(e.store.messagesGeneration, before, "lire, ou écrire autre chose qu'un message, ne change rien")
+        XCTAssertEqual(e.starredKept?.generation, before)
+
+        e.toggleStar(c.id, a.id)
+        XCTAssertGreaterThan(e.store.messagesGeneration, before)
+        XCTAssertEqual(e.starred().map(\.text), ["Un"])
+        e.toggleStar(other.id, b.id)
+        XCTAssertEqual(Set(e.starred().map(\.text)), ["Un", "Deux"])
+        e.toggleStar(c.id, a.id)
+        XCTAssertEqual(e.starred().map(\.text), ["Deux"])
+        e.delete(other.id, b.id, forEveryone: true)
+        XCTAssertTrue(e.starred().isEmpty)
+
+        e.toggleStar(c.id, a.id)
+        XCTAssertEqual(e.starred().count, 1)
+        e.store.removeMessage(c.id, a.id)
+        XCTAssertTrue(e.starred().isEmpty)
+        let d = try XCTUnwrap(e.send(c.id, Content(text: "Trois")))
+        e.toggleStar(c.id, d.id)
+        XCTAssertEqual(e.starred().map(\.text), ["Trois"])
+        e.clearChat(c.id)
+        XCTAssertTrue(e.starred().isEmpty)
+        // Une restauration (une autre base, d'un coup) : relue aussi.
+        let f = try XCTUnwrap(e.send(c.id, Content(text: "Quatre")))
+        e.toggleStar(c.id, f.id)
+        let dump = e.store.dump()
+        e.toggleStar(c.id, f.id)
+        XCTAssertTrue(e.starred().isEmpty)
+        e.store.restore(dump)
+        XCTAssertEqual(e.starred().map(\.text), ["Quatre"])
+        e.store.wipe()
+        XCTAssertTrue(e.starred().isEmpty)
+    }
+
     // ----- La boîte d'envoi -----
 
     /// La boîte d'envoi lue sans son contenu : les mêmes enveloppes, dans le
