@@ -119,9 +119,15 @@ public final class Store: @unchecked Sendable {
     func value(_ stmt: OpaquePointer, _ index: Int32, store: String, key k: String) -> String? {
         guard sqlite3_column_type(stmt, index) == SQLITE_BLOB else { return column(stmt, index) }
         let n = Int(sqlite3_column_bytes(stmt, index))
-        guard let key, let p = sqlite3_column_blob(stmt, index), n > Self.magic.count + 28 else { return nil }
-        let data = Data(bytes: p, count: n)
-        guard data.prefix(2) == Self.magic,
+        guard let p = sqlite3_column_blob(stmt, index) else { return nil }
+        return open(Data(bytes: p, count: n), store: store, key: k)
+    }
+
+    /// Le JSON d'une valeur chiffrée ; nil si illisible (abîmée, ou pas la
+    /// clé). Sans SQLite ni rien qui change : peut tourner sur plusieurs
+    /// cœurs à la fois.
+    func open(_ data: Data, store: String, key k: String) -> String? {
+        guard let key, data.count > Self.magic.count + 28, data.prefix(2) == Self.magic,
               let box = try? AES.GCM.SealedBox(combined: data.dropFirst(2)),
               let plain = try? AES.GCM.open(box, using: key, authenticating: aad(store, k))
         else { return nil }
@@ -309,15 +315,77 @@ public final class Store: @unchecked Sendable {
     func loadChat(_ chat: String) -> [String: Message] {
         if let m = messages[chat] { return m }
         var out: [String: Message] = [:]
-        run("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ?", [chat]) { stmt in
-            if let json = self.value(stmt, 1, store: "messages", key: column(stmt, 0)),
-               let m = JSON.decode(Message.self, json) { out[m.id] = m }
+        // Les lignes sont lues par paquets ; chaque paquet est déchiffré et
+        // décodé sur plusieurs cœurs (le gros du temps d'ouverture d'une
+        // longue discussion), puis rangé dans l'ordre où il a été lu.
+        var batch: [MessageRow] = []
+        var bytes = 0
+        func flush() {
+            for m in decode(batch) { out[m.id] = m }
+            batch.removeAll(keepingCapacity: true)
+            bytes = 0
         }
+        run("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ?", [chat]) { stmt in
+            let k = column(stmt, 0)
+            if sqlite3_column_type(stmt, 1) == SQLITE_BLOB {
+                let n = Int(sqlite3_column_bytes(stmt, 1))
+                guard let p = sqlite3_column_blob(stmt, 1) else { return }
+                batch.append(MessageRow(key: k, sealed: Data(bytes: p, count: n)))
+                bytes += n
+            } else {
+                let json = column(stmt, 1)
+                bytes += json.utf8.count
+                batch.append(MessageRow(key: k, json: json))
+            }
+            if batch.count >= Self.batchRows || bytes >= Self.batchBytes { flush() }
+        }
+        flush()
         messages[chat] = out
         forgetSingles(of: chat)
         tails[chat] = nil
         singleReads[chat] = nil
         return out
+    }
+
+    /// Une ligne de message lue, pas encore ouverte : sa clé, et son JSON
+    /// chiffré, ou en clair (une ligne d'avant le chiffrement).
+    struct MessageRow {
+        var key: String
+        var sealed: Data?
+        var json: String?
+    }
+
+    /// Un paquet : au plus tant de lignes, ou tant d'octets (des photos),
+    /// tenus en mémoire le temps de les décoder.
+    static let batchRows = 1024
+    static let batchBytes = 8 << 20
+
+    func decode(_ row: MessageRow) -> Message? {
+        let json = row.sealed.map { open($0, store: "messages", key: row.key) } ?? row.json
+        return json.flatMap { JSON.decode(Message.self, $0) }
+    }
+
+    /// Les messages d'un paquet de lignes, dans le même ordre ; les lignes
+    /// illisibles sont sautées. Un petit paquet est décodé sur place ; un
+    /// gros est partagé entre les cœurs.
+    func decode(_ rows: [MessageRow]) -> [Message] {
+        // Assez de lignes, ou assez d'octets (quelques photos suffisent),
+        // pour que le partage vaille son coût.
+        let weight = rows.reduce(0) { $0 + ($1.sealed?.count ?? $1.json?.utf8.count ?? 0) }
+        let workers = min(ProcessInfo.processInfo.activeProcessorCount, 8, rows.count, max(rows.count / 64, weight / 262_144))
+        guard workers > 1 else { return rows.compactMap { decode($0) } }
+        var parts = [[Message]](repeating: [], count: workers)
+        parts.withUnsafeMutableBufferPointer { buffer in
+            let slots = buffer
+            DispatchQueue.concurrentPerform(iterations: workers) { w in
+                let range = (rows.count * w / workers)..<(rows.count * (w + 1) / workers)
+                var found: [Message] = []
+                found.reserveCapacity(range.count)
+                for i in range { if let m = self.decode(rows[i]) { found.append(m) } }
+                slots[w] = found
+            }
+        }
+        return parts.flatMap { $0 }
     }
 
     /// Les messages d'une discussion (chargée au besoin), dans l'ordre.
