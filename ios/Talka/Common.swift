@@ -168,8 +168,31 @@ func temporaryFile(_ data: Data, name: String) -> URL {
 
 // MARK: Le texte des messages
 
+/// Un texte déjà mis en forme, pour la mémoire ci-dessous.
+private final class RichTextBox {
+    let value: AttributedString
+    init(_ value: AttributedString) { self.value = value }
+}
+
+/// Les textes déjà mis en forme (par leur texte et leurs mentions). Chaque
+/// bulle à l'écran redemande le sien à chaque mise à jour de la discussion
+/// (une frappe, un message qui arrive) : il n'est construit qu'une fois.
+private let richTextKept: NSCache<NSString, RichTextBox> = {
+    let cache = NSCache<NSString, RichTextBox>()
+    cache.countLimit = 600
+    return cache
+}()
+
 /// Le texte d'un message, avec les « @Léa » qu'il mentionne en couleur.
 func richText(_ text: String, mentions: [String]) -> AttributedString {
+    let key = (mentions.isEmpty ? text : "\(mentions.count)\u{0}\(text)\u{0}" + mentions.joined(separator: "\u{0}")) as NSString
+    if let kept = richTextKept.object(forKey: key) { return kept.value }
+    let out = richTextWithMentions(text, mentions)
+    richTextKept.setObject(RichTextBox(out), forKey: key)
+    return out
+}
+
+private func richTextWithMentions(_ text: String, _ mentions: [String]) -> AttributedString {
     var out = richText(text)
     var found: [Range<AttributedString.Index>] = []
     for label in mentions where !label.isEmpty {
