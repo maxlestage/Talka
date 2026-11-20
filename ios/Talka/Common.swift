@@ -3,6 +3,7 @@
 
 import AudioToolbox
 import CoreImage.CIFilterBuiltins
+import ImageIO
 import SwiftUI
 import TalkaKit
 import UIKit
@@ -125,6 +126,36 @@ extension UIImage {
         guard let image = Data(dataURL: url).flatMap(UIImage.init(data:)) else { return nil }
         let pixels = image.size.width * image.scale * image.size.height * image.scale
         decoded.setObject(image, forKey: key, cost: Int(pixels) * 4)
+        return image
+    }
+
+    /// Les photos des bulles, réduites à la taille où elles s'affichent.
+    private static let bubbles: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 48 << 20
+        return cache
+    }()
+
+    /// Une photo pour une bulle de discussion : au plus 1 020 pixels de côté
+    /// (340 points sur l'écran le plus dense), au lieu des 1 600 de la photo
+    /// entière. Deux fois et demie moins de pixels à décoder et à garder ;
+    /// à l'écran, la même image. La photo entière reste celle qu'on ouvre.
+    static func bubble(fromDataURL url: String) -> UIImage? {
+        guard !url.isEmpty else { return nil }
+        let key = url as NSString
+        if let hit = bubbles.object(forKey: key) { return hit }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1020,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let data = Data(dataURL: url),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let small = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return fromDataURL(url) }
+        let image = UIImage(cgImage: small)
+        bubbles.setObject(image, forKey: key, cost: small.width * small.height * 4)
         return image
     }
 
