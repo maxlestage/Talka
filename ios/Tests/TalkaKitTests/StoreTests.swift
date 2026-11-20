@@ -291,6 +291,44 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(s.messagesOf("AMI1", limit: 5), want("AMI1", 5))
     }
 
+    /// Lire quelques messages un par un ne charge pas la discussion, ni
+    /// chercher des messages absents (chaque message qui arrive demande s'il
+    /// est déjà là) ; en relire sans fin plus que la mémoire n'en garde la
+    /// charge une fois, avec les mêmes réponses.
+    func testAChatReadOverAndOverIsLoadedOnce() {
+        let dir = tempDir()
+        do {
+            let s = Store(directory: dir)
+            s.transaction {
+                for i in 0..<300 { s.writeMessage(message("AMI", "m\(i)", at: Double(i), "texte \(i)")) }
+            }
+        }
+        // Quelques messages, relus cent fois : tenus en mémoire, rien n'est chargé.
+        let few = Store(directory: dir)
+        for _ in 0..<100 {
+            for i in 0..<Store.singlesMax { XCTAssertEqual(few.message("AMI", "m\(i)")?.text, "texte \(i)") }
+        }
+        XCTAssertNil(few.messages["AMI"])
+        // Des messages absents, autant qu'on veut.
+        for i in 0..<1000 { XCTAssertNil(few.message("AMI", "absent\(i)")) }
+        XCTAssertNil(few.messages["AMI"])
+        // Plus que la mémoire n'en garde, relus en boucle : chargée, une fois.
+        let many = Store(directory: dir)
+        for pass in 0..<3 {
+            for i in 0..<200 { XCTAssertEqual(many.message("AMI", "m\(i)")?.text, "texte \(i)", "passage \(pass)") }
+        }
+        XCTAssertEqual(many.messages["AMI"]?.count, 300)
+        XCTAssertNil(many.message("AMI", "absent"))
+        XCTAssertTrue(many.singleReads.isEmpty)
+        XCTAssertTrue(many.singles.isEmpty)
+        // Vidée avant d'être chargée : le compte repart de zéro.
+        let cleared = Store(directory: dir)
+        for i in 0..<50 { _ = cleared.message("AMI", "m\(i)") }
+        cleared.deleteMessages(of: "AMI")
+        XCTAssertNil(cleared.message("AMI", "m0"))
+        XCTAssertTrue(cleared.singleReads.isEmpty)
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))

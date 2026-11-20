@@ -59,6 +59,13 @@ public final class Store: @unchecked Sendable {
     /// discussions pas chargées : la coche de la liste, un accusé qui arrive.
     var singles: [String: Message] = [:]
     static let singlesMax = 64
+    /// Les messages lus un par un dans SQLite, comptés par discussion pas
+    /// chargée. Passé `loadAfter`, la discussion sert visiblement beaucoup
+    /// (des dizaines de messages attendent un accusé, relus à chaque passage
+    /// de la boîte d'envoi) : elle est chargée, une fois, plutôt que relue
+    /// ligne à ligne sans fin.
+    var singleReads: [String: Int] = [:]
+    static let loadAfter = 96
     /// Les derniers messages de discussions pas chargées, déjà lus par
     /// l'index : la limite demandée, ce qu'elle a rendu, et s'il n'y en a pas
     /// d'autres. Le résumé de la montre les redemande toutes les deux
@@ -309,6 +316,7 @@ public final class Store: @unchecked Sendable {
         messages[chat] = out
         forgetSingles(of: chat)
         tails[chat] = nil
+        singleReads[chat] = nil
         return out
     }
 
@@ -420,7 +428,10 @@ public final class Store: @unchecked Sendable {
         run("SELECT json FROM rows WHERE store = 'messages' AND key = ?", [key]) { stmt in
             if let json = self.value(stmt, 0, store: "messages", key: key) { out = JSON.decode(Message.self, json) }
         }
-        if let out { remember(key, out) }
+        guard let out else { return nil }
+        singleReads[chat, default: 0] += 1
+        if singleReads[chat, default: 0] > Self.loadAfter { return loadChat(chat)[id] }
+        remember(key, out)
         return out
     }
 
@@ -452,6 +463,7 @@ public final class Store: @unchecked Sendable {
         messages[chat] = [:]
         ordered[chat] = nil
         tails[chat] = nil
+        singleReads[chat] = nil
         forgetSingles(of: chat)
         run("DELETE FROM rows WHERE store = 'messages' AND chat = ?", [chat])
     }
@@ -519,6 +531,7 @@ public final class Store: @unchecked Sendable {
         ordered = [:]
         singles = [:]
         tails = [:]
+        singleReads = [:]
         exec("DELETE FROM rows")
         exec("VACUUM")
         // Tout est effacé : on peut écrire à nouveau (avec la clé, s'il y en a une).
