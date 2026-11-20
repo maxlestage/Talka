@@ -32,11 +32,19 @@ struct ConversationView: View {
     @State private var loaded = false
     /// Combien de messages sont affichés, à partir des derniers : une longue
     /// discussion s'ouvre sur sa fin, les plus anciens viennent en remontant.
-    @State private var shown = ConversationView.page
+    @State private var shown = ConversationView.firstPage
     /// La dernière fois que des messages plus anciens ont été demandés.
     @State private var grewAt = Date.distantPast
     /// Une page de messages.
     static let page = 300
+    /// Ce qui est affiché à l'ouverture : une page (tout, pour une capture
+    /// de comparaison de la CI, `-TalkaDemoAll YES`, builds Debug seulement).
+    static var firstPage: Int {
+        #if DEBUG
+        if Demo.all { return .max }
+        #endif
+        return page
+    }
     /// La recherche dans la discussion (nil : fermée).
     @State private var search: String?
     /// Le message vers lequel faire défiler (bandeau de l'épingle).
@@ -164,6 +172,14 @@ struct ConversationView: View {
                             DispatchQueue.main.async { proxy.scrollTo("unread-separator", anchor: .top) }
                         } else if let id = list.last?.id {
                             proxy.scrollTo(id, anchor: .bottom)
+                            // Les bulles n'ont leur vraie hauteur qu'une fois
+                            // affichées : le bas du fil, de nouveau, quand
+                            // elles le sont (sans cela, la discussion
+                            // s'ouvrait deux messages au-dessus du dernier).
+                            DispatchQueue.main.async { proxy.scrollTo("fil-bas", anchor: .bottom) }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                                proxy.scrollTo("fil-bas", anchor: .bottom)
+                            }
                         }
                         loaded = true
                     }
