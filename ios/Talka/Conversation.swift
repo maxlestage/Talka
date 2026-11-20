@@ -893,8 +893,10 @@ extension ConversationView {
     func climb(_ proxy: ScrollViewProxy) async {
         #if DEBUG
         guard Demo.climbs else { return }
+        // Douze secondes entre chaque : le temps pour la CI de capturer
+        // l'ouverture, puis chaque remontée.
         for _ in 0..<2 {
-            try? await Task.sleep(for: .seconds(7))
+            try? await Task.sleep(for: .seconds(12))
             proxy.scrollTo("fil-haut", anchor: .top)
         }
         #endif
