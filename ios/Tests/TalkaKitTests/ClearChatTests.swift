@@ -228,6 +228,94 @@ final class ClearChatTests: XCTestCase {
         XCTAssertTrue(e.starred().isEmpty)
     }
 
+    // ----- Les accusés de réception -----
+
+    /// L'accusé d'un second appareil du même contact, ou un accusé rejoué, ne
+    /// réécrit pas le message et ne redessine rien ; un accusé qui apporte
+    /// quelque chose (reçu, puis lu) reste écrit comme avant.
+    func testADuplicateReceiptRewritesNothing() async throws {
+        let e = phone()
+        let x = Identity.create()
+        let c = e.ensureDirectChat(x.code)
+        let a = try XCTUnwrap(e.send(c.id, Content(text: "Un")))
+        let b = try XCTUnwrap(e.send(c.id, Content(text: "Deux")))
+        let t = nowMs()
+        func receipt(_ st: String, _ ids: [String], _ dev: String) {
+            e.handle(x.code, Wire(.receipt(st: st, ids: ids, dev: dev)), ts: t, live: true)
+        }
+        receipt("delivered", [a.id, b.id], "dev1")
+        XCTAssertEqual(e.store.message(c.id, a.id)?.deliveredTo, [x.code])
+        XCTAssertEqual(e.store.message(c.id, b.id)?.deliveredTo, [x.code])
+        XCTAssertEqual(e.store.message(c.id, a.id)?.readBy, [])
+
+        // Le second appareil, puis un rejeu : rien ne bouge.
+        let (written, drawn) = (e.store.messagesGeneration, e.revisions[c.id])
+        receipt("delivered", [a.id, b.id], "dev2")
+        receipt("delivered", [a.id], "dev1")
+        XCTAssertEqual(e.store.messagesGeneration, written, "aucun message réécrit")
+        XCTAssertEqual(e.revisions[c.id], drawn, "rien à redessiner")
+        XCTAssertEqual(e.store.message(c.id, a.id)?.deliveredTo, [x.code])
+
+        // Lu : écrit, redessiné ; relu par l'autre appareil : plus rien.
+        receipt("read", [a.id], "dev2")
+        XCTAssertEqual(e.store.message(c.id, a.id)?.readBy, [x.code])
+        XCTAssertEqual(e.store.message(c.id, b.id)?.readBy, [])
+        XCTAssertGreaterThan(e.store.messagesGeneration, written)
+        XCTAssertNotEqual(e.revisions[c.id], drawn)
+        let after = e.store.messagesGeneration
+        receipt("read", [a.id], "dev1")
+        XCTAssertEqual(e.store.messagesGeneration, after)
+        // Lu sans avoir été « reçu » d'abord : les deux d'un coup.
+        receipt("read", [b.id], "dev1")
+        XCTAssertEqual(e.store.message(c.id, b.id)?.deliveredTo, [x.code])
+        XCTAssertEqual(e.store.message(c.id, b.id)?.readBy, [x.code])
+        // Un accusé pour un message qui n'est pas de nous, ou inconnu : ignoré.
+        e.handle(x.code, Wire(.msg(id: "r1", at: t, pn: "", content: Content(text: "De lui"))), ts: t, live: true)
+        receipt("read", ["r1", "inconnu"], "dev1")
+        XCTAssertEqual(e.store.message(c.id, "r1")?.readBy, [])
+    }
+
+    /// Une enveloppe accusée par un appareil : gardée, avec tout son contenu,
+    /// tant qu'un autre l'attend ; partie quand plus rien ne l'attend ; et
+    /// laissée telle quelle par un accusé déjà connu.
+    func testAnAcknowledgedEnvelopeKeepsItsPayload() async throws {
+        let e = phone()
+        let x = Identity.create()
+        let c = e.ensureDirectChat(x.code)
+        let m = try XCTUnwrap(e.send(c.id, Content(text: "Bonjour")))
+        let key = "\(m.id):\(x.code)"
+        let before = try XCTUnwrap(e.store.read("outbox", key, as: OutItem.self))
+        XCTAssertFalse(before.payload.isEmpty)
+        // Pas encore partie (hors ligne) : l'accusé d'un appareil est noté.
+        e.gotBy(key, "dev1")
+        var want = before
+        want.got = ["dev1"]
+        XCTAssertEqual(e.store.read("outbox", key, as: OutItem.self), want)
+        // Le même accusé : la ligne ne bouge pas.
+        let row = e.store.readRaw("outbox", key)
+        e.gotBy(key, "dev1")
+        XCTAssertEqual(e.store.readRaw("outbox", key), row)
+        e.gotBy(key, "dev2")
+        want.got = ["dev1", "dev2"]
+        XCTAssertEqual(e.store.read("outbox", key, as: OutItem.self), want)
+        // Acceptée par le relais, et le message distribué : plus rien n'attend.
+        var sent = want
+        sent.boot = "B00T"
+        e.store.write("outbox", key, sent)
+        e.gotBy(key, "dev3")
+        XCTAssertEqual(e.store.read("outbox", key, as: OutItem.self)?.got, ["dev1", "dev2", "dev3"], "le message n'est pas encore distribué")
+        e.handle(x.code, Wire(.receipt(st: "delivered", ids: [m.id], dev: "dev1")), ts: nowMs(), live: true)
+        XCTAssertNil(e.store.readRaw("outbox", key))
+        // Sans appareil, ou sans enveloppe : rien, ou la ligne retirée.
+        e.store.write("outbox", key, sent)
+        e.gotBy(key, "")
+        XCTAssertNil(e.store.readRaw("outbox", key))
+        e.gotBy("inconnue", "dev1")
+        e.store.writeRaw("outbox", "abîmée", "pas du JSON")
+        e.gotBy("abîmée", "dev1")
+        XCTAssertNil(e.store.readRaw("outbox", "abîmée"))
+    }
+
     // ----- La recherche dans toutes les discussions -----
 
     /// Fouillées par tranches sur plusieurs cœurs, les discussions rendent
