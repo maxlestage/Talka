@@ -63,6 +63,9 @@ public final class Engine {
     @ObservationIgnored public let relay: Relay
     @ObservationIgnored var flushing = false
     @ObservationIgnored var flushAgain = false
+    /// Les enveloppes de la boîte d'envoi déjà décodées, sans leur contenu
+    /// (clé → la ligne lue, l'enveloppe) : voir `outbox`.
+    @ObservationIgnored var outHeads: [String: (json: String, head: OutItem)] = [:]
     @ObservationIgnored var seq = 0
     @ObservationIgnored var typingSent: Double = 0
     @ObservationIgnored var typingTimers: [String: Task<Void, Never>] = [:]
@@ -1190,6 +1193,27 @@ public final class Engine {
         return String(data: data, encoding: .utf8)
     }
 
+    /// La boîte d'envoi dans l'ordre : chaque enveloppe sans son contenu
+    /// (`payload` vide), et sa ligne. Une enveloppe n'est redécodée que si sa
+    /// ligne a changé : celles qui attendent un accusé (une photo pour un
+    /// contact hors ligne, pendant des jours) ne sont plus relues en entier à
+    /// chaque passage, c'est-à-dire à chaque message ou accusé qui part.
+    func outbox() -> [(head: OutItem, json: String)] {
+        let rows = store.rawRows("outbox")
+        var kept: [String: (json: String, head: OutItem)] = [:]
+        kept.reserveCapacity(rows.count)
+        for (key, json) in rows {
+            if let known = outHeads[key], known.json == json {
+                kept[key] = known
+            } else if var head = JSON.decode(OutItem.self, json) {
+                head.payload = ""
+                kept[key] = (json, head)
+            }
+        }
+        outHeads = kept
+        return kept.values.map { (head: $0.head, json: $0.json) }.sorted { $0.head.seq < $1.head.seq }
+    }
+
     /// Envoie ce qui attend dans la boîte d'envoi.
     public func flush() async {
         guard relay.state == .online else { return }
@@ -1198,10 +1222,11 @@ public final class Engine {
         defer { flushing = false }
         repeat {
             flushAgain = false
-            let items = store.all("outbox", as: OutItem.self).sorted { $0.seq < $1.seq }
+            let items = outbox()
             let boot = relay.boot
-            for var item in items {
+            for (head, json) in items {
                 guard relay.state == .online else { return }
+                var item = head
                 // Déjà accepté par le relais : on attend l'accusé de réception,
                 // sauf si le relais a redémarré depuis (sa boîte aux lettres,
                 // en mémoire, est perdue) : alors on renvoie.
@@ -1216,6 +1241,9 @@ public final class Engine {
                     let got = item.got
                     item.sent = item.sent.filter { got.contains($0) }
                 }
+                // Elle part : son contenu, lu maintenant seulement.
+                guard let full = JSON.decode(OutItem.self, json) else { continue }
+                item.payload = full.payload
                 let before = item.sent.count
                 let ack = await sendNow(&item, live: false)
                 // Les accusés arrivés pendant l'envoi (v4 : appareil par appareil).

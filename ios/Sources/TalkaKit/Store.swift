@@ -242,6 +242,12 @@ public final class Store: @unchecked Sendable {
         return rows[store]?[key]
     }
 
+    /// Toutes les lignes d'un magasin, telles quelles (clé → JSON).
+    public func rawRows(_ store: String) -> [String: String] {
+        lock.lock(); defer { lock.unlock() }
+        return rows[store] ?? [:]
+    }
+
     public func writeRaw(_ store: String, _ key: String, _ json: String) {
         lock.lock(); defer { lock.unlock() }
         rows[store, default: [:]][key] = json
