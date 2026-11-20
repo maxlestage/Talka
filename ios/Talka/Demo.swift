@@ -17,6 +17,9 @@ enum Demo {
     static var on: Bool { UserDefaults.standard.bool(forKey: "TalkaDemo") }
     /// Remonter tout seul en haut du fil, deux fois.
     static var climbs: Bool { UserDefaults.standard.bool(forKey: "TalkaDemoTop") }
+    /// Afficher toute la discussion d'emblée (pour comparer avec son
+    /// ouverture sur une page).
+    static var all: Bool { UserDefaults.standard.bool(forKey: "TalkaDemoAll") }
 
     static let contact = "K7Q2MX9PRT"
     static let count = 999

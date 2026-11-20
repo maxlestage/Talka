@@ -70,6 +70,11 @@ jobs:
           xcrun simctl io "$UDID" screenshot shots/4-remontee.png
           sleep 7
           xcrun simctl io "$UDID" screenshot shots/5-remontee-encore.png
+          xcrun simctl terminate "$UDID" com.maxlestage.talka
+          # La même discussion affichée en entier d'emblée, pour comparer.
+          xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaDemo YES -TalkaDemoAll YES
+          sleep 7
+          xcrun simctl io "$UDID" screenshot shots/6-discussion-entiere.png
           for f in shots/*.png; do
             # La discussion en plus grand : ses messages doivent se lire.
             case "$f" in shots/[12]-*) side=420 ;; *) side=1000 ;; esac
