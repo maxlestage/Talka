@@ -840,24 +840,65 @@ public final class Engine {
 
     struct Tomb: Codable { var id: String; var at: Double }
 
+    /// Les tombes d'une discussion, décodées : la ligne lue (pour savoir si
+    /// elle a changé), la liste, ses identifiants, la plus ancienne heure.
+    struct Tombs {
+        var json: String
+        var list: [Tomb]
+        var ids: Set<String>
+        var oldest: Double
+    }
+
+    /// Les tombes déjà décodées, par discussion. Chaque message qui arrive
+    /// demande s'il est enterré, et le ménage repasse chaque minute : la
+    /// liste (jusqu'à 20 000 tombes) n'est redécodée que si sa ligne a changé.
+    @ObservationIgnored var tombCache: [String: Tombs] = [:]
+
+    func tombs(_ chat: String) -> Tombs? {
+        guard let json = store.readRaw("kv", "tombes:\(chat)") else {
+            tombCache[chat] = nil
+            return nil
+        }
+        if let kept = tombCache[chat], kept.json == json { return kept }
+        let list = JSON.decode([Tomb].self, json) ?? []
+        let fresh = Tombs(json: json, list: list, ids: Set(list.map(\.id)), oldest: list.map(\.at).min() ?? .infinity)
+        tombCache[chat] = fresh
+        return fresh
+    }
+
     func bury(_ chat: String, _ msgs: [(String, Double)]) {
         let t = nowMs()
         let key = "tombes:\(chat)"
-        var list = store.read("kv", key, as: [Tomb].self) ?? []
+        let kept = tombs(chat)
+        // Rien à enterrer, et aucune tombe assez vieille pour partir.
+        if msgs.isEmpty, t - (kept?.oldest ?? .infinity) < Self.tombWindow { return }
+        var list = kept?.list ?? []
+        var ids = kept?.ids ?? []
         let before = list.count
         list.removeAll { t - $0.at >= Self.tombWindow }
         var changed = list.count != before
-        for (id, at) in msgs where t - at < Self.tombWindow && !list.contains(where: { $0.id == id }) {
+        // Des tombes sont parties : leurs identifiants aussi.
+        if changed { ids = Set(list.map(\.id)) }
+        for (id, at) in msgs where t - at < Self.tombWindow && ids.insert(id).inserted {
             list.append(Tomb(id: id, at: at))
             changed = true
         }
-        if list.count > 20_000 { list.removeFirst(list.count - 20_000) }
+        let over = list.count - 20_000
+        if over > 0 { list.removeFirst(over) }
         guard changed else { return }
-        if list.isEmpty { store.remove("kv", key) } else { store.write("kv", key, list) }
+        if list.isEmpty {
+            store.remove("kv", key)
+            tombCache[chat] = nil
+        } else {
+            let json = JSON.encode(list)
+            store.writeRaw("kv", key, json)
+            if over > 0 { ids = Set(list.map(\.id)) }
+            tombCache[chat] = Tombs(json: json, list: list, ids: ids, oldest: list.map(\.at).min() ?? .infinity)
+        }
     }
 
     func buried(_ chat: String, _ id: String) -> Bool {
-        (store.read("kv", "tombes:\(chat)", as: [Tomb].self) ?? []).contains { $0.id == id }
+        tombs(chat)?.ids.contains(id) ?? false
     }
 
     func buryAll(_ chat: String) {
