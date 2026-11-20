@@ -169,7 +169,7 @@ struct ConversationView: View {
                         if !loaded, n > 0, list.count >= n {
                             unreadMark = (list[list.count - n].id, n)
                             // Le bandeau s'affiche, puis la discussion s'ouvre sur lui.
-                            DispatchQueue.main.async { proxy.scrollTo("unread-separator", anchor: .top) }
+                            DispatchQueue.main.async { land(proxy, on: "unread-separator", anchor: .top) }
                         } else if let id = list.last?.id {
                             proxy.scrollTo(id, anchor: .bottom)
                             // Les bulles n'ont leur vraie hauteur qu'une fois
@@ -199,13 +199,13 @@ struct ConversationView: View {
                     .onChange(of: jumpTo) { _, id in
                         guard let id else { return }
                         if messages.contains(where: { $0.id == id }) {
-                            withAnimation { proxy.scrollTo(id, anchor: .center) }
+                            land(proxy, on: id, anchor: .center, animated: true)
                         } else if more, e.store.message(chatId, id) != nil {
                             // Plus ancien que ce qui est affiché : toute la
                             // discussion, puis le message.
                             shown = .max
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                proxy.scrollTo(id, anchor: .center)
+                                land(proxy, on: id, anchor: .center)
                             }
                         } else {
                             model.show("Message introuvable")
@@ -877,11 +877,27 @@ extension ConversationView {
         }
     }
 
+    /// Défile jusqu'à un élément du fil, et y revient deux fois. Le fil
+    /// n'estime qu'à peu près la place des bulles pas encore affichées : un
+    /// saut lointain tombait à côté (quatre messages trop haut pour un saut
+    /// de neuf cents, vu dans le simulateur). Une fois les bulles voisines
+    /// affichées, le passage suivant tombe juste.
+    func land(_ proxy: ScrollViewProxy, on id: String, anchor: UnitPoint, animated: Bool = false) {
+        if animated {
+            withAnimation { proxy.scrollTo(id, anchor: anchor) }
+        } else {
+            proxy.scrollTo(id, anchor: anchor)
+        }
+        for delay in [0.45, 0.8] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { proxy.scrollTo(id, anchor: anchor) }
+        }
+    }
+
     /// Le message cité par une réponse : on y défile ; plus ancien que ce
     /// qui est affiché, toute la discussion est d'abord montrée.
     func reach(_ id: String, _ e: Engine, _ proxy: ScrollViewProxy, among shown: [Message], more: Bool) {
         if shown.contains(where: { $0.id == id }) {
-            withAnimation { proxy.scrollTo(id, anchor: .center) }
+            land(proxy, on: id, anchor: .center, animated: true)
         } else if more, e.store.message(chatId, id) != nil {
             jumpTo = id
         }
