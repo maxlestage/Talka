@@ -228,6 +228,46 @@ final class ClearChatTests: XCTestCase {
         XCTAssertTrue(e.starred().isEmpty)
     }
 
+    // ----- Les actus -----
+
+    /// Le ménage lit la date des actus sans décoder leurs photos : celles de
+    /// plus de 24 heures partent, les autres restent, et la liste suit chaque
+    /// changement de ligne.
+    func testOldStatusesLeaveWithoutDecodingTheirPhotos() async {
+        let e = phone()
+        let now = nowMs()
+        let photo = "data:image/jpeg;base64," + String(repeating: "/9j/4AAQ", count: 20_000)
+        func status(_ id: String, hoursAgo: Double, kind: String = "image") -> StatusItem {
+            StatusItem(owner: "WGSEAJNSZJ", id: id, kind: kind, text: "", bg: "", data: kind == "image" ? photo : "", at: now - hoursAgo * 3_600_000)
+        }
+        for st in [status("vieille", hoursAgo: 25), status("hier", hoursAgo: 23), status("texte", hoursAgo: 30, kind: "text"), status("neuve", hoursAgo: 1)] {
+            e.store.write("statuses", st.key, st)
+        }
+        // Les dates, sans le contenu.
+        XCTAssertEqual(Set(e.statusDates().map(\.key)), ["WGSEAJNSZJ|vieille", "WGSEAJNSZJ|hier", "WGSEAJNSZJ|texte", "WGSEAJNSZJ|neuve"])
+        XCTAssertEqual(e.statusDates().first { $0.id == "hier" }?.at, now - 23 * 3_600_000)
+        // Avant le ménage, la liste ne montre déjà que les moins de 24 heures.
+        XCTAssertEqual(e.statuses().map(\.id), ["hier", "neuve"])
+        e.sweep()
+        XCTAssertEqual(Set(e.store.rawRows("statuses").keys), ["WGSEAJNSZJ|hier", "WGSEAJNSZJ|neuve"])
+        XCTAssertEqual(e.statuses().map(\.id), ["hier", "neuve"])
+        XCTAssertEqual(e.statuses().first?.data, photo)
+        XCTAssertEqual(Set(e.statusHeads.keys), ["WGSEAJNSZJ|hier", "WGSEAJNSZJ|neuve"])
+        // Une ligne qui change (vue), une qui arrive, une qui part : suivies.
+        e.markStatusSeen(e.statuses()[1])
+        XCTAssertEqual(e.statuses().map(\.seen), [false, true])
+        let fresh = status("toute neuve", hoursAgo: 0)
+        e.store.write("statuses", fresh.key, fresh)
+        e.store.remove("statuses", "WGSEAJNSZJ|hier")
+        XCTAssertEqual(e.statuses().map(\.id), ["neuve", "toute neuve"])
+        e.sweep()
+        XCTAssertEqual(e.statuses().map(\.id), ["neuve", "toute neuve"])
+        XCTAssertEqual(Set(e.statusKept.keys), ["WGSEAJNSZJ|neuve", "WGSEAJNSZJ|toute neuve"])
+        // La même liste que le décodage complet d'avant.
+        let t = nowMs()
+        XCTAssertEqual(e.statuses(), e.store.all("statuses", as: StatusItem.self).filter { $0.at + dayMs > t }.sorted { $0.at < $1.at })
+    }
+
     // ----- La boîte d'envoi -----
 
     /// La boîte d'envoi lue sans son contenu : les mêmes enveloppes, dans le
