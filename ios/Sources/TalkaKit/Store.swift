@@ -68,14 +68,17 @@ public final class Store: @unchecked Sendable {
     /// ligne à ligne sans fin.
     var singleReads: [String: Int] = [:]
     static let loadAfter = 96
-    /// Les derniers messages de discussions pas chargées, déjà lus par
-    /// l'index : la limite demandée, ce qu'elle a rendu, et s'il n'y en a pas
-    /// d'autres. Le résumé de la montre les redemande toutes les deux
-    /// secondes : tant que rien n'y est écrit, ils ne sont pas relus.
-    var tails: [String: (limit: Int, complete: Bool, list: [Message])] = [:]
-    /// Au-delà (marquer 300 messages comme lus), une lecture n'est pas gardée.
-    static let tailMax = 64
-    static let tailChats = 32
+    /// La fin de discussions pas chargées en entier : leurs derniers
+    /// messages, dans l'ordre, lus par l'index puis tenus à jour à chaque
+    /// écriture. Il en existe de plus anciens (une discussion qui tient en
+    /// entier dans ce qu'on lui demande est chargée). C'est ce que montre une
+    /// longue discussion à son ouverture, et ce que redemande le résumé de la
+    /// montre toutes les deux secondes.
+    var windows: [String: [Message]] = [:]
+    /// Les discussions qui ont une fenêtre, de la moins récemment demandée à
+    /// la plus récente : au-delà de `windowChats`, la plus ancienne est oubliée.
+    var windowOrder: [String] = []
+    static let windowChats = 32
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
     /// La clé de l'appareil (nil : rien n'est chiffré).
@@ -343,7 +346,7 @@ public final class Store: @unchecked Sendable {
         for m in readMessages("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ?", [chat]) { out[m.id] = m }
         messages[chat] = out
         forgetSingles(of: chat)
-        tails[chat] = nil
+        dropWindow(chat)
         singleReads[chat] = nil
         return out
     }
@@ -371,10 +374,19 @@ public final class Store: @unchecked Sendable {
     /// et décodé sur plusieurs cœurs (le gros du temps d'ouverture d'une
     /// longue discussion).
     func readMessages(_ sql: String, _ params: [Any] = []) -> [Message] {
+        var rows = 0
+        return readMessages(sql, params, rows: &rows)
+    }
+
+    /// `rows` : le nombre de lignes lues, lisibles ou non.
+    func readMessages(_ sql: String, _ params: [Any], rows: inout Int) -> [Message] {
         var out: [Message] = []
         var batch: [MessageRow] = []
         var bytes = 0
+        var read = 0
+        defer { rows = read }
         run(sql, params) { stmt in
+            read += 1
             let k = column(stmt, 0)
             if sqlite3_column_type(stmt, 1) == SQLITE_BLOB {
                 let n = Int(sqlite3_column_bytes(stmt, 1))
@@ -468,36 +480,92 @@ public final class Store: @unchecked Sendable {
         singles = singles.filter { !$0.key.hasPrefix(prefix) }
     }
 
-    /// Les `limit` derniers messages d'une discussion pas chargée, par
-    /// l'index ; gardés (`tails`) jusqu'à la prochaine écriture dans la
-    /// discussion.
-    func tail(_ chat: String, _ limit: Int) -> [Message] {
-        guard limit > 0 else { return [] }
-        if let kept = tails[chat], kept.complete || kept.limit >= limit {
-            return limit >= kept.list.count ? kept.list : Array(kept.list.suffix(limit))
+    /// La fenêtre d'une discussion vient d'être demandée : elle passe en
+    /// tête, et la moins récemment demandée est oubliée s'il y en a trop.
+    func touchWindow(_ chat: String) {
+        if windowOrder.last == chat { return }
+        windowOrder.removeAll { $0 == chat }
+        windowOrder.append(chat)
+        while windowOrder.count > Self.windowChats { windows[windowOrder.removeFirst()] = nil }
+    }
+
+    func dropWindow(_ chat: String) {
+        if windows.removeValue(forKey: chat) != nil { windowOrder.removeAll { $0 == chat } }
+    }
+
+    /// La fin d'une discussion pas chargée : au moins ses `limit` derniers
+    /// messages (davantage si la mémoire en tient déjà plus). Lus par
+    /// l'index, une fois, puis tenus à jour. `nil` : il n'y en a pas de plus
+    /// anciens, la discussion tient en entier et vient d'être chargée.
+    func window(_ chat: String, _ limit: Int) -> [Message]? {
+        if let kept = windows[chat], kept.count >= limit {
+            touchWindow(chat)
+            return kept
         }
-        var out: [Message] = []
-        var read = 0
-        run("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ? ORDER BY at DESC, key DESC LIMIT ?", [chat, limit]) { stmt in
-            read += 1
-            if let json = self.value(stmt, 1, store: "messages", key: column(stmt, 0)),
-               let m = JSON.decode(Message.self, json) { out.append(m) }
+        // Un de plus que demandé : pour savoir s'il en reste de plus anciens.
+        var rows = 0
+        let found = readMessages(
+            "SELECT key, json FROM rows WHERE store = 'messages' AND chat = ? ORDER BY at DESC, key DESC LIMIT ?",
+            [chat, limit + 1], rows: &rows)
+        guard rows > limit else {
+            var all: [String: Message] = [:]
+            for m in found { all[m.id] = m }
+            messages[chat] = all
+            ordered[chat] = nil
+            forgetSingles(of: chat)
+            dropWindow(chat)
+            singleReads[chat] = nil
+            return nil
         }
-        let list = Array(out.reversed())
-        if limit <= Self.tailMax {
-            if tails.count >= Self.tailChats, tails[chat] == nil { tails.removeAll(keepingCapacity: true) }
-            tails[chat] = (limit, read < limit, list)
-        }
+        var list = Array(found.reversed())
+        if list.count > limit { list.removeFirst(list.count - limit) }
+        windows[chat] = list
+        touchWindow(chat)
         return list
+    }
+
+    /// Tient à jour la fenêtre d'une discussion pas chargée : l'ancienne
+    /// version du message (s'il y était) en sort, la nouvelle (`new`) y prend
+    /// sa place si elle n'est pas plus ancienne que le début de la fenêtre.
+    func slide(_ chat: String, id: String, new: Message?) {
+        guard var list = windows.removeValue(forKey: chat) else { return }
+        if let i = list.lastIndex(where: { $0.id == id }) { list.remove(at: i) }
+        if let new {
+            // Vide, on ne sait plus où elle commence : oubliée.
+            guard let first = list.first else {
+                windowOrder.removeAll { $0 == chat }
+                return
+            }
+            if (first.at, first.id) < (new.at, new.id) {
+                list.insert(new, at: Self.rank(new.at, new.id, in: list))
+            }
+        }
+        windows[chat] = list
     }
 
     /// Les messages d'une discussion, du plus ancien au plus récent ; `limit`
     /// garde les derniers (sans charger la discussion si elle ne l'est pas).
     public func messagesOf(_ chat: String, limit: Int = .max) -> [Message] {
         lock.lock(); defer { lock.unlock() }
-        if limit != .max, messages[chat] == nil { return tail(chat, limit) }
+        if limit < Int.max - 1, messages[chat] == nil {
+            guard limit > 0 else { return [] }
+            if let end = window(chat, limit) { return end.count > limit ? Array(end.suffix(limit)) : end }
+        }
         let sorted = inOrder(chat)
         return limit >= sorted.count ? sorted : Array(sorted.suffix(limit))
+    }
+
+    /// La fin d'une discussion, pour l'afficher : au moins ses `limit`
+    /// derniers messages, du plus ancien au plus récent (davantage si la
+    /// mémoire en tient déjà plus), et s'il en existe de plus anciens. Une
+    /// longue discussion s'ouvre ainsi sans être lue en entier ; `limit`
+    /// grandit quand on remonte.
+    public func recentMessages(_ chat: String, limit: Int) -> (list: [Message], more: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        guard limit > 0 else { return ([], false) }
+        if limit < Int.max - 1, messages[chat] == nil, let end = window(chat, limit) { return (end, true) }
+        let sorted = inOrder(chat)
+        return sorted.count > limit ? (Array(sorted.suffix(limit)), true) : (sorted, false)
     }
 
     /// Les messages d'une discussion datés d'avant `at`, du plus ancien au
@@ -523,6 +591,8 @@ public final class Store: @unchecked Sendable {
         if let loaded = messages[chat] { return loaded[id] }
         let key = "\(chat)|\(id)"
         if let m = singles[key] { return m }
+        // Dans la fin déjà en mémoire (le plus souvent : un message récent).
+        if let m = windows[chat]?.last(where: { $0.id == id }) { return m }
         var out: Message?
         run("SELECT json FROM rows WHERE store = 'messages' AND key = ?", [key]) { stmt in
             if let json = self.value(stmt, 0, store: "messages", key: key) { out = JSON.decode(Message.self, json) }
@@ -542,7 +612,7 @@ public final class Store: @unchecked Sendable {
             reorder(m.chat, old: old, new: m)
         } else {
             remember(m.key, m)
-            tails[m.chat] = nil
+            slide(m.chat, id: m.id, new: m)
         }
         put("messages", m.key, JSON.encode(m), chat: m.chat, at: m.at)
     }
@@ -554,7 +624,7 @@ public final class Store: @unchecked Sendable {
             if let old = messages[chat]?.removeValue(forKey: id) ?? nil { reorder(chat, old: old, new: nil) }
         } else {
             singles["\(chat)|\(id)"] = nil
-            tails[chat] = nil
+            slide(chat, id: id, new: nil)
         }
         delete("messages", "\(chat)|\(id)")
     }
@@ -564,7 +634,7 @@ public final class Store: @unchecked Sendable {
         generation += 1
         messages[chat] = [:]
         ordered[chat] = nil
-        tails[chat] = nil
+        dropWindow(chat)
         singleReads[chat] = nil
         forgetSingles(of: chat)
         run("DELETE FROM rows WHERE store = 'messages' AND chat = ?", [chat])
@@ -636,7 +706,8 @@ public final class Store: @unchecked Sendable {
         messages = [:]
         ordered = [:]
         singles = [:]
-        tails = [:]
+        windows = [:]
+        windowOrder = []
         singleReads = [:]
         generation += 1
         exec("DELETE FROM rows")

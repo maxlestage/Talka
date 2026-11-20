@@ -30,6 +30,13 @@ struct ConversationView: View {
     /// La discussion exportée en texte, à partager.
     @State private var exported: URL?
     @State private var loaded = false
+    /// Combien de messages sont affichés, à partir des derniers : une longue
+    /// discussion s'ouvre sur sa fin, les plus anciens viennent en remontant.
+    @State private var shown = ConversationView.page
+    /// La dernière fois que des messages plus anciens ont été demandés.
+    @State private var grewAt = Date.distantPast
+    /// Une page de messages.
+    static let page = 300
     /// La recherche dans la discussion (nil : fermée).
     @State private var search: String?
     /// Le message vers lequel faire défiler (bandeau de l'épingle).
@@ -62,9 +69,13 @@ struct ConversationView: View {
             // Les messages éphémères expirés disparaissent tout de suite, comme dans le navigateur.
             let now = nowMs()
             let query = (search ?? "").trimmingCharacters(in: .whitespaces)
+            // La fin de la discussion (une page, plus ce qu'on a remonté) ; une
+            // recherche fouille toute la discussion.
+            let end = query.isEmpty ? e.recentMessages(chatId, limit: shown) : (list: e.messages(chatId), more: false)
+            let more = end.more
             // Sans recherche ni message éphémère, rien à écarter : la liste du
             // cœur est prise telle quelle (pas de copie à chaque frappe).
-            let all = e.messages(chatId)
+            let all = end.list
             let messages = query.isEmpty && !all.contains(where: { $0.exp != nil }) ? all : all.filter { (m: Message) -> Bool in
                 if let exp = m.exp, exp <= now { return false }
                 return query.isEmpty || Self.matches(m, query, me: e.me.code)
@@ -79,15 +90,31 @@ struct ConversationView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 2) {
-                            Label("Les messages sont chiffrés de bout en bout. Personne d'autre, pas même Talka, ne peut les lire.",
-                                  systemImage: "lock.fill")
-                                .font(.caption)
-                                .multilineTextAlignment(.center)
-                                .padding(10)
-                                // Translucide : le fond de la discussion reste visible.
-                                .frosted(in: .rect(cornerRadius: 8))
-                                .padding(.horizontal, 30)
+                            if more {
+                                // Il y a des messages plus anciens : ils viennent
+                                // quand on arrive ici en remontant, ou d'un toucher.
+                                Button { showOlder(proxy, keep: messages.first?.id) } label: {
+                                    Label("Messages plus anciens", systemImage: "arrow.up.circle")
+                                        .font(.caption)
+                                        .padding(10)
+                                        .frosted(in: .rect(cornerRadius: 8))
+                                }
+                                .buttonStyle(.plain)
                                 .padding(.vertical, 8)
+                                .onAppear {
+                                    if loaded, !atBottom { showOlder(proxy, keep: messages.first?.id) }
+                                }
+                            } else {
+                                Label("Les messages sont chiffrés de bout en bout. Personne d'autre, pas même Talka, ne peut les lire.",
+                                      systemImage: "lock.fill")
+                                    .font(.caption)
+                                    .multilineTextAlignment(.center)
+                                    .padding(10)
+                                    // Translucide : le fond de la discussion reste visible.
+                                    .frosted(in: .rect(cornerRadius: 8))
+                                    .padding(.horizontal, 30)
+                                    .padding(.vertical, 8)
+                            }
                             ForEach(Array(messages.enumerated()), id: \.element.id) { i, m in
                                 if i == 0 || !Dates.sameDay(messages[i - 1].at, m.at) {
                                     DayChip(text: Dates.separator(m.at)).padding(.vertical, 8)
@@ -97,7 +124,13 @@ struct ConversationView: View {
                                 }
                                 let first = i == 0 || messages[i - 1].from != m.from || messages[i - 1].kind == "system"
                                 MessageRow(engine: e, chat: chat, message: m, first: first, onReply: { reply = m; focused = true },
-                                           onOpen: { viewing = m }, onScrollTo: { id in withAnimation { proxy.scrollTo(id, anchor: .center) } })
+                                           onOpen: { viewing = m }, onScrollTo: { id in
+                                               if messages.contains(where: { $0.id == id }) {
+                                                   withAnimation { proxy.scrollTo(id, anchor: .center) }
+                                               } else if more, e.store.message(chatId, id) != nil {
+                                                   jumpTo = id
+                                               }
+                                           })
                                     .id(m.id)
                                     .reportsRowTop(m.id)
                                     .contextMenu { menu(e, chat, m) }
@@ -149,11 +182,15 @@ struct ConversationView: View {
                     .onAppear {
                         // `chat` est celui d'avant « lu » : ses non-lus d'avant l'ouverture.
                         let n = chat.unread
-                        if !loaded, n > 0, messages.count >= n {
-                            unreadMark = (messages[messages.count - n].id, n)
+                        // Plus de non-lus qu'une page : ils sont tous affichés.
+                        let wide = !loaded && more && n > messages.count
+                        let list = wide ? e.recentMessages(chatId, limit: n + 20).list : messages
+                        if wide { shown = n + 20 }
+                        if !loaded, n > 0, list.count >= n {
+                            unreadMark = (list[list.count - n].id, n)
                             // Le bandeau s'affiche, puis la discussion s'ouvre sur lui.
                             DispatchQueue.main.async { proxy.scrollTo("unread-separator", anchor: .top) }
-                        } else if let id = messages.last?.id {
+                        } else if let id = list.last?.id {
                             proxy.scrollTo(id, anchor: .bottom)
                         }
                         loaded = true
@@ -167,13 +204,20 @@ struct ConversationView: View {
                     .task(id: chatId) {
                         voiceChain.next = { [weak e] id in
                             guard let e else { return nil }
-                            return nextVoice(after: id, in: e.messages(chatId))
+                            return nextVoice(after: id, in: e.recentMessages(chatId, limit: ConversationView.page).list)
                         }
                     }
                     .onChange(of: jumpTo) { _, id in
                         guard let id else { return }
                         if messages.contains(where: { $0.id == id }) {
                             withAnimation { proxy.scrollTo(id, anchor: .center) }
+                        } else if more, e.store.message(chatId, id) != nil {
+                            // Plus ancien que ce qui est affiché : toute la
+                            // discussion, puis le message.
+                            shown = .max
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                proxy.scrollTo(id, anchor: .center)
+                            }
                         } else {
                             model.show("Message introuvable")
                         }
@@ -809,6 +853,17 @@ extension View {
 }
 
 extension ConversationView {
+    /// Affiche une page de messages plus anciens. La lecture reste où elle
+    /// en était : sur le message qui était en haut (`id`).
+    func showOlder(_ proxy: ScrollViewProxy, keep id: String?) {
+        // Une page à la fois : pas deux demandes coup sur coup.
+        guard Date().timeIntervalSince(grewAt) > 0.5 else { return }
+        grewAt = Date()
+        shown = shown > Int.max - Self.page ? .max : shown + Self.page
+        guard let id else { return }
+        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
+    }
+
     /// Le jour du message tout en haut de l'écran (celui dont le bas est le
     /// plus haut, encore visible).
     static func topDay(_ tops: [String: CGFloat], _ messages: [Message]) -> String? {
