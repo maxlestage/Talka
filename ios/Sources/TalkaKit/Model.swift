@@ -876,6 +876,22 @@ public struct StatusItem: Codable, Equatable, Identifiable, Sendable {
         owner = c.v(.owner, ""); id = c.v(.id, ""); kind = c.v(.kind, "text"); text = c.v(.text, "")
         bg = c.v(.bg, ""); data = c.v(.data, ""); at = c.v(.at, 0); seen = c.v(.seen, false); viewers = c.v(.viewers, [:])
     }
+
+    /// L'auteur, l'identifiant et la date d'une actu, lus sans décoder son
+    /// contenu (une photo, des centaines de Ko) : le ménage des actus de
+    /// plus de 24 heures n'a besoin que de la date.
+    struct Head: Decodable {
+        var owner: String
+        var id: String
+        var at: Double
+
+        var key: String { "\(owner)|\(id)" }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            owner = c.v(.owner, ""); id = c.v(.id, ""); at = c.v(.at, 0)
+        }
+    }
 }
 
 public struct CallEntry: Codable, Equatable, Identifiable, Sendable {

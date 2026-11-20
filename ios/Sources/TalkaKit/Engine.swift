@@ -63,6 +63,10 @@ public final class Engine {
     @ObservationIgnored public let relay: Relay
     @ObservationIgnored var flushing = false
     @ObservationIgnored var flushAgain = false
+    /// Les actus déjà décodées (clé → la ligne lue, l'actu), et leurs seules
+    /// dates : voir `statuses` et `statusDates`.
+    @ObservationIgnored var statusKept: [String: (json: String, item: StatusItem)] = [:]
+    @ObservationIgnored var statusHeads: [String: (json: String, head: StatusItem.Head)] = [:]
     /// Les messages importants de toutes les discussions, tels que trouvés à
     /// cette génération de la mémoire : voir `starred()`.
     @ObservationIgnored var starredKept: (generation: Int, list: [Message])?
@@ -291,8 +295,11 @@ public final class Engine {
                 if changed { refreshLast(chat.id); bump(chat.id) }
             }
         }
-        for s in store.all("statuses", as: StatusItem.self) where s.at + dayMs < t {
+        for s in statusDates() where s.at + dayMs < t {
             store.remove("statuses", s.key)
+            // Plus rien d'elle en mémoire non plus (sa photo).
+            statusHeads[s.key] = nil
+            statusKept[s.key] = nil
         }
         statusRevision += 1
         // Les clés pré-signées v3 : renouvelées chaque semaine, puis republiées.
@@ -2027,9 +2034,40 @@ public final class Engine {
         for c in contacts.values where c.saved && !c.blocked { enqueue(c.code, Wire(.statusDelete(id: id))) }
     }
 
+    /// Les actus de moins de 24 heures, de la plus ancienne à la plus
+    /// récente. Une actu (souvent une photo) n'est redécodée que si sa ligne
+    /// a changé : leur écran les redemande à chaque mise à jour.
     public func statuses() -> [StatusItem] {
         let t = nowMs()
-        return store.all("statuses", as: StatusItem.self).filter { $0.at + dayMs > t }.sorted { $0.at < $1.at }
+        var kept: [String: (json: String, item: StatusItem)] = [:]
+        var all: [StatusItem] = []
+        for (key, json) in store.rawRows("statuses") {
+            if let known = statusKept[key], known.json == json {
+                kept[key] = known
+                all.append(known.item)
+            } else if let item = JSON.decode(StatusItem.self, json) {
+                kept[key] = (json, item)
+                all.append(item)
+            }
+        }
+        statusKept = kept
+        return all.filter { $0.at + dayMs > t }.sorted { $0.at < $1.at }
+    }
+
+    /// L'auteur, l'identifiant et la date de chaque actu gardée, lus sans
+    /// décoder les photos, et une seule fois tant que la ligne ne change pas :
+    /// le ménage repasse chaque minute.
+    func statusDates() -> [StatusItem.Head] {
+        var kept: [String: (json: String, head: StatusItem.Head)] = [:]
+        for (key, json) in store.rawRows("statuses") {
+            if let known = statusHeads[key], known.json == json {
+                kept[key] = known
+            } else if let head = JSON.decode(StatusItem.Head.self, json) {
+                kept[key] = (json, head)
+            }
+        }
+        statusHeads = kept
+        return kept.values.map(\.head)
     }
 
     public func markStatusSeen(_ st: StatusItem) {
