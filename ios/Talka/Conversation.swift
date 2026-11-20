@@ -169,7 +169,9 @@ struct ConversationView: View {
                         if !loaded, n > 0, list.count >= n {
                             unreadMark = (list[list.count - n].id, n)
                             // Le bandeau s'affiche, puis la discussion s'ouvre sur lui.
-                            DispatchQueue.main.async { land(proxy, on: "unread-separator", anchor: .top) }
+                            // Un peu sous le haut du fil : la date qui y reste
+                            // affichée ne doit pas recouvrir le bandeau.
+                            DispatchQueue.main.async { land(proxy, on: "unread-separator", anchor: UnitPoint(x: 0.5, y: 0.08)) }
                         } else if let id = list.last?.id {
                             proxy.scrollTo(id, anchor: .bottom)
                             // Les bulles n'ont leur vraie hauteur qu'une fois
@@ -843,8 +845,10 @@ extension View {
 
 extension ConversationView {
     /// Le haut du fil : s'il y a des messages plus anciens que ceux affichés,
-    /// de quoi les faire venir (en arrivant ici en remontant, ou d'un
-    /// toucher) ; sinon, le rappel du chiffrement, au tout début.
+    /// de quoi les faire venir, d'un toucher ; sinon, le rappel du
+    /// chiffrement, au tout début. Pas de chargement tout seul en arrivant
+    /// ici : sur une machine lente, plusieurs pages partaient d'affilée et
+    /// la lecture perdait sa place (vu dans le simulateur de la CI).
     @ViewBuilder
     func top(_ proxy: ScrollViewProxy, more: Bool, first: String?) -> some View {
         if more {
@@ -857,13 +861,6 @@ extension ConversationView {
             .buttonStyle(.plain)
             .padding(.vertical, 8)
             .id("fil-haut")
-            .onAppear {
-                // Au tour suivant : si l'on arrive ici d'un seul saut, le bas
-                // du fil vient de quitter l'écran et doit d'abord le savoir.
-                DispatchQueue.main.async {
-                    if loaded, !atBottom { showOlder(proxy, keep: first) }
-                }
-            }
         } else {
             Label("Les messages sont chiffrés de bout en bout. Personne d'autre, pas même Talka, ne peut les lire.",
                   systemImage: "lock.fill")
@@ -919,19 +916,26 @@ extension ConversationView {
         // Douze secondes entre chaque : le temps pour la CI de capturer
         // l'ouverture, puis chaque remontée.
         for _ in 0..<2 {
-            try? await Task.sleep(for: .seconds(12))
+            try? await Task.sleep(for: .seconds(11))
             proxy.scrollTo("fil-haut", anchor: .top)
+            // Puis le toucher sur « Messages plus anciens ».
+            try? await Task.sleep(for: .seconds(1))
+            let first = model.engine?.recentMessages(chatId, limit: shown).list.first?.id
+            showOlder(proxy, keep: first)
         }
         #endif
     }
 
-    /// Affiche une page de messages plus anciens. La lecture reste où elle
-    /// en était : sur le message qui était en haut (`id`).
+    /// Affiche des messages plus anciens : autant que ce qui est déjà
+    /// affiché (300, puis 600, 1 200… 2 400 au plus à la fois), pour ne pas
+    /// toucher cent fois en remontant loin. La lecture reste où elle en
+    /// était : sur le message qui était en haut (`id`).
     func showOlder(_ proxy: ScrollViewProxy, keep id: String?) {
-        // Une page à la fois : pas deux demandes coup sur coup.
+        // Pas deux demandes coup sur coup (un double toucher).
         guard Date().timeIntervalSince(grewAt) > 0.5 else { return }
         grewAt = Date()
-        shown = shown > Int.max - Self.page ? .max : shown + Self.page
+        let more = min(max(Self.page, shown), 2_400)
+        shown = shown > Int.max - more ? .max : shown + more
         guard let id else { return }
         DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
     }
