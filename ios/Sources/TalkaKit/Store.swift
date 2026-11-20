@@ -59,6 +59,14 @@ public final class Store: @unchecked Sendable {
     /// discussions pas chargées : la coche de la liste, un accusé qui arrive.
     var singles: [String: Message] = [:]
     static let singlesMax = 64
+    /// Les derniers messages de discussions pas chargées, déjà lus par
+    /// l'index : la limite demandée, ce qu'elle a rendu, et s'il n'y en a pas
+    /// d'autres. Le résumé de la montre les redemande toutes les deux
+    /// secondes : tant que rien n'y est écrit, ils ne sont pas relus.
+    var tails: [String: (limit: Int, complete: Bool, list: [Message])] = [:]
+    /// Au-delà (marquer 300 messages comme lus), une lecture n'est pas gardée.
+    static let tailMax = 64
+    static let tailChats = 32
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
     /// La clé de l'appareil (nil : rien n'est chiffré).
@@ -300,6 +308,7 @@ public final class Store: @unchecked Sendable {
         }
         messages[chat] = out
         forgetSingles(of: chat)
+        tails[chat] = nil
         return out
     }
 
@@ -352,15 +361,27 @@ public final class Store: @unchecked Sendable {
         singles = singles.filter { !$0.key.hasPrefix(prefix) }
     }
 
-    /// Les `limit` derniers messages d'une discussion pas chargée, par l'index.
+    /// Les `limit` derniers messages d'une discussion pas chargée, par
+    /// l'index ; gardés (`tails`) jusqu'à la prochaine écriture dans la
+    /// discussion.
     func tail(_ chat: String, _ limit: Int) -> [Message] {
         guard limit > 0 else { return [] }
+        if let kept = tails[chat], kept.complete || kept.limit >= limit {
+            return limit >= kept.list.count ? kept.list : Array(kept.list.suffix(limit))
+        }
         var out: [Message] = []
+        var read = 0
         run("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ? ORDER BY at DESC, key DESC LIMIT ?", [chat, limit]) { stmt in
+            read += 1
             if let json = self.value(stmt, 1, store: "messages", key: column(stmt, 0)),
                let m = JSON.decode(Message.self, json) { out.append(m) }
         }
-        return out.reversed()
+        let list = Array(out.reversed())
+        if limit <= Self.tailMax {
+            if tails.count >= Self.tailChats, tails[chat] == nil { tails.removeAll(keepingCapacity: true) }
+            tails[chat] = (limit, read < limit, list)
+        }
+        return list
     }
 
     /// Les messages d'une discussion, du plus ancien au plus récent ; `limit`
@@ -410,6 +431,7 @@ public final class Store: @unchecked Sendable {
             reorder(m.chat, old: old, new: m)
         } else {
             remember(m.key, m)
+            tails[m.chat] = nil
         }
         put("messages", m.key, JSON.encode(m), chat: m.chat, at: m.at)
     }
@@ -420,6 +442,7 @@ public final class Store: @unchecked Sendable {
             if let old = messages[chat]?.removeValue(forKey: id) ?? nil { reorder(chat, old: old, new: nil) }
         } else {
             singles["\(chat)|\(id)"] = nil
+            tails[chat] = nil
         }
         delete("messages", "\(chat)|\(id)")
     }
@@ -428,6 +451,7 @@ public final class Store: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         messages[chat] = [:]
         ordered[chat] = nil
+        tails[chat] = nil
         forgetSingles(of: chat)
         run("DELETE FROM rows WHERE store = 'messages' AND chat = ?", [chat])
     }
@@ -494,6 +518,7 @@ public final class Store: @unchecked Sendable {
         messages = [:]
         ordered = [:]
         singles = [:]
+        tails = [:]
         exec("DELETE FROM rows")
         exec("VACUUM")
         // Tout est effacé : on peut écrire à nouveau (avec la clé, s'il y en a une).
