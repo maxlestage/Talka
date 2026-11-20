@@ -380,6 +380,34 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(s.decode([Store.MessageRow]()).isEmpty)
     }
 
+    /// Une liste lourde (les contacts et leurs photos, au lancement) est
+    /// décodée sur plusieurs cœurs : les mêmes objets, dans le même ordre,
+    /// les lignes illisibles sautées.
+    func testAHeavyListIsDecodedInParallelExactly() {
+        let avatar = "data:image/jpeg;base64," + String(repeating: "/9j/4AAQ", count: 5_000)
+        var contacts: [Contact] = []
+        for i in 0..<400 {
+            var c = Contact(code: "CODE\(i)")
+            c.name = "Contact \(i) — é 🥦"
+            if i % 3 == 0 { c.avatar = avatar }
+            contacts.append(c)
+        }
+        var jsons = contacts.map { JSON.encode($0) }
+        jsons[7] = "{abîmé"
+        jsons[200] = ""
+        let want = contacts.enumerated().filter { $0.offset != 7 && $0.offset != 200 }.map(\.element)
+        XCTAssertEqual(Store.decodeAll(jsons) as [Contact], want)
+        XCTAssertEqual(Store.decodeAll(Array(jsons.prefix(3))) as [Contact], Array(contacts.prefix(3)))
+        XCTAssertTrue((Store.decodeAll([]) as [Contact]).isEmpty)
+        // Par la mémoire : tous, quels que soient leur nombre et leur poids.
+        let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
+        s.transaction { for c in contacts { s.write("contacts", c.code, c) } }
+        let all = s.all("contacts", as: Contact.self)
+        XCTAssertEqual(all.count, 400)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: all.map { ($0.code, $0) }), Dictionary(uniqueKeysWithValues: contacts.map { ($0.code, $0) }))
+        XCTAssertEqual(s.all("chats", as: Chat.self).count, 0)
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
