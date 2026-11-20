@@ -329,6 +329,57 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(cleared.singleReads.isEmpty)
     }
 
+    /// Une longue discussion est décodée sur plusieurs cœurs : les mêmes
+    /// messages, tous, qu'une lecture ligne à ligne ; chiffrée ou d'avant le
+    /// chiffrement, avec des photos (des paquets coupés par le poids), et une
+    /// ligne abîmée simplement sautée.
+    func testALongChatIsDecodedInParallelExactly() {
+        let photo = "data:image/jpeg;base64," + String(repeating: "/9j/4AAQ", count: 40_000)
+        for key in [nil, SymmetricKey(size: .bits256)] {
+            let dir = tempDir()
+            var want: [Message] = []
+            do {
+                let s = Store(directory: dir, key: key)
+                s.transaction {
+                    for i in 0..<3000 {
+                        var content = Content(text: "Message \(i) — é, 🥦, \"guillemets\" et \\ barre")
+                        if i % 97 == 0 { content.kind = "image"; content.data = photo }
+                        // Des heures en désordre, et des heures égales.
+                        var m = Message(chat: "AMI", id: "m\(i)", from: "WGSEAJNSZJ", at: Double((i * 7919) % 500), content: content)
+                        m.reactions = i % 5 == 0 ? ["WGSEAJNSZJ": "👍"] : [:]
+                        s.writeMessage(m)
+                        want.append(m)
+                    }
+                    s.writeMessage(message("AUTRE", "m0", at: 1, "ailleurs"))
+                }
+            }
+            want.sort { ($0.at, $0.id) < ($1.at, $1.id) }
+            // À froid, ligne à ligne (une par une, sans charger) : la référence.
+            let cold = Store(directory: dir, key: key)
+            for i in stride(from: 0, to: 3000, by: 331) {
+                XCTAssertEqual(cold.message("AMI", "m\(i)"), want.first { $0.id == "m\(i)" })
+            }
+            XCTAssertNil(cold.messages["AMI"])
+            // Chargée d'un coup, en parallèle.
+            let loaded = Store(directory: dir, key: key)
+            XCTAssertEqual(loaded.messagesOf("AMI"), want)
+            XCTAssertEqual(loaded.messagesOf("AUTRE").map(\.text), ["ailleurs"])
+            // Une ligne abîmée au milieu : sautée, les autres restent.
+            let broken = Store(directory: dir, key: key)
+            broken.run("UPDATE rows SET json = ? WHERE store = 'messages' AND key = ?", [Data(repeating: 7, count: 64), "AMI|m1500"])
+            XCTAssertEqual(broken.messagesOf("AMI"), want.filter { $0.id != "m1500" })
+        }
+        // Un paquet décodé garde l'ordre de ses lignes, quel que soit le partage.
+        let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
+        let msgs = (0..<1000).map { message("AMI", "m\($0)", at: Double($0), "texte \($0)") }
+        var rows = msgs.map { Store.MessageRow(key: $0.key, sealed: s.seal("messages", $0.key, JSON.encode($0))) }
+        rows[10] = Store.MessageRow(key: "AMI|m10", json: JSON.encode(msgs[10]))
+        rows[20] = Store.MessageRow(key: "AMI|m20", sealed: Data(repeating: 1, count: 80))
+        XCTAssertEqual(s.decode(rows), msgs.filter { $0.id != "m20" })
+        XCTAssertEqual(s.decode(Array(rows.prefix(5))), Array(msgs.prefix(5)))
+        XCTAssertTrue(s.decode([Store.MessageRow]()).isEmpty)
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
