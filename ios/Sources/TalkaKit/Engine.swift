@@ -1971,16 +1971,24 @@ public final class Engine {
             typing[c.id]?.remove(from)
             onIncoming?(chats[c.id] ?? c, m, active)
         case let .receipt(st, ids, rdev):
+            var changed = false
             for id in ids {
                 guard var m = store.message(c.id, id), m.from == me.code else { continue }
+                let before = (m.deliveredTo.count, m.readBy.count)
                 if !m.deliveredTo.contains(from) { m.deliveredTo.append(from) }
                 if st == "read", !m.readBy.contains(from) { m.readBy.append(from) }
-                store.writeMessage(m)
+                // L'accusé d'un second appareil du même contact (ou un accusé
+                // rejoué) ne change rien au message : il n'est pas réécrit
+                // (photo comprise), ni l'écran redessiné.
+                if (m.deliveredTo.count, m.readBy.count) != before {
+                    store.writeMessage(m)
+                    changed = true
+                }
                 // Bien arrivé : plus besoin de le garder pour un renvoi (v4 :
                 // quand chacun de ses appareils l'a).
                 gotBy("\(id):\(from)", rdev)
             }
-            bump(c.id)
+            if changed { bump(c.id) }
         case let .react(id, emoji):
             guard var m = store.message(c.id, id) else { return }
             m.reactions[from] = emoji.isEmpty ? nil : String(emoji.prefix(8))
