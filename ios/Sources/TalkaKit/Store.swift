@@ -301,8 +301,31 @@ public final class Store: @unchecked Sendable {
     }
 
     public func all<T: Decodable>(_ store: String, as type: T.Type = T.self) -> [T] {
-        lock.lock(); defer { lock.unlock() }
-        return (rows[store] ?? [:]).values.compactMap { JSON.decode(T.self, $0) }
+        lock.lock()
+        let jsons = Array((rows[store] ?? [:]).values)
+        lock.unlock()
+        return Self.decodeAll(jsons)
+    }
+
+    /// Les objets d'une liste de JSON, dans le même ordre (les illisibles
+    /// sautés). Une liste lourde (au lancement : les contacts et les
+    /// discussions, avec leurs photos) est partagée entre les cœurs.
+    static func decodeAll<T: Decodable>(_ jsons: [String]) -> [T] {
+        let weight = jsons.reduce(0) { $0 + $1.utf8.count }
+        let workers = min(ProcessInfo.processInfo.activeProcessorCount, 8, jsons.count, weight / 262_144)
+        guard workers > 1 else { return jsons.compactMap { JSON.decode(T.self, $0) } }
+        var parts = [[T]](repeating: [], count: workers)
+        parts.withUnsafeMutableBufferPointer { buffer in
+            let slots = buffer
+            DispatchQueue.concurrentPerform(iterations: workers) { w in
+                let range = (jsons.count * w / workers)..<(jsons.count * (w + 1) / workers)
+                var found: [T] = []
+                found.reserveCapacity(range.count)
+                for i in range { if let v = JSON.decode(T.self, jsons[i]) { found.append(v) } }
+                slots[w] = found
+            }
+        }
+        return parts.flatMap { $0 }
     }
 
     public func clear(_ store: String) {
