@@ -1050,7 +1050,7 @@ struct MessageRow: View {
         switch m.kind {
         case "image":
             VStack(alignment: .leading, spacing: 4) {
-                if let ui = UIImage.fromDataURL(m.data) {
+                if let ui = UIImage.bubble(fromDataURL: m.data) {
                     Button(action: onOpen) {
                         Image(uiImage: ui)
                             .resizable()
