@@ -177,4 +177,50 @@ final class ClearChatTests: XCTestCase {
         XCTAssertFalse(e.buried("AMI", "m10"))
         XCTAssertEqual(stored(e, "AMI").count, 20_000)
     }
+
+    // ----- La boîte d'envoi -----
+
+    /// La boîte d'envoi lue sans son contenu : les mêmes enveloppes, dans le
+    /// même ordre, que la lecture complète ; elle suit chaque changement de
+    /// ligne, et le contenu reste dans la mémoire.
+    func testOutboxIsReadWithoutItsPayloads() async {
+        let e = phone()
+        func full() -> [OutItem] { e.store.all("outbox", as: OutItem.self).sorted { $0.seq < $1.seq } }
+        func heads() -> [OutItem] { e.outbox().map(\.head) }
+        func stripped(_ items: [OutItem]) -> [OutItem] { items.map { var i = $0; i.payload = ""; return i } }
+        XCTAssertTrue(e.outbox().isEmpty)
+
+        let photo = String(repeating: "A", count: 200_000)
+        for (i, to) in ["K7Q2MX9PRT", "WGSEAJNSZJ", "BGWQXQ2HU9"].enumerated() {
+            let item = OutItem(id: "m\(i):\(to)", to: to, payload: "{\"k\":\"msg\",\"data\":\"\(photo)\"}",
+                               chat: to, msgId: "m\(i)", seq: Double(10 - i))
+            e.store.write("outbox", item.id, item)
+        }
+        XCTAssertEqual(heads(), stripped(full()))
+        XCTAssertEqual(heads().map(\.msgId), ["m2", "m1", "m0"])
+        // Chaque enveloppe vient avec sa ligne : le contenu s'y relit entier.
+        for (head, json) in e.outbox() {
+            XCTAssertTrue(head.payload.isEmpty)
+            XCTAssertEqual(JSON.decode(OutItem.self, json)?.payload.count, photo.count + 21)
+            XCTAssertEqual(JSON.decode(OutItem.self, json)?.id, head.id)
+        }
+        // Une ligne qui change (un accusé, le relais qui l'accepte), une qui
+        // part, une qui arrive : relues ; les autres non.
+        var changed = full()[0]
+        changed.boot = "B00T"
+        changed.got = ["dev1"]
+        e.store.write("outbox", changed.id, changed)
+        e.store.remove("outbox", "m0:K7Q2MX9PRT")
+        e.store.write("outbox", "m9:K7Q2MX9PRT", OutItem(id: "m9:K7Q2MX9PRT", to: "K7Q2MX9PRT", payload: "{}", chat: "K7Q2MX9PRT", msgId: "m9", seq: 1))
+        XCTAssertEqual(heads(), stripped(full()))
+        XCTAssertEqual(heads().map(\.msgId), ["m9", "m2", "m1"])
+        XCTAssertEqual(heads()[1].boot, "B00T")
+        XCTAssertEqual(heads()[1].got, ["dev1"])
+        XCTAssertEqual(Set(e.outHeads.keys), Set(full().map(\.id)), "rien de gardé pour une enveloppe partie")
+        // Le contenu n'a pas quitté la mémoire.
+        XCTAssertEqual(e.store.read("outbox", changed.id, as: OutItem.self)?.payload.count, photo.count + 21)
+        e.store.clear("outbox")
+        XCTAssertTrue(e.outbox().isEmpty)
+        XCTAssertTrue(e.outHeads.isEmpty)
+    }
 }
