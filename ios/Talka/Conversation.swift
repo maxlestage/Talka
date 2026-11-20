@@ -887,11 +887,18 @@ extension ConversationView {
         }
     }
 
-    /// Builds Debug seulement (`-TalkaDemoTop YES`, pour les captures de la
-    /// CI) : remonte tout seul en haut du fil, deux fois, pour montrer les
-    /// messages plus anciens qui arrivent.
+    /// Builds Debug seulement (pour les captures de la CI) : remonte tout
+    /// seul en haut du fil, deux fois, pour montrer les messages plus anciens
+    /// qui arrivent (`-TalkaDemoTop YES`), ou saute vers le vieux message
+    /// épinglé (`-TalkaDemoJump YES`).
     func climb(_ proxy: ScrollViewProxy) async {
         #if DEBUG
+        if Demo.jumps {
+            // Le message épinglé, plus ancien que ce qui est affiché.
+            try? await Task.sleep(for: .seconds(5))
+            jumpTo = Demo.pinned
+            return
+        }
         guard Demo.climbs else { return }
         // Douze secondes entre chaque : le temps pour la CI de capturer
         // l'ouverture, puis chaque remontée.
