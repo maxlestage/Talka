@@ -51,6 +51,43 @@ final class MentionTests: XCTestCase {
         XCTAssertEqual(e.chat("g:mention")?.mentioned, false)
     }
 
+    /// Un message reçu : la discussion gardée dans la mémoire (une seule
+    /// écriture) porte les non-lus, la mention et le dernier message ; une
+    /// base rouverte les retrouve.
+    @MainActor
+    func testIncomingMessageIsKeptWithItsChat() async {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("talka-recu-\(randomId(4))")
+        let store = Store(directory: dir)
+        Engine.createAccount(store, name: "Léa", avatar: "")
+        let e = Engine(store: store, server: URL(string: "http://localhost:1")!)
+        let x = Identity.create()
+        let grp = GroupInfo(id: "recu", name: "Les amis", members: [x.code, e.me.code], admins: [x.code], avatar: "", v: 1)
+        let t = nowMs()
+        var first = Content(text: "Salut @Léa")
+        first.mentions = [e.me.code]
+        e.handle(x.code, Wire(.msg(id: "m1", at: t, pn: "", content: first), grp: grp), ts: t, live: true)
+        e.handle(x.code, Wire(.msg(id: "m2", at: t + 1, pn: "", content: Content(text: "Tu viens ?")), g: "recu"), ts: t + 1, live: true)
+        for chat in [store.read("chats", "g:recu", as: Chat.self), Store(directory: dir).read("chats", "g:recu", as: Chat.self)] {
+            XCTAssertEqual(chat?.unread, 2)
+            XCTAssertEqual(chat?.mentioned, true)
+            XCTAssertEqual(chat?.last?.id, "m2")
+            XCTAssertEqual(chat?.last?.text, "Tu viens ?")
+            XCTAssertEqual(chat?.lastAt, t + 1)
+        }
+        XCTAssertEqual(store.read("chats", "g:recu", as: Chat.self), e.chat("g:recu"))
+        // Un rejeu ne compte pas deux fois.
+        e.handle(x.code, Wire(.msg(id: "m2", at: t + 1, pn: "", content: Content(text: "Tu viens ?")), g: "recu"), ts: t + 2, live: true)
+        XCTAssertEqual(store.read("chats", "g:recu", as: Chat.self)?.unread, 2)
+        // Sous nos yeux (la discussion ouverte, Talka au premier plan) : lu.
+        e.activeChat = "g:recu"
+        e.foreground = true
+        e.handle(x.code, Wire(.msg(id: "m3", at: t + 3, pn: "", content: Content(text: "Alors ?")), g: "recu"), ts: t + 3, live: true)
+        let seen = store.read("chats", "g:recu", as: Chat.self)
+        XCTAssertEqual(seen?.unread, 2)
+        XCTAssertEqual(seen?.last?.id, "m3")
+        XCTAssertEqual(e.store.message("g:recu", "m3")?.readByMe, true)
+    }
+
     /// « X vous a ajouté » reste avant le premier message du groupe, même
     /// quand l'annonce a quitté l'expéditeur après qu'il a écrit ce message
     /// (l'annonce est datée par le relais, le message par l'expéditeur).

@@ -1924,7 +1924,10 @@ public final class Engine {
                 c.unread += 1
                 // Mentionné : « @ » dans la liste, jusqu'à la lecture.
                 if m.mentions.contains(me.code) { c.mentioned = true }
-                saveChat(c)
+                // En mémoire seulement : `storeMessage`, juste après, écrit la
+                // discussion (avec son dernier message). Une écriture au lieu
+                // de deux, et sa ligne porte la photo du groupe.
+                chats[c.id] = c
             }
             storeMessage(m)
             queueReceipt(from, c.id, [id], "delivered")
