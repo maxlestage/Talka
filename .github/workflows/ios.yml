@@ -58,8 +58,22 @@ jobs:
           xcrun simctl launch "$UDID" com.maxlestage.talka
           sleep 8
           xcrun simctl io "$UDID" screenshot shots/2-accueil.png
+          xcrun simctl terminate "$UDID" com.maxlestage.talka
+          # Une longue discussion (le compte de démonstration des builds
+          # Debug, ios/Talka/Demo.swift) : son ouverture sur ses derniers
+          # messages, puis deux remontées en haut du fil, où les messages
+          # plus anciens arrivent.
+          xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaDemo YES -TalkaDemoTop YES
+          sleep 6
+          xcrun simctl io "$UDID" screenshot shots/3-discussion.png
+          sleep 7
+          xcrun simctl io "$UDID" screenshot shots/4-remontee.png
+          sleep 7
+          xcrun simctl io "$UDID" screenshot shots/5-remontee-encore.png
           for f in shots/*.png; do
-            sips -Z 420 -s format jpeg -s formatOptions 55 "$f" --out "${f%.png}.jpg" > /dev/null
+            # La discussion en plus grand : ses messages doivent se lire.
+            case "$f" in shots/[12]-*) side=420 ;; *) side=1000 ;; esac
+            sips -Z $side -s format jpeg -s formatOptions 55 "$f" --out "${f%.png}.jpg" > /dev/null
             echo "=== capture $(basename "${f%.png}")"
             base64 -i "${f%.png}.jpg" | fold -w 1500
             echo "=== fin"

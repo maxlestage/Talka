@@ -178,6 +178,7 @@ struct ConversationView: View {
                             guard let e else { return nil }
                             return nextVoice(after: id, in: e.recentMessages(chatId, limit: ConversationView.page).list)
                         }
+                        await climb(proxy)
                     }
                     .onChange(of: jumpTo) { _, id in
                         guard let id else { return }
@@ -839,8 +840,13 @@ extension ConversationView {
             }
             .buttonStyle(.plain)
             .padding(.vertical, 8)
+            .id("fil-haut")
             .onAppear {
-                if loaded, !atBottom { showOlder(proxy, keep: first) }
+                // Au tour suivant : si l'on arrive ici d'un seul saut, le bas
+                // du fil vient de quitter l'écran et doit d'abord le savoir.
+                DispatchQueue.main.async {
+                    if loaded, !atBottom { showOlder(proxy, keep: first) }
+                }
             }
         } else {
             Label("Les messages sont chiffrés de bout en bout. Personne d'autre, pas même Talka, ne peut les lire.",
@@ -863,6 +869,19 @@ extension ConversationView {
         } else if more, e.store.message(chatId, id) != nil {
             jumpTo = id
         }
+    }
+
+    /// Builds Debug seulement (`-TalkaDemoTop YES`, pour les captures de la
+    /// CI) : remonte tout seul en haut du fil, deux fois, pour montrer les
+    /// messages plus anciens qui arrivent.
+    func climb(_ proxy: ScrollViewProxy) async {
+        #if DEBUG
+        guard Demo.climbs else { return }
+        for _ in 0..<2 {
+            try? await Task.sleep(for: .seconds(7))
+            proxy.scrollTo("fil-haut", anchor: .top)
+        }
+        #endif
     }
 
     /// Affiche une page de messages plus anciens. La lecture reste où elle
