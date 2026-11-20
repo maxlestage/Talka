@@ -169,6 +169,14 @@ fn pages_enabled() -> Result<(), String> {
     )?;
     let enabled = status == 200 && body["build_type"] == "workflow";
     append("GITHUB_OUTPUT", &format!("enabled={enabled}"));
+    // Ce que GitHub répond, pour savoir quoi régler : 404, Pages n'existe pas
+    // pour ce dépôt ; 200 avec une autre source que « workflow », Pages est
+    // activé mais publie depuis une branche.
+    println!(
+        "GitHub Pages : réponse {status}, source « {} »{}",
+        body["build_type"].as_str().unwrap_or("aucune"),
+        body["message"].as_str().map(|m| format!(" ({m})")).unwrap_or_default()
+    );
     if !enabled {
         warning(
             "GitHub Pages est désactivé",
