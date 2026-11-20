@@ -233,16 +233,24 @@ extension Engine {
     /// Un élément de la boîte d'envoi bien arrivé sur l'appareil `d` du
     /// destinataire : gardé tant qu'un autre l'attend.
     func gotBy(_ key: String, _ d: String) {
-        guard !d.isEmpty, var item = store.read("outbox", key, as: OutItem.self) else {
+        // L'enveloppe est d'abord lue sans son contenu (une photo) : le plus
+        // souvent elle n'attendait que cet accusé et part ; elle n'est
+        // décodée en entier que s'il faut la réécrire.
+        guard !d.isEmpty, let json = store.readRaw("outbox", key), var head = OutItem.head(json) else {
             store.remove("outbox", key)
             return
         }
-        if !item.got.contains(d) { item.got.append(d) }
-        if item.boot.isEmpty || stillUnconfirmed(item) {
-            store.write("outbox", key, item)
-        } else {
+        let known = head.got.contains(d)
+        if !known { head.got.append(d) }
+        guard head.boot.isEmpty || stillUnconfirmed(head) else {
             store.remove("outbox", key)
+            return
         }
+        // Rien de neuf : la ligne est déjà la bonne.
+        if known { return }
+        guard var item = JSON.decode(OutItem.self, json) else { return }
+        item.got = head.got
+        store.write("outbox", key, item)
     }
 
     /// Ce qu'un autre de nos appareils (`fd`) a fait : refait ici, sans le
