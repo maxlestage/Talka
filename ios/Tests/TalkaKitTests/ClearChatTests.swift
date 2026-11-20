@@ -228,6 +228,94 @@ final class ClearChatTests: XCTestCase {
         XCTAssertTrue(e.starred().isEmpty)
     }
 
+    // ----- La recherche dans toutes les discussions -----
+
+    /// Fouillées par tranches sur plusieurs cœurs, les discussions rendent
+    /// exactement ce que rendait la lecture message après message : les
+    /// mêmes messages, dans le même ordre, et l'heure de la prochaine capsule.
+    func testSearchFindsWhatAPlainScanFinds() async {
+        let now = 1_800_000_000_000.0
+        var seed: UInt64 = 5
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        let texts = ["Un café ?", "CAFE ou thé", "on se voit demain", "Cafétéria fermée", "rien", "le cafe du coin", "École", "ecole"]
+        var lists: [[Message]] = []
+        for c in 0..<30 {
+            var list: [Message] = []
+            // Des discussions vides, courtes, et plus longues qu'une tranche.
+            for i in 0..<[0, 3, 40, 2500][next(4)] {
+                var m = Message(chat: "c\(c)", id: "m\(i)", from: next(3) == 0 ? "MOI" : "AMI", at: Double(next(100_000)), content: Content(text: texts[next(texts.count)]))
+                switch next(12) {
+                case 0: m.deleted = true
+                case 1: m.kind = "system"
+                case 2: m.openAt = now + Double(next(1000) + 1)
+                case 3: m.openAt = now - 5
+                case 4: m.kind = "file"; m.text = ""; m.name = "Café.pdf"
+                default: break
+                }
+                list.append(m)
+            }
+            lists.append(list)
+        }
+        for q in ["café", "CAFE", "ecole", "thé", "introuvable", "f ?"] {
+            var want: [Message] = []
+            var open = Double.infinity
+            for list in lists {
+                for m in list where m.kind != "system" && !m.deleted {
+                    if m.sealed(for: "MOI", now: now) { open = min(open, m.openAt ?? .infinity); continue }
+                    if "\(m.text) \(m.name)".range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil { want.append(m) }
+                }
+            }
+            let got = Message.matching(lists, q, me: "MOI", now: now)
+            XCTAssertEqual(got.found, want, q)
+            XCTAssertEqual(got.nextOpen, open, q)
+        }
+        XCTAssertTrue(Message.matching([], "café", me: "MOI", now: now).found.isEmpty)
+        XCTAssertEqual(Message.matching([[]], "café", me: "MOI", now: now).nextOpen, .infinity)
+    }
+
+    /// La même recherche n'est pas refaite deux fois de suite, mais elle
+    /// n'est jamais périmée : un message qui arrive ou part, un contact
+    /// bloqué, une capsule qui s'ouvre la font refaire.
+    func testSearchIsKeptButNeverStale() async throws {
+        let e = phone()
+        let x = Identity.create(), y = Identity.create()
+        let c = e.ensureDirectChat(x.code)
+        e.ensureDirectChat(y.code)
+        let a = try XCTUnwrap(e.send(c.id, Content(text: "Rendez-vous au café")))
+        e.send(y.code, Content(text: "Un autre CAFE"))
+        XCTAssertTrue(e.searchMessages("c").isEmpty, "deux lettres au moins")
+        XCTAssertEqual(Set(e.searchMessages("cafe").map(\.text)), ["Rendez-vous au café", "Un autre CAFE"])
+        let kept = e.searchKept?.at
+        XCTAssertEqual(e.searchMessages(" cafe ").count, 2)
+        XCTAssertEqual(e.searchKept?.at, kept, "la même recherche, pas refaite")
+        XCTAssertEqual(e.searchMessages("cafe", limit: 1).count, 1)
+        XCTAssertEqual(e.searchMessages("rendez").map(\.id), [a.id])
+
+        // Un message de plus, un de moins.
+        let t = nowMs()
+        e.handle(x.code, Wire(.msg(id: "r1", at: t, pn: "", content: Content(text: "Quel café ?"))), ts: t, live: true)
+        XCTAssertEqual(e.searchMessages("cafe").count, 3)
+        e.delete(c.id, a.id, forEveryone: false)
+        XCTAssertEqual(Set(e.searchMessages("cafe").map(\.text)), ["Quel café ?", "Un autre CAFE"])
+        // Un contact bloqué n'est plus fouillé ; débloqué, il l'est de nouveau.
+        e.setBlocked(y.code, true)
+        XCTAssertEqual(e.searchMessages("cafe").map(\.text), ["Quel café ?"])
+        e.setBlocked(y.code, false)
+        XCTAssertEqual(e.searchMessages("cafe").count, 2)
+
+        // Une capsule scellée ne se trahit pas ; ouverte, elle se trouve.
+        var capsule = Content(text: "Le café de l'an prochain")
+        capsule.openAt = t + 400
+        e.handle(x.code, Wire(.msg(id: "r2", at: t, pn: "", content: capsule)), ts: t, live: true)
+        XCTAssertEqual(e.searchMessages("cafe").count, 2)
+        XCTAssertEqual(e.searchMessages("cafe").count, 2)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertEqual(e.searchMessages("cafe").count, 3)
+    }
+
     // ----- Les actus -----
 
     /// Le ménage lit la date des actus sans décoder leurs photos : celles de

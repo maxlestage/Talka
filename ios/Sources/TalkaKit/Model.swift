@@ -764,6 +764,47 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         (openAt ?? 0) > now && from != me
     }
 
+    /// La recherche dans des discussions entières : les messages dont le
+    /// texte ou le nom de pièce jointe contient `q` (accents et majuscules
+    /// ignorés), dans l'ordre des listes ; ni messages système ou supprimés,
+    /// ni capsule encore scellée pour `me`. `nextOpen` : l'heure où la
+    /// prochaine capsule scellée s'ouvrira (le résultat peut alors changer).
+    /// Les listes sont fouillées par tranches, sur plusieurs cœurs.
+    static func matching(_ lists: [[Message]], _ q: String, me: String, now: Double) -> (found: [Message], nextOpen: Double) {
+        func scan(_ slice: ArraySlice<Message>) -> ([Message], Double) {
+            var found: [Message] = []
+            var next = Double.infinity
+            for m in slice where m.kind != "system" && !m.deleted {
+                if m.sealed(for: me, now: now) {
+                    next = min(next, m.openAt ?? .infinity)
+                } else if "\(m.text) \(m.name)".range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                    found.append(m)
+                }
+            }
+            return (found, next)
+        }
+        // Des tranches de 1 000 messages au plus, dans l'ordre.
+        var slices: [ArraySlice<Message>] = []
+        for list in lists {
+            var start = 0
+            while start < list.count {
+                let end = min(start + 1000, list.count)
+                slices.append(list[start..<end])
+                start = end
+            }
+        }
+        var parts = [([Message], Double)](repeating: ([], .infinity), count: slices.count)
+        if slices.count > 2, ProcessInfo.processInfo.activeProcessorCount > 1 {
+            parts.withUnsafeMutableBufferPointer { buffer in
+                let slots = buffer
+                DispatchQueue.concurrentPerform(iterations: slices.count) { i in slots[i] = scan(slices[i]) }
+            }
+        } else {
+            for i in slices.indices { parts[i] = scan(slices[i]) }
+        }
+        return (parts.flatMap { $0.0 }, parts.map(\.1).min() ?? .infinity)
+    }
+
     /// L'œuf de Pâques 🥦, comme dans le navigateur : un texte qui contient
     /// 🥦 ou « brocoli » fait pleuvoir des brocolis. Une capsule scellée ne
     /// se trahit pas.
