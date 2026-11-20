@@ -245,6 +245,52 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(s.messagesOf("g:x").map(\.id), ["seul"])
     }
 
+    /// Les derniers messages d'une discussion pas chargée sont gardés d'une
+    /// lecture à l'autre (la montre les redemande sans cesse), mais jamais
+    /// périmés : après chaque écriture, ce sont ceux qu'un tri complet
+    /// donnerait, quelle que soit la limite demandée.
+    func testRecentMessagesAreKeptButNeverStale() {
+        let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
+        var ref: [String: [String: Message]] = [:]
+        var seed: UInt64 = 99
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        func want(_ chat: String, _ limit: Int) -> [Message] {
+            Array((ref[chat] ?? [:]).values.sorted { ($0.at, $0.id) < ($1.at, $1.id) }.suffix(limit))
+        }
+        // Plus de discussions que la mémoire n'en garde à la fois.
+        let chats = (0..<40).map { "AMI\($0)" }
+        for step in 0..<1500 {
+            let chat = chats[next(chats.count)]
+            let id = "m\(next(30))"
+            switch next(6) {
+            case 0 where ref[chat]?[id] != nil:
+                s.removeMessage(chat, id)
+                ref[chat]?[id] = nil
+            case 1:
+                // Seulement relire, deux fois de suite, avec des limites différentes.
+                break
+            default:
+                let m = message(chat, id, at: Double(next(40)), "étape \(step)")
+                s.writeMessage(m)
+                ref[chat, default: [:]][id] = m
+            }
+            for limit in [[15, 8, 4, 2], [1, 20], [64, 3], [70, 15]][next(4)] {
+                XCTAssertEqual(s.messagesOf(chat, limit: limit), want(chat, limit), "étape \(step), limite \(limit)")
+            }
+        }
+        XCTAssertTrue(s.messages.isEmpty, "aucune discussion n'a été chargée en entier")
+        XCTAssertLessThanOrEqual(s.tails.count, Store.tailChats)
+        // Vidée, puis chargée : plus rien de gardé à part.
+        s.deleteMessages(of: "AMI0")
+        XCTAssertTrue(s.messagesOf("AMI0", limit: 15).isEmpty)
+        XCTAssertEqual(s.messagesOf("AMI1").count, ref["AMI1"]?.count ?? 0)
+        XCTAssertNil(s.tails["AMI1"])
+        XCTAssertEqual(s.messagesOf("AMI1", limit: 5), want("AMI1", 5))
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
