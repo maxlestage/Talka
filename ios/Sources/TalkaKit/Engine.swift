@@ -63,6 +63,9 @@ public final class Engine {
     @ObservationIgnored public let relay: Relay
     @ObservationIgnored var flushing = false
     @ObservationIgnored var flushAgain = false
+    /// Les messages importants de toutes les discussions, tels que trouvés à
+    /// cette génération de la mémoire : voir `starred()`.
+    @ObservationIgnored var starredKept: (generation: Int, list: [Message])?
     /// Les enveloppes de la boîte d'envoi déjà décodées, sans leur contenu
     /// (clé → la ligne lue, l'enveloppe) : voir `outbox`.
     @ObservationIgnored var outHeads: [String: (json: String, head: OutItem)] = [:]
@@ -1438,8 +1441,16 @@ public final class Engine {
         }
     }
 
+    /// Tous les messages importants, les plus récents d'abord. Les trouver
+    /// demande de relire tous les messages de toutes les discussions : la
+    /// liste est gardée tant qu'aucun message n'a été écrit ni effacé (leur
+    /// écran la redemande à chaque frappe dans sa recherche).
     public func starred() -> [Message] {
-        store.allMessages().filter(\.isStarred).sorted { $0.at > $1.at }
+        let generation = store.messagesGeneration
+        if let kept = starredKept, kept.generation == generation { return kept.list }
+        let list = store.allMessages().filter(\.isStarred).sorted { $0.at > $1.at }
+        starredKept = (generation, list)
+        return list
     }
 
     /// Le libellé d'une mention (« @Léa ») : le nom que chacun s'est choisi,
