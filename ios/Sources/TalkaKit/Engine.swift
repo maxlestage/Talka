@@ -1215,8 +1215,7 @@ public final class Engine {
         for (key, json) in rows {
             if let known = outHeads[key], known.json == json {
                 kept[key] = known
-            } else if var head = JSON.decode(OutItem.self, json) {
-                head.payload = ""
+            } else if let head = OutItem.head(json) {
                 kept[key] = (json, head)
             }
         }

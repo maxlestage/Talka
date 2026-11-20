@@ -843,6 +843,25 @@ public struct OutItem: Codable, Equatable, Sendable {
         sent = c.v(.sent, []); got = c.v(.got, [])
     }
 
+    /// L'enveloppe sans son contenu (`payload` vide), lue sans le décoder :
+    /// une photo qui attend son accusé pèse des centaines de Ko, et la boîte
+    /// d'envoi n'en a besoin qu'au moment de l'envoyer.
+    static func head(_ json: String) -> OutItem? {
+        JSON.decode(Head.self, json)?.item
+    }
+
+    struct Head: Decodable {
+        var item: OutItem
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            item = OutItem(id: c.v(.id, ""), to: c.v(.to, ""), payload: "", chat: c.v(.chat, ""),
+                           msgId: c.v(.msgId, ""), seq: c.v(.seq, 0), sent: c.v(.sent, []))
+            item.boot = c.v(.boot, "")
+            item.got = c.v(.got, [])
+        }
+    }
+
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id); try c.encode(to, forKey: .to); try c.encode(payload, forKey: .payload)
