@@ -63,6 +63,9 @@ public final class Engine {
     @ObservationIgnored public let relay: Relay
     @ObservationIgnored var flushing = false
     @ObservationIgnored var flushAgain = false
+    /// La dernière recherche dans toutes les discussions, et ce dont elle
+    /// dépend : voir `searchMessages`.
+    @ObservationIgnored var searchKept: (query: String, limit: Int, generation: Int, chats: [String], at: Double, until: Double, list: [Message])?
     /// Les actus déjà décodées (clé → la ligne lue, l'actu), et leurs seules
     /// dates : voir `statuses` et `statusDates`.
     @ObservationIgnored var statusKept: [String: (json: String, item: StatusItem)] = [:]
@@ -989,15 +992,21 @@ public final class Engine {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard q.count >= 2 else { return [] }
         let now = nowMs()
-        var found: [Message] = []
-        for c in chats.values where c.group || !blocked(c.id) {
-            for m in store.messagesOf(c.id)
-            where m.kind != "system" && !m.deleted && !m.sealed(for: me.code, now: now)
-                && "\(m.text) \(m.name)".range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
-                found.append(m)
-            }
+        // Les discussions fouillées, dans l'ordre où elles le sont.
+        let ids = chats.values.filter { $0.group || !blocked($0.id) }.map(\.id)
+        let generation = store.messagesGeneration
+        // La liste des discussions la demande deux fois par frappe : la même
+        // recherche n'est pas refaite tant que rien de ce dont elle dépend
+        // n'a changé (les messages, les discussions fouillées, une capsule
+        // qui s'ouvre).
+        if let kept = searchKept, kept.query == q, kept.limit == limit, kept.generation == generation,
+           kept.chats == ids, now >= kept.at, now < kept.until {
+            return kept.list
         }
-        return Array(found.sorted { $0.at > $1.at }.prefix(limit))
+        let (found, nextOpen) = Message.matching(ids.map { store.messagesOf($0) }, q, me: me.code, now: now)
+        let list = Array(found.sorted { $0.at > $1.at }.prefix(limit))
+        searchKept = (q, limit, generation, ids, now, nextOpen, list)
+        return list
     }
 
     /// Ce qu'on lit d'un message sur une ligne (épingle, favoris, réponse) :
