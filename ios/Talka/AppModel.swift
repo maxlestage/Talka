@@ -49,6 +49,17 @@ final class AppModel {
     @ObservationIgnored private let launchedAt = Date()
 
     init() {
+        #if DEBUG
+        // Pour les captures de la CI (`-TalkaDemo YES`) : un compte de
+        // démonstration dans une base à part, ouvert sur sa longue discussion.
+        if Demo.on {
+            store = Demo.store()
+            loading = nil
+            start()
+            path = [Demo.contact]
+            return
+        }
+        #endif
         if StoreVault.isProtected || StoreVault.isCodeLocked {
             store = Store(directory: Store.defaultDirectory(), key: nil)
             vaultLocked = StoreVault.isProtected
