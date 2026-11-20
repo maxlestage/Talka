@@ -376,6 +376,14 @@ public final class Engine {
         store.messagesOf(chat, limit: limit)
     }
 
+    /// La fin d'une discussion, pour l'afficher : au moins ses `limit`
+    /// derniers messages, et s'il en existe de plus anciens (voir
+    /// `Store.recentMessages`). Une longue discussion s'ouvre sur ses
+    /// derniers messages ; les plus anciens viennent quand on remonte.
+    public func recentMessages(_ chat: String, limit: Int) -> (list: [Message], more: Bool) {
+        store.recentMessages(chat, limit: limit)
+    }
+
     /// Les photos de la discussion, la plus récente d'abord (parmi ses 500
     /// derniers messages, comme le navigateur).
     public func photos(in chat: String) -> [Message] {

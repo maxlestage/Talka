@@ -160,7 +160,7 @@ final class StoreTests: XCTestCase {
             XCTAssertNil(cold.message("AUTRE", "m3"))
             XCTAssertEqual(cold.messagesOf("AMI", limit: 1).map(\.id), ["m0"])
             XCTAssertEqual(cold.messagesOf("AMI", limit: 4).map(\.id), Array(want.suffix(4)))
-            XCTAssertEqual(cold.messagesOf("AMI", limit: 99).map(\.id), want)
+            XCTAssertEqual(cold.messagesOf("AMI", limit: 6).map(\.id), Array(want.suffix(6)))
             XCTAssertTrue(cold.messagesOf("AMI", limit: 0).isEmpty)
             XCTAssertEqual(cold.messagesBefore("AMI", 30).map(\.id), ["m1", "m4"])
             XCTAssertEqual(cold.messagesBefore("AMI", 30.5).map(\.id), ["m1", "m4", "m2", "m3", "m6"])
@@ -281,13 +281,13 @@ final class StoreTests: XCTestCase {
                 XCTAssertEqual(s.messagesOf(chat, limit: limit), want(chat, limit), "étape \(step), limite \(limit)")
             }
         }
-        XCTAssertTrue(s.messages.isEmpty, "aucune discussion n'a été chargée en entier")
-        XCTAssertLessThanOrEqual(s.tails.count, Store.tailChats)
+        XCTAssertLessThanOrEqual(s.windows.count, Store.windowChats)
+        XCTAssertEqual(Set(s.windowOrder), Set(s.windows.keys))
         // Vidée, puis chargée : plus rien de gardé à part.
         s.deleteMessages(of: "AMI0")
         XCTAssertTrue(s.messagesOf("AMI0", limit: 15).isEmpty)
         XCTAssertEqual(s.messagesOf("AMI1").count, ref["AMI1"]?.count ?? 0)
-        XCTAssertNil(s.tails["AMI1"])
+        XCTAssertNil(s.windows["AMI1"])
         XCTAssertEqual(s.messagesOf("AMI1", limit: 5), want("AMI1", 5))
     }
 
@@ -406,6 +406,134 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(all.count, 400)
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: all.map { ($0.code, $0) }), Dictionary(uniqueKeysWithValues: contacts.map { ($0.code, $0) }))
         XCTAssertEqual(s.all("chats", as: Chat.self).count, 0)
+    }
+
+    /// Une longue discussion ne se lit pas en entier pour montrer sa fin :
+    /// la mémoire en garde les derniers messages (une fenêtre), tenue à jour
+    /// à chaque écriture. Après des centaines d'écritures tirées au hasard
+    /// (nouveaux messages, modifications, heures changées vers l'avant ou
+    /// l'arrière, suppressions), elle rend toujours ce qu'un tri complet
+    /// donnerait, dit juste s'il reste des messages plus anciens, et une base
+    /// rouverte est d'accord.
+    func testTheEndOfALongChatFollowsEveryWrite() {
+        let dir = tempDir()
+        let s = Store(directory: dir, key: SymmetricKey(size: .bits256))
+        var ref: [String: Message] = [:]
+        var seed: UInt64 = 2026
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        func sorted() -> [Message] { ref.values.sorted { ($0.at, $0.id) < ($1.at, $1.id) } }
+        // 600 messages, puis la discussion vit.
+        s.transaction {
+            for i in 0..<600 {
+                let m = message("LONGUE", "m\(i)", at: Double(i * 10), "texte \(i)")
+                s.writeMessage(m)
+                ref[m.id] = m
+            }
+        }
+        XCTAssertNil(s.messages["LONGUE"])
+        var fresh = 600
+        for step in 0..<700 {
+            switch next(8) {
+            case 0, 1:
+                // Un message arrive, à la fin.
+                let m = message("LONGUE", "n\(fresh)", at: Double(6000 + step * 3), "nouveau \(fresh)")
+                fresh += 1
+                s.writeMessage(m)
+                ref[m.id] = m
+            case 2:
+                // Un message récent modifié (un accusé, une réaction), à la même heure.
+                let all = sorted()
+                var m = all[all.count - 1 - next(min(40, all.count))]
+                m.text = "modifié à l'étape \(step)"
+                s.writeMessage(m)
+                ref[m.id] = m
+            case 3:
+                // Un message n'importe où change d'heure, vers l'avant ou l'arrière.
+                let all = sorted()
+                var m = all[next(all.count)]
+                m.at = Double(next(9000))
+                s.writeMessage(m)
+                ref[m.id] = m
+            case 4:
+                // Un message n'importe où est supprimé.
+                let all = sorted()
+                let m = all[next(all.count)]
+                s.removeMessage("LONGUE", m.id)
+                ref[m.id] = nil
+            case 5:
+                // Un vieux message, hors de toute fenêtre, arrive (une synchronisation).
+                let m = message("LONGUE", "v\(step)", at: Double(next(50)), "ancien \(step)")
+                s.writeMessage(m)
+                ref[m.id] = m
+            default:
+                break
+            }
+            let want = sorted()
+            let limit = [1, 15, 50, 120, 300][next(5)]
+            XCTAssertEqual(s.messagesOf("LONGUE", limit: limit), Array(want.suffix(limit)), "étape \(step), limite \(limit)")
+            let end = s.recentMessages("LONGUE", limit: limit)
+            XCTAssertGreaterThanOrEqual(end.list.count, min(limit, want.count), "étape \(step)")
+            XCTAssertEqual(end.list, Array(want.suffix(end.list.count)), "étape \(step), limite \(limit)")
+            XCTAssertEqual(end.more, want.count > end.list.count, "étape \(step)")
+            // Un message de la fin ; de temps en temps, un plus ancien que
+            // la fenêtre (lus un par un sans fin, ils la feraient charger).
+            let probe = step % 12 == 0 ? want[next(want.count)] : want[want.count - 1 - next(min(100, want.count))]
+            XCTAssertEqual(s.message("LONGUE", probe.id), probe, "étape \(step)")
+            XCTAssertNil(s.message("LONGUE", "absent\(step)"))
+            if step % 100 == 0 {
+                let cold = Store(directory: dir, key: s.key)
+                XCTAssertEqual(cold.recentMessages("LONGUE", limit: 120).list, Array(want.suffix(120)))
+                XCTAssertEqual(cold.messagesOf("LONGUE", limit: 15), Array(want.suffix(15)))
+            }
+        }
+        // Jamais chargée en entier : seule sa fin est en mémoire.
+        XCTAssertNil(s.messages["LONGUE"])
+        XCTAssertNotNil(s.windows["LONGUE"])
+        XCTAssertLessThan(s.windows["LONGUE"]?.count ?? .max, ref.count)
+        // Demandée en entier (une recherche, un saut vers un vieux message) : chargée, la fenêtre s'efface.
+        XCTAssertEqual(s.recentMessages("LONGUE", limit: .max).list, sorted())
+        XCTAssertFalse(s.recentMessages("LONGUE", limit: .max).more)
+        XCTAssertNotNil(s.messages["LONGUE"])
+        XCTAssertNil(s.windows["LONGUE"])
+        XCTAssertEqual(s.recentMessages("LONGUE", limit: 50).list, Array(sorted().suffix(50)))
+        XCTAssertTrue(s.recentMessages("LONGUE", limit: 50).more)
+    }
+
+    /// Une discussion qui tient en entier dans ce qu'on lui demande est
+    /// simplement chargée ; une discussion vide n'a rien de plus ancien ; et
+    /// la mémoire ne garde la fin que des discussions demandées récemment.
+    func testShortChatsAreLoadedAndOldWindowsForgotten() {
+        let s = Store(directory: tempDir())
+        for i in 0..<20 { s.writeMessage(message("COURTE", "m\(i)", at: Double(i), "texte \(i)")) }
+        let short = s.recentMessages("COURTE", limit: 300)
+        XCTAssertEqual(short.list.map(\.id), (0..<20).map { "m\($0)" })
+        XCTAssertFalse(short.more)
+        XCTAssertNotNil(s.messages["COURTE"])
+        XCTAssertTrue(s.recentMessages("VIDE", limit: 300).list.isEmpty)
+        XCTAssertFalse(s.recentMessages("VIDE", limit: 300).more)
+        XCTAssertTrue(s.recentMessages("COURTE", limit: 0).list.isEmpty)
+        // Juste à la limite : 20 messages pour 20 demandés, rien de plus ancien.
+        let exact = Store(directory: s.dir)
+        XCTAssertFalse(exact.recentMessages("COURTE", limit: 20).more)
+        XCTAssertTrue(Store(directory: s.dir).recentMessages("COURTE", limit: 19).more)
+        // Plus de discussions que la mémoire ne garde de fenêtres.
+        s.transaction {
+            for c in 0..<(Store.windowChats + 8) {
+                for i in 0..<30 { s.writeMessage(message("C\(c)", "m\(i)", at: Double(i), "texte \(i)")) }
+            }
+        }
+        for c in 0..<(Store.windowChats + 8) {
+            XCTAssertEqual(s.messagesOf("C\(c)", limit: 5).map(\.id), ["m25", "m26", "m27", "m28", "m29"])
+        }
+        XCTAssertEqual(s.windows.count, Store.windowChats)
+        XCTAssertNil(s.windows["C0"])
+        XCTAssertNotNil(s.windows["C\(Store.windowChats + 7)"])
+        // Oubliée, elle se relit, juste.
+        XCTAssertEqual(s.messagesOf("C0", limit: 3).map(\.id), ["m27", "m28", "m29"])
+        XCTAssertEqual(Set(s.windowOrder), Set(s.windows.keys))
     }
 
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.

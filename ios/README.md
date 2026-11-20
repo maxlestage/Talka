@@ -16,6 +16,7 @@ L'application iOS de Talka, en Swift et SwiftUI (iOS 17 et plus). Elle parle le 
   - réponses (balayer une bulle vers la droite), réactions 👍 ❤️ 😂 😮 😢 🙏, transfert, messages importants, modification (15 min), suppression pour moi ou pour tout le monde, infos de lecture ;
   - **photos** (réduites, sans métadonnées), **documents** (3 Mo), **contacts**, **messages vocaux** (AAC, lus aussi par le navigateur ; ceux de Chrome ou Firefox sont lus par WebKit) ;
   - messages éphémères (24 h, 7 jours, 90 jours), fond d'écran, brouillons.
+  - une longue discussion s'ouvre sur ses 300 derniers messages ; les plus anciens viennent quand on remonte (ou d'un toucher sur « Messages plus anciens »), et d'un coup pour une recherche ou un saut vers un vieux message.
   - un œuf de Pâques : un message avec 🥦 ou « brocoli » fait pleuvoir des brocolis, comme dans le navigateur (sauf avec *Réduire les animations*).
 - **Brocolis 🥦** : les clés de l'app Brocolis (Réglages → Clés Brocolis), et par discussion « Chiffrer avec Brocolis 🥦 » : le texte part aussi en jetons `[[BROCOLIS:…]]`, ouverts à l'arrivée avec vos clés (`Sources/TalkaKit/Brocolis.swift`, le même format que le navigateur et que l'app Brocolis). Une clé s'envoie par Talka, s'affiche avec son empreinte, se renouvelle, et reste dans le trousseau d'iOS (`BrocolisVault.swift`).
 - **Infos** : nom local du contact, **numéro de sécurité** (le même sur les deux appareils), blocage ; membres et admins d'un groupe, photo, nom, description (écrite par les admins), ajout et retrait.
