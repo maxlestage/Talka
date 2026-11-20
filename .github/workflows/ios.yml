@@ -76,6 +76,18 @@ jobs:
           xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaDemo YES -TalkaDemoAll YES
           sleep 7
           xcrun simctl io "$UDID" screenshot shots/6-discussion-entiere.png
+          xcrun simctl terminate "$UDID" com.maxlestage.talka
+          # Avec 350 messages non lus (plus qu'une page) : elle s'ouvre sur
+          # le bandeau « 350 messages non lus », au message 650.
+          xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaDemo YES -TalkaDemoUnread 350
+          sleep 7
+          xcrun simctl io "$UDID" screenshot shots/7-non-lus.png
+          xcrun simctl terminate "$UDID" com.maxlestage.talka
+          # Le saut vers le message épinglé (le 120), plus ancien que ce qui
+          # est affiché à l'ouverture : 5 secondes après l'ouverture.
+          xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaDemo YES -TalkaDemoJump YES
+          sleep 11
+          xcrun simctl io "$UDID" screenshot shots/8-saut.png
           for f in shots/*.png; do
             # La discussion en plus grand : ses messages doivent se lire.
             case "$f" in shots/[12]-*) side=420 ;; *) side=1000 ;; esac
