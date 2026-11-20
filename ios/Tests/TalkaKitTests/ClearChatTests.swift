@@ -80,4 +80,101 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(e.starred(all, matching: "K7Q2M").count, 2, "le nom de la discussion compte")
         XCTAssertTrue(e.starred(all, matching: "piscine").isEmpty)
     }
+
+    // ----- Les tombes (messages effacés qui ne doivent pas revenir) -----
+
+    /// Les tombes d'avant (lues et redécodées à chaque fois), pour comparer.
+    func oldBury(_ list: inout [Engine.Tomb], _ msgs: [(String, Double)], now t: Double) {
+        list.removeAll { t - $0.at >= Engine.tombWindow }
+        for (id, at) in msgs where t - at < Engine.tombWindow && !list.contains(where: { $0.id == id }) {
+            list.append(Engine.Tomb(id: id, at: at))
+        }
+        if list.count > 20_000 { list.removeFirst(list.count - 20_000) }
+    }
+
+    func stored(_ e: Engine, _ chat: String) -> [String] {
+        (e.store.read("kv", "tombes:\(chat)", as: [Engine.Tomb].self) ?? []).map(\.id)
+    }
+
+    /// Gardées décodées en mémoire, les tombes restent exactement celles
+    /// qu'écrivait la version d'avant : ajouts, doublons, messages trop
+    /// vieux pour être enterrés, et ce que `buried` répond.
+    func testTombsStayTheSameAsBefore() async {
+        let e = phone()
+        var ref: [Engine.Tomb] = []
+        var seed: UInt64 = 7
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        XCTAssertFalse(e.buried("AMI", "m0"))
+        e.bury("AMI", [])
+        XCTAssertNil(e.store.readRaw("kv", "tombes:AMI"))
+        for step in 0..<200 {
+            let now = nowMs()
+            // De 0 à 3 messages, certains déjà enterrés, certains trop vieux.
+            let msgs = (0..<next(4)).map { _ in
+                ("m\(next(60))", now - (next(5) == 0 ? Engine.tombWindow + 1000 : Double(next(1000))))
+            }
+            e.bury("AMI", msgs)
+            oldBury(&ref, msgs, now: now)
+            XCTAssertEqual(stored(e, "AMI"), ref.map(\.id), "étape \(step)")
+            let probe = "m\(next(60))"
+            XCTAssertEqual(e.buried("AMI", probe), ref.contains { $0.id == probe }, "étape \(step)")
+            XCTAssertFalse(e.buried("AUTRE", probe))
+        }
+        XCTAssertFalse(ref.isEmpty)
+    }
+
+    /// Une tombe de plus de 31 jours s'en va au ménage, et la ligne gardée
+    /// fait foi : changée sans passer par `bury` (une restauration), elle
+    /// est relue.
+    func testOldTombsLeaveAndTheStoredRowWins() async {
+        let e = phone()
+        let now = nowMs()
+        e.store.write("kv", "tombes:AMI", [
+            Engine.Tomb(id: "vieux", at: now - Engine.tombWindow - 60_000),
+            Engine.Tomb(id: "récent", at: now - 60_000),
+        ])
+        XCTAssertTrue(e.buried("AMI", "vieux"))
+        XCTAssertTrue(e.buried("AMI", "récent"))
+        // Le ménage, sans rien à enterrer : la vieille part.
+        e.bury("AMI", [])
+        XCTAssertEqual(stored(e, "AMI"), ["récent"])
+        XCTAssertFalse(e.buried("AMI", "vieux"))
+        // Rien à faire : la ligne n'est pas réécrite.
+        let before = e.store.readRaw("kv", "tombes:AMI")
+        e.bury("AMI", [])
+        e.bury("AMI", [("récent", now - 60_000)])
+        XCTAssertEqual(e.store.readRaw("kv", "tombes:AMI"), before)
+        // La ligne change sous nos pieds.
+        e.store.write("kv", "tombes:AMI", [Engine.Tomb(id: "autre", at: now)])
+        XCTAssertTrue(e.buried("AMI", "autre"))
+        XCTAssertFalse(e.buried("AMI", "récent"))
+        e.bury("AMI", [("encore", now)])
+        XCTAssertEqual(stored(e, "AMI"), ["autre", "encore"])
+        // La dernière tombe partie, la ligne aussi.
+        e.store.write("kv", "tombes:AMI", [Engine.Tomb(id: "vieux", at: now - Engine.tombWindow - 60_000)])
+        e.bury("AMI", [])
+        XCTAssertNil(e.store.readRaw("kv", "tombes:AMI"))
+        XCTAssertFalse(e.buried("AMI", "vieux"))
+        e.store.remove("kv", "tombes:AMI")
+        XCTAssertFalse(e.buried("AMI", "autre"))
+    }
+
+    /// Au plus 20 000 tombes par discussion : les plus anciennes sortent.
+    func testTombsAreCapped() async {
+        let e = phone()
+        let now = nowMs()
+        e.bury("AMI", (0..<20_010).map { ("m\($0)", now - 1000) })
+        XCTAssertEqual(stored(e, "AMI").count, 20_000)
+        XCTAssertFalse(e.buried("AMI", "m9"))
+        XCTAssertTrue(e.buried("AMI", "m10"))
+        XCTAssertTrue(e.buried("AMI", "m20009"))
+        // Une tombe sortie peut être enterrée de nouveau (comme avant).
+        e.bury("AMI", [("m9", now - 1000)])
+        XCTAssertTrue(e.buried("AMI", "m9"))
+        XCTAssertFalse(e.buried("AMI", "m10"))
+        XCTAssertEqual(stored(e, "AMI").count, 20_000)
+    }
 }
