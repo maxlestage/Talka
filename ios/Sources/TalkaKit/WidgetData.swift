@@ -122,18 +122,31 @@ public enum WidgetShare {
         return q
     }
 
+    /// Ce que le trousseau contient, tel que cette application l'y a lu ou
+    /// écrit en dernier : l'application demande à écrire toutes les deux
+    /// secondes, presque toujours la même chose, et le trousseau n'est alors
+    /// plus interrogé du tout.
+    private static var known: Data?
+
     /// Écrit ; `false` si rien n'a changé (inutile de recharger les widgets).
     @discardableResult
     public static func write(_ data: WidgetData) -> Bool {
         guard let bytes = WatchLink.encode(data) else { return false }
-        if let old = readBytes(), old == bytes { return false }
+        if bytes == known { return false }
+        if let old = readBytes(), old == bytes {
+            known = bytes
+            return false
+        }
         let attrs: [String: Any] = [
             kSecValueData as String: bytes,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
-        if SecItemUpdate(query() as CFDictionary, attrs as CFDictionary) == errSecItemNotFound {
-            SecItemAdd(query().merging(attrs) { $1 } as CFDictionary, nil)
+        var status = SecItemUpdate(query() as CFDictionary, attrs as CFDictionary)
+        if status == errSecItemNotFound {
+            status = SecItemAdd(query().merging(attrs) { $1 } as CFDictionary, nil)
         }
+        // Retenu seulement si le trousseau l'a pris : sinon on réessaiera.
+        known = status == errSecSuccess ? bytes : nil
         return true
     }
 
@@ -142,6 +155,7 @@ public enum WidgetShare {
     }
 
     public static func clear() {
+        known = nil
         SecItemDelete(query() as CFDictionary)
     }
 
