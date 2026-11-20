@@ -536,6 +536,48 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(Set(s.windowOrder), Set(s.windows.keys))
     }
 
+    /// Des lignes illisibles à la fin d'une discussion (une base abîmée) :
+    /// la fenêtre est plus courte que ce qu'on lui demande, mais elle n'est
+    /// pas relue dans SQLite à chaque fois pour autant, et elle suit toujours
+    /// les écritures.
+    func testAWindowWithUnreadableRowsIsNotReadAgain() {
+        let dir = tempDir()
+        do {
+            let s = Store(directory: dir)
+            s.transaction {
+                for i in 0..<60 { s.writeMessage(message("AMI", String(format: "m%02d", i), at: Double(i), "texte \(i)")) }
+            }
+            for id in ["m52", "m57"] {
+                s.run("UPDATE rows SET json = ? WHERE store = 'messages' AND key = ?", ["{abîmé", "AMI|\(id)"])
+            }
+        }
+        let s = Store(directory: dir)
+        // 21 lignes lues (une de plus que demandé), dont deux illisibles.
+        let want = (39..<60).filter { $0 != 52 && $0 != 57 }.map { String(format: "m%02d", $0) }
+        let first = s.recentMessages("AMI", limit: 20)
+        XCTAssertEqual(first.list.map(\.id), want)
+        XCTAssertTrue(first.more)
+        XCTAssertEqual(s.windowCovers["AMI"], 21)
+        // Une ligne retirée dans le dos de la mémoire : si la fenêtre était
+        // relue, elle le verrait. Elle ne l'est pas.
+        s.run("DELETE FROM rows WHERE store = 'messages' AND key = ?", ["AMI|m45"])
+        XCTAssertEqual(s.recentMessages("AMI", limit: 20).list.map(\.id), want)
+        XCTAssertEqual(s.messagesOf("AMI", limit: 20).map(\.id), want)
+        XCTAssertEqual(s.messagesOf("AMI", limit: 5).map(\.id), Array(want.suffix(5)))
+        // Elle suit toujours les écritures : un message arrive, un autre part.
+        s.writeMessage(message("AMI", "m60", at: 60, "nouveau"))
+        s.removeMessage("AMI", "m59")
+        XCTAssertEqual(s.recentMessages("AMI", limit: 20).list.map(\.id), want.filter { $0 != "m59" } + ["m60"])
+        XCTAssertEqual(s.windowCovers["AMI"], 21)
+        // Demander plus que ce qu'elle couvre : relue (et la ligne retirée se voit).
+        let wider = s.recentMessages("AMI", limit: 30).list.map(\.id)
+        XCTAssertFalse(wider.contains("m45"))
+        XCTAssertEqual(wider.count, 29)
+        XCTAssertEqual(s.windowCovers["AMI"], 31)
+        s.deleteMessages(of: "AMI")
+        XCTAssertNil(s.windowCovers["AMI"])
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))

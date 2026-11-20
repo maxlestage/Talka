@@ -79,6 +79,11 @@ public final class Store: @unchecked Sendable {
     /// la plus récente : au-delà de `windowChats`, la plus ancienne est oubliée.
     var windowOrder: [String] = []
     static let windowChats = 32
+    /// Combien des dernières lignes d'une discussion sa fenêtre couvre : le
+    /// nombre de ses messages, sauf si des lignes y sont illisibles (elles
+    /// comptent, sans y être). Sans cela, une fenêtre plus courte que ce
+    /// qu'on lui demande serait relue dans SQLite à chaque fois.
+    var windowCovers: [String: Int] = [:]
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
     /// La clé de l'appareil (nil : rien n'est chiffré).
@@ -486,10 +491,15 @@ public final class Store: @unchecked Sendable {
         if windowOrder.last == chat { return }
         windowOrder.removeAll { $0 == chat }
         windowOrder.append(chat)
-        while windowOrder.count > Self.windowChats { windows[windowOrder.removeFirst()] = nil }
+        while windowOrder.count > Self.windowChats {
+            let old = windowOrder.removeFirst()
+            windows[old] = nil
+            windowCovers[old] = nil
+        }
     }
 
     func dropWindow(_ chat: String) {
+        windowCovers[chat] = nil
         if windows.removeValue(forKey: chat) != nil { windowOrder.removeAll { $0 == chat } }
     }
 
@@ -498,7 +508,7 @@ public final class Store: @unchecked Sendable {
     /// l'index, une fois, puis tenus à jour. `nil` : il n'y en a pas de plus
     /// anciens, la discussion tient en entier et vient d'être chargée.
     func window(_ chat: String, _ limit: Int) -> [Message]? {
-        if let kept = windows[chat], kept.count >= limit {
+        if let kept = windows[chat], (windowCovers[chat] ?? kept.count) >= limit {
             touchWindow(chat)
             return kept
         }
@@ -518,8 +528,15 @@ public final class Store: @unchecked Sendable {
             return nil
         }
         var list = Array(found.reversed())
-        if list.count > limit { list.removeFirst(list.count - limit) }
+        // La ligne de plus n'est pas gardée ; si des lignes sont illisibles,
+        // tout ce qui a été lu reste, et la fenêtre couvre ces lignes-là.
+        var covers = rows
+        if list.count > limit {
+            covers -= list.count - limit
+            list.removeFirst(list.count - limit)
+        }
         windows[chat] = list
+        windowCovers[chat] = covers
         touchWindow(chat)
         return list
     }
@@ -529,18 +546,25 @@ public final class Store: @unchecked Sendable {
     /// sa place si elle n'est pas plus ancienne que le début de la fenêtre.
     func slide(_ chat: String, id: String, new: Message?) {
         guard var list = windows.removeValue(forKey: chat) else { return }
-        if let i = list.lastIndex(where: { $0.id == id }) { list.remove(at: i) }
+        var covers = windowCovers[chat] ?? list.count
+        if let i = list.lastIndex(where: { $0.id == id }) {
+            list.remove(at: i)
+            covers -= 1
+        }
         if let new {
             // Vide, on ne sait plus où elle commence : oubliée.
             guard let first = list.first else {
                 windowOrder.removeAll { $0 == chat }
+                windowCovers[chat] = nil
                 return
             }
             if (first.at, first.id) < (new.at, new.id) {
                 list.insert(new, at: Self.rank(new.at, new.id, in: list))
+                covers += 1
             }
         }
         windows[chat] = list
+        windowCovers[chat] = covers
     }
 
     /// Les messages d'une discussion, du plus ancien au plus récent ; `limit`
@@ -708,6 +732,7 @@ public final class Store: @unchecked Sendable {
         singles = [:]
         windows = [:]
         windowOrder = []
+        windowCovers = [:]
         singleReads = [:]
         generation += 1
         exec("DELETE FROM rows")
