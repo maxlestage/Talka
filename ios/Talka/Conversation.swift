@@ -913,10 +913,11 @@ extension ConversationView {
             return
         }
         guard Demo.climbs else { return }
-        // Douze secondes entre chaque : le temps pour la CI de capturer
-        // l'ouverture, puis chaque remontée.
-        for _ in 0..<2 {
-            try? await Task.sleep(for: .seconds(11))
+        // Une remontée 12 secondes après l'ouverture, l'autre 46 secondes
+        // après : la CI capture entre les deux, et une capture d'écran du
+        // simulateur prend parfois dix secondes.
+        for wait in [11, 33] {
+            try? await Task.sleep(for: .seconds(wait))
             proxy.scrollTo("fil-haut", anchor: .top)
             // Puis le toucher sur « Messages plus anciens ».
             try? await Task.sleep(for: .seconds(1))

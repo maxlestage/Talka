@@ -64,12 +64,14 @@ jobs:
           # messages, puis deux remontées en haut du fil, où les messages
           # plus anciens arrivent.
           xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaDemo YES -TalkaDemoTop YES
-          # L'application remonte 12 puis 24 secondes après l'ouverture.
+          # L'application remonte 12 puis 46 secondes après l'ouverture :
+          # la deuxième capture tombe entre les deux, même si les captures
+          # traînent.
           sleep 5
           xcrun simctl io "$UDID" screenshot shots/3-discussion.png
           sleep 12
           xcrun simctl io "$UDID" screenshot shots/4-remontee.png
-          sleep 12
+          sleep 32
           xcrun simctl io "$UDID" screenshot shots/5-remontee-encore.png
           xcrun simctl terminate "$UDID" com.maxlestage.talka
           # La même discussion affichée en entier d'emblée, pour comparer.
