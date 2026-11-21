@@ -13,6 +13,7 @@ struct ContactInfoView: View {
     @State private var name = ""
     @State private var confirmDelete = false
     @State private var confirmClear = false
+    @State private var keepable = false
     @State private var showStarred = false
     /// La protection de la discussion : session à double cliquet (v3) ou
     /// ancien chiffrement, comme dans le navigateur.
@@ -114,7 +115,10 @@ struct ContactInfoView: View {
                         e.setBlocked(code, !(c?.blocked ?? false))
                     }
                     if chat != nil {
-                        Button("Vider la discussion", role: .destructive) { confirmClear = true }
+                        Button("Vider la discussion", role: .destructive) {
+                            keepable = e.hasStarred(code)
+                            confirmClear = true
+                        }
                         Button("Supprimer la discussion", role: .destructive) { confirmDelete = true }
                     }
                 }
@@ -124,7 +128,7 @@ struct ContactInfoView: View {
             .onAppear { name = c?.name ?? "" }
             .onDisappear { save(e) }
             .task(id: code) { protection = await e.protection(code) }
-            .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: code)
+            .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: code, keepable: keepable)
             .sheet(isPresented: $showStarred) { StarredSheet(chatId: code) }
             .confirmationDialog("Supprimer la discussion ?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Supprimer", role: .destructive) {
@@ -341,6 +345,7 @@ struct GroupInfoView: View {
     @State private var adding = false
     @State private var confirmLeave = false
     @State private var confirmClear = false
+    @State private var keepable = false
     @State private var showStarred = false
 
     var body: some View {
@@ -449,10 +454,13 @@ struct GroupInfoView: View {
                             model.path = []
                         }
                     }
-                    Button("Vider la discussion", role: .destructive) { confirmClear = true }
+                    Button("Vider la discussion", role: .destructive) {
+                        keepable = e.hasStarred(chatId)
+                        confirmClear = true
+                    }
                 }
             }
-            .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: chatId)
+            .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: chatId, keepable: keepable)
             .sheet(isPresented: $showStarred) { StarredSheet(chatId: chatId) }
             .navigationTitle("Infos du groupe")
             .navigationBarTitleDisplayMode(.inline)
@@ -565,10 +573,16 @@ struct AddMembersSheet: View {
 
 /// « Vider la discussion ? » : avec des messages importants, on peut les garder (comme
 /// WhatsApp).
+///
+/// `keepable` : la discussion a des messages importants. Le savoir demande
+/// de la lire en entier : c'est demandé au toucher sur « Vider la
+/// discussion » (`Engine.hasStarred`), pas ici, où ce serait refait à chaque
+/// affichage de l'écran qui porte ce dialogue (le menu ⋮ de toute discussion
+/// qu'on ouvre).
 extension View {
-    func clearChatDialog(isPresented: Binding<Bool>, engine e: Engine, chatId: String) -> some View {
+    func clearChatDialog(isPresented: Binding<Bool>, engine e: Engine, chatId: String, keepable: Bool) -> some View {
         confirmationDialog("Vider la discussion ?", isPresented: isPresented, titleVisibility: .visible) {
-            if e.hasStarred(chatId) {
+            if keepable {
                 Button("Vider, garder les importants", role: .destructive) { e.clearChat(chatId, keepStarred: true) }
                 Button("Tout vider", role: .destructive) { e.clearChat(chatId) }
             } else {
@@ -614,6 +628,7 @@ struct ChatMoreMenu: View {
     @Binding var choosingBrocolis: Bool
     @State private var choosingWallpaper = false
     @State private var confirmClear = false
+    @State private var keepable = false
     @State private var confirmDelete = false
     @State private var addingContact = false
     @State private var contactName = ""
@@ -669,7 +684,12 @@ struct ChatMoreMenu: View {
                         Button(role: .destructive) { e.setBlocked(chatId, true) } label: { Label("Bloquer", systemImage: "hand.raised") }
                     }
                 }
-                Button(role: .destructive) { confirmClear = true } label: { Label("Vider la discussion", systemImage: "trash") }
+                Button(role: .destructive) {
+                    keepable = e.hasStarred(chatId)
+                    confirmClear = true
+                } label: {
+                    Label("Vider la discussion", systemImage: "trash")
+                }
                 Button(role: .destructive) { confirmDelete = true } label: {
                     Label(chat.group ? "Quitter et supprimer" : "Supprimer la discussion", systemImage: "trash")
                 }
@@ -678,7 +698,7 @@ struct ChatMoreMenu: View {
                     .rotationEffect(.degrees(90))
             }
             .accessibilityLabel("Plus d'options")
-            .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: chatId)
+            .clearChatDialog(isPresented: $confirmClear, engine: e, chatId: chatId, keepable: keepable)
             .alert("Ajouter aux contacts", isPresented: $addingContact) {
                 TextField("Nom (facultatif)", text: $contactName)
                 Button("Annuler", role: .cancel) {}
