@@ -725,6 +725,79 @@ final class StoreTests: XCTestCase {
         }
     }
 
+    /// Ce que pèsent les pièces jointes d'une discussion se calcule sans la
+    /// charger, comme en la lisant en entier, et suit chaque message écrit
+    /// ou retiré.
+    func testStorageIsWeighedWithoutLoadingTheChat() {
+        let photo = "data:image/jpeg;base64," + String(repeating: "/9j/4AAQ", count: 500)
+        func piece(_ id: String, at: Double, kind: String, size: Double = 0, data: String? = nil, deleted: Bool = false) -> Message {
+            var c = Content(text: "")
+            c.kind = kind
+            c.data = data ?? photo
+            c.size = size
+            var m = Message(chat: "AMI", id: id, from: "WGSEAJNSZJ", at: at, content: c)
+            m.deleted = deleted
+            return m
+        }
+        for key in [nil, SymmetricKey(size: .bits256)] {
+            let dir = tempDir()
+            do {
+                let s = Store(directory: dir, key: key)
+                s.transaction {
+                    for i in 0..<200 { s.writeMessage(message("AMI", String(format: "m%03d", i), at: Double(i), "texte \(i)")) }
+                    s.writeMessage(piece("photo1", at: 10.5, kind: "image"))
+                    s.writeMessage(piece("photo2", at: 11.5, kind: "image", size: 123_456))
+                    s.writeMessage(piece("doc", at: 12.5, kind: "file", size: 2_000))
+                    s.writeMessage(piece("vocal", at: 13.5, kind: "voice", data: "data:audio/mp4;base64,AAAAAAAA"))
+                    // Ne comptent pas : supprimé, sans contenu, ou pas une pièce jointe.
+                    s.writeMessage(piece("supprimé", at: 14.5, kind: "image", deleted: true))
+                    s.writeMessage(piece("vide", at: 15.5, kind: "image", data: ""))
+                    s.writeMessage(piece("contact", at: 16.5, kind: "contact", data: "{}"))
+                    s.writeMessage(message("AUTRE", "x", at: 1, "ailleurs"))
+                }
+            }
+            let whole = Storage.of(Store(directory: dir, key: key).messagesOf("AMI"))
+            XCTAssertEqual(whole, Storage(bytes: 3_000 + 123_456 + 2_000 + 6, photos: 2, files: 1, voices: 1))
+            let s = Store(directory: dir, key: key)
+            XCTAssertEqual(s.storage(of: "AMI"), whole)
+            XCTAssertNil(s.messages["AMI"])
+            XCTAssertEqual(s.storage(of: "AUTRE"), Storage())
+            XCTAssertEqual(s.storage(of: "INCONNUE"), Storage())
+            // Pas relue : une ligne changée dans le dos de la mémoire ne se voit pas.
+            s.run("DELETE FROM rows WHERE store = 'messages' AND key = ?", ["AMI|doc"])
+            XCTAssertEqual(s.storage(of: "AMI"), whole)
+            // Une photo arrive, une est supprimée pour tous, un document est retiré.
+            s.writeMessage(piece("photo3", at: 300, kind: "image", size: 500))
+            var gone = try! XCTUnwrap(s.message("AMI", "photo2"))
+            gone.deleted = true
+            gone.data = ""
+            s.writeMessage(gone)
+            s.removeMessage("AMI", "doc")
+            XCTAssertEqual(s.storage(of: "AMI"), Storage(bytes: 3_000 + 500 + 6, photos: 2, files: 0, voices: 1))
+            XCTAssertNil(s.messages["AMI"])
+            // Un message de texte n'y change rien.
+            s.writeMessage(message("AMI", "m500", at: 500, "du texte"))
+            XCTAssertEqual(s.storage(of: "AMI"), Storage(bytes: 3_506, photos: 2, files: 0, voices: 1))
+            // D'une discussion chargée : le même poids, depuis la mémoire.
+            let other = Store(directory: dir, key: key)
+            XCTAssertEqual(other.messagesOf("AMI").count, 208)
+            XCTAssertEqual(other.storage(of: "AMI"), Storage(bytes: 3_506, photos: 2, files: 0, voices: 1))
+            XCTAssertEqual(other.storage(of: "AMI"), Storage.of(other.messagesOf("AMI")))
+            other.removeMessage("AMI", "vocal")
+            XCTAssertEqual(other.storage(of: "AMI"), Storage(bytes: 3_500, photos: 2, files: 0, voices: 0))
+            // Vidée, ou restaurée d'une sauvegarde : tout est à revoir.
+            s.deleteMessages(of: "AMI")
+            XCTAssertNil(s.piecesIn["AMI"])
+            XCTAssertEqual(s.storage(of: "AMI"), Storage())
+            s.writeMessage(piece("après", at: 600, kind: "image", size: 42))
+            let dump = s.dump()
+            s.writeMessage(piece("oubliée", at: 601, kind: "image", size: 1_000))
+            s.restore(dump)
+            XCTAssertTrue(s.piecesIn.isEmpty)
+            XCTAssertEqual(s.storage(of: "AMI"), Storage(bytes: 42, photos: 1, files: 0, voices: 0))
+        }
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))

@@ -441,6 +441,43 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(cold.starredCount(in: "INCONNU"), 0)
     }
 
+    /// « Gérer le stockage » ne charge aucune discussion : les plus lourdes
+    /// d'abord, celles sans pièce jointe écartées.
+    func testStorageByChatLoadsNoChat() async throws {
+        let e = phone()
+        let a = e.ensureDirectChat("K7Q2MX9PRT")
+        let b = e.ensureDirectChat("WGSEAJNSZJ")
+        let c = e.ensureDirectChat("AAAAAAAAAA")
+        func photo(_ chat: String, _ id: String, size: Double) -> Message {
+            var content = Content(text: "")
+            content.kind = "image"
+            content.data = "data:image/jpeg;base64,/9j/4AAQ"
+            content.size = size
+            return Message(chat: chat, id: id, from: chat, at: nowMs(), content: content)
+        }
+        e.store.transaction {
+            for i in 0..<400 {
+                for chat in [a.id, b.id, c.id] {
+                    e.store.writeMessage(Message(chat: chat, id: "m\(i)", from: chat, at: Double(i), content: Content(text: "Message \(i)")))
+                }
+            }
+            e.store.writeMessage(photo(a.id, "p1", size: 1_000))
+            e.store.writeMessage(photo(b.id, "p1", size: 5_000))
+            e.store.writeMessage(photo(b.id, "p2", size: 2_000))
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        let rows = cold.storageByChat()
+        XCTAssertEqual(rows.map(\.chat.id), [b.id, a.id])
+        XCTAssertEqual(rows.map(\.storage), [Storage(bytes: 7_000, photos: 2), Storage(bytes: 1_000, photos: 1)])
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        // Une photo reçue, une supprimée : la liste suit, toujours sans rien charger.
+        cold.storeMessage(photo(c.id, "p1", size: 9_000))
+        cold.delete(b.id, "p1", forEveryone: false)
+        XCTAssertEqual(cold.storageByChat().map(\.chat.id), [c.id, b.id, a.id])
+        XCTAssertEqual(cold.storageByChat().map(\.storage.bytes), [9_000, 2_000, 1_000])
+        XCTAssertTrue(cold.store.messages.isEmpty)
+    }
+
     // ----- Les messages éphémères -----
 
     /// Le ménage retire les messages éphémères échus sans charger la
