@@ -841,6 +841,20 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
+    /// La marque « important » d'un message (voir `isStarred`), lue sans le
+    /// reste : le compte des messages importants d'une discussion n'a pas
+    /// besoin de leur texte ni de leurs photos.
+    struct Star: Decodable {
+        var id: String
+        var starred: Bool
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.v(.id, "")
+            starred = c.v(.starred, false) && !c.v(.deleted, false)
+        }
+    }
+
     /// `chat|id` : la clé dans le stockage.
     public var key: String { "\(chat)|\(id)" }
 

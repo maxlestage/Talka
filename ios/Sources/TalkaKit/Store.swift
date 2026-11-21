@@ -92,6 +92,13 @@ public final class Store: @unchecked Sendable {
     /// ou modifié peut la laisser trop proche, ce qui ne coûte qu'un examen
     /// de plus.
     var expNext: [String: Double] = [:]
+
+    /// Par discussion, les identifiants de ses messages importants ; absents
+    /// tant qu'elle n'a pas été examinée, puis tenus à jour à chaque message
+    /// écrit ou retiré. Les écrans le demandent sans cesse (le compte des
+    /// messages importants dans les infos, « Vider la discussion ? ») : pas
+    /// de quoi charger toute la discussion.
+    var starredIn: [String: Set<String>] = [:]
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
     /// La clé de l'appareil (nil : rien n'est chiffré).
@@ -656,6 +663,9 @@ public final class Store: @unchecked Sendable {
             remember(m.key, m)
             slide(m.chat, id: m.id, new: m)
         }
+        if starredIn[m.chat] != nil {
+            if m.isStarred { starredIn[m.chat]?.insert(m.id) } else { starredIn[m.chat]?.remove(m.id) }
+        }
         // Une échéance plus proche que celle qu'on connaissait.
         if let exp = m.exp, let next = expNext[m.chat], exp < next { expNext[m.chat] = exp }
         put("messages", m.key, JSON.encode(m), chat: m.chat, at: m.at)
@@ -669,6 +679,7 @@ public final class Store: @unchecked Sendable {
     /// Le retrait d'un message, verrou déjà pris.
     func drop(_ chat: String, _ id: String) {
         generation += 1
+        starredIn[chat]?.remove(id)
         if messages[chat] != nil {
             if let old = messages[chat]?.removeValue(forKey: id) ?? nil { reorder(chat, old: old, new: nil) }
         } else {
@@ -709,10 +720,30 @@ public final class Store: @unchecked Sendable {
         return gone
     }
 
+    /// Les identifiants des messages importants d'une discussion (ceux qui
+    /// ne sont pas supprimés). D'une discussion pas chargée, seules ces
+    /// marques sont décodées, une fois ; rien d'autre n'est gardé en mémoire.
+    public func starredIds(_ chat: String) -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        if let kept = starredIn[chat] { return kept }
+        var ids = Set<String>()
+        if messages[chat] != nil {
+            for m in inOrder(chat) where m.isStarred { ids.insert(m.id) }
+        } else {
+            var rows = 0
+            let marks = readRows("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ?",
+                                 [chat], rows: &rows, as: Message.Star.self)
+            for mark in marks where mark.starred { ids.insert(mark.id) }
+        }
+        starredIn[chat] = ids
+        return ids
+    }
+
     public func deleteMessages(of chat: String) {
         lock.lock(); defer { lock.unlock() }
         generation += 1
         expNext[chat] = nil
+        starredIn[chat] = nil
         messages[chat] = [:]
         ordered[chat] = nil
         dropWindow(chat)
@@ -781,6 +812,7 @@ public final class Store: @unchecked Sendable {
         exec("COMMIT")
         // Des messages écrits sans passer par `writeMessage`.
         expNext = [:]
+        starredIn = [:]
     }
 
     public func wipe() {
@@ -793,6 +825,7 @@ public final class Store: @unchecked Sendable {
         windowOrder = []
         windowCovers = [:]
         expNext = [:]
+        starredIn = [:]
         singleReads = [:]
         generation += 1
         exec("DELETE FROM rows")

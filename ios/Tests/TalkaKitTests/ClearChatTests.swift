@@ -404,6 +404,43 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(e.searchMessages("cafe").count, 3)
     }
 
+    /// Les messages importants d'une longue discussion pas chargée : leur
+    /// compte et leur liste (les plus récents d'abord) sans la lire en
+    /// entier, et « tout vider sauf eux » les garde.
+    func testStarredMessagesOfAChatThatIsNotLoaded() async throws {
+        let e = phone()
+        let c = e.ensureDirectChat("K7Q2MX9PRT")
+        let now = nowMs()
+        e.store.transaction {
+            for i in 0..<400 {
+                var m = Message(chat: c.id, id: "m\(i)", from: c.id, at: now - Double(1000 - i) * 1000, content: Content(text: "Message \(i)"))
+                m.starred = i == 30 || i == 200 || i == 399
+                e.store.writeMessage(m)
+            }
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        XCTAssertEqual(cold.starredCount(in: c.id), 3)
+        XCTAssertTrue(cold.hasStarred(c.id))
+        XCTAssertEqual(cold.starred(in: c.id).map(\.text), ["Message 399", "Message 200", "Message 30"])
+        XCTAssertNil(cold.store.messages[c.id])
+        // La même liste qu'en lisant tout.
+        XCTAssertEqual(cold.starred(in: c.id), cold.store.messagesOf(c.id).filter(\.isStarred).sorted { $0.at > $1.at })
+        // Une étoile retirée, une posée.
+        cold.toggleStar(c.id, "m200")
+        cold.toggleStar(c.id, "m7")
+        XCTAssertEqual(cold.starredCount(in: c.id), 3)
+        XCTAssertEqual(cold.starred(in: c.id).map(\.text), ["Message 399", "Message 30", "Message 7"])
+        // Tout vider sauf eux.
+        cold.clearChat(c.id, keepStarred: true)
+        XCTAssertEqual(cold.messages(c.id).map(\.text), ["Message 7", "Message 30", "Message 399"])
+        XCTAssertEqual(cold.starredCount(in: c.id), 3)
+        cold.clearChat(c.id)
+        XCTAssertFalse(cold.hasStarred(c.id))
+        XCTAssertEqual(cold.starredCount(in: c.id), 0)
+        // Aucune discussion de ce nom : rien.
+        XCTAssertEqual(cold.starredCount(in: "INCONNU"), 0)
+    }
+
     // ----- Les messages éphémères -----
 
     /// Le ménage retire les messages éphémères échus sans charger la
