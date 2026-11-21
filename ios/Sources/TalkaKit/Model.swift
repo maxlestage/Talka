@@ -841,6 +841,23 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
+    /// Ce que pèse la pièce jointe d'un message, lu sans le reste : « Gérer
+    /// le stockage » additionne toutes les discussions, et n'a besoin ni des
+    /// textes ni de garder les photos.
+    struct Weight: Decodable {
+        var id: String
+        var piece: Storage.Piece?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.v(.id, "")
+            // Le contenu (lourd) n'est décodé que pour une pièce jointe.
+            let kind: String = c.v(.kind, "text")
+            guard ["image", "file", "voice"].contains(kind), !c.v(.deleted, false) else { return }
+            piece = Storage.Piece(kind: kind, deleted: false, size: c.v(.size, 0), data: c.v(.data, ""))
+        }
+    }
+
     /// La marque « important » d'un message (voir `isStarred`), lue sans le
     /// reste : le compte des messages importants d'une discussion n'a pas
     /// besoin de leur texte ni de leurs photos.
@@ -1070,21 +1087,43 @@ public struct Storage: Equatable, Sendable {
     /// taille, ou à défaut celle de leur contenu base64 décodé.
     public static func of(_ messages: [Message]) -> Storage {
         var st = Storage()
-        for m in messages where !m.deleted && !m.data.isEmpty {
-            switch m.kind {
-            case "image": st.photos += 1
-            case "file": st.files += 1
-            case "voice": st.voices += 1
-            default: continue
-            }
-            if m.size > 0 {
-                st.bytes += m.size
-            } else {
-                let b64 = m.data.firstIndex(of: ",").map { m.data[m.data.index(after: $0)...] } ?? Substring(m.data)
-                st.bytes += Double(b64.utf8.count * 3 / 4)
-            }
+        for m in messages {
+            if let piece = Piece(kind: m.kind, deleted: m.deleted, size: m.size, data: m.data) { st.add(piece) }
         }
         return st
+    }
+
+    /// Une pièce jointe encore là : ce qu'elle est et ce qu'elle pèse.
+    struct Piece: Equatable {
+        enum Kind { case photo, file, voice }
+        var kind: Kind
+        var bytes: Double
+
+        /// `nil` : pas une pièce jointe, ou supprimée, ou sans contenu.
+        init?(kind: String, deleted: Bool, size: Double, data: String) {
+            guard !deleted, !data.isEmpty else { return nil }
+            switch kind {
+            case "image": self.kind = .photo
+            case "file": self.kind = .file
+            case "voice": self.kind = .voice
+            default: return nil
+            }
+            if size > 0 {
+                bytes = size
+            } else {
+                let b64 = data.firstIndex(of: ",").map { data[data.index(after: $0)...] } ?? Substring(data)
+                bytes = Double(b64.utf8.count * 3 / 4)
+            }
+        }
+    }
+
+    mutating func add(_ piece: Piece) {
+        switch piece.kind {
+        case .photo: photos += 1
+        case .file: files += 1
+        case .voice: voices += 1
+        }
+        bytes += piece.bytes
     }
 
     /// « 12 photos · 2 documents · 1 vocal ».

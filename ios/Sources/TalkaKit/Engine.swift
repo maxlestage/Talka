@@ -396,7 +396,7 @@ public final class Engine {
     /// jointes, de la plus lourde à la plus légère.
     public func storageByChat() -> [ChatStorage] {
         chats.values
-            .map { ChatStorage(chat: $0, storage: Storage.of(messages($0.id))) }
+            .map { ChatStorage(chat: $0, storage: store.storage(of: $0.id)) }
             .filter { $0.storage.bytes > 0 }
             .sorted { $0.storage.bytes > $1.storage.bytes }
     }

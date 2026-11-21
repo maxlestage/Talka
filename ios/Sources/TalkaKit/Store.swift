@@ -99,6 +99,12 @@ public final class Store: @unchecked Sendable {
     /// messages importants dans les infos, « Vider la discussion ? ») : pas
     /// de quoi charger toute la discussion.
     var starredIn: [String: Set<String>] = [:]
+
+    /// Par discussion, ses pièces jointes (photos, documents, vocaux) et ce
+    /// qu'elles pèsent ; absentes tant qu'elle n'a pas été examinée, puis
+    /// tenues à jour à chaque message écrit ou retiré. « Gérer le stockage »
+    /// les additionne, sans charger aucune discussion.
+    var piecesIn: [String: [String: Storage.Piece]] = [:]
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
     /// La clé de l'appareil (nil : rien n'est chiffré).
@@ -666,6 +672,9 @@ public final class Store: @unchecked Sendable {
         if starredIn[m.chat] != nil {
             if m.isStarred { starredIn[m.chat]?.insert(m.id) } else { starredIn[m.chat]?.remove(m.id) }
         }
+        if piecesIn[m.chat] != nil {
+            piecesIn[m.chat]?[m.id] = Storage.Piece(kind: m.kind, deleted: m.deleted, size: m.size, data: m.data)
+        }
         // Une échéance plus proche que celle qu'on connaissait.
         if let exp = m.exp, let next = expNext[m.chat], exp < next { expNext[m.chat] = exp }
         put("messages", m.key, JSON.encode(m), chat: m.chat, at: m.at)
@@ -680,6 +689,7 @@ public final class Store: @unchecked Sendable {
     func drop(_ chat: String, _ id: String) {
         generation += 1
         starredIn[chat]?.remove(id)
+        piecesIn[chat]?[id] = nil
         if messages[chat] != nil {
             if let old = messages[chat]?.removeValue(forKey: id) ?? nil { reorder(chat, old: old, new: nil) }
         } else {
@@ -739,11 +749,38 @@ public final class Store: @unchecked Sendable {
         return ids
     }
 
+    /// Ce que pèsent les pièces jointes d'une discussion (voir `Storage.of`).
+    /// D'une discussion pas chargée, seuls ces poids sont décodés, une fois ;
+    /// ni ses messages ni ses photos ne restent en mémoire.
+    public func storage(of chat: String) -> Storage {
+        lock.lock(); defer { lock.unlock() }
+        var st = Storage()
+        if let kept = piecesIn[chat] {
+            for piece in kept.values { st.add(piece) }
+            return st
+        }
+        var pieces: [String: Storage.Piece] = [:]
+        if messages[chat] != nil {
+            for m in inOrder(chat) {
+                pieces[m.id] = Storage.Piece(kind: m.kind, deleted: m.deleted, size: m.size, data: m.data)
+            }
+        } else {
+            var rows = 0
+            let weights = readRows("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ?",
+                                   [chat], rows: &rows, as: Message.Weight.self)
+            for w in weights { pieces[w.id] = w.piece }
+        }
+        piecesIn[chat] = pieces
+        for piece in pieces.values { st.add(piece) }
+        return st
+    }
+
     public func deleteMessages(of chat: String) {
         lock.lock(); defer { lock.unlock() }
         generation += 1
         expNext[chat] = nil
         starredIn[chat] = nil
+        piecesIn[chat] = nil
         messages[chat] = [:]
         ordered[chat] = nil
         dropWindow(chat)
@@ -813,6 +850,7 @@ public final class Store: @unchecked Sendable {
         // Des messages écrits sans passer par `writeMessage`.
         expNext = [:]
         starredIn = [:]
+        piecesIn = [:]
     }
 
     public func wipe() {
@@ -826,6 +864,7 @@ public final class Store: @unchecked Sendable {
         windowCovers = [:]
         expNext = [:]
         starredIn = [:]
+        piecesIn = [:]
         singleReads = [:]
         generation += 1
         exec("DELETE FROM rows")
