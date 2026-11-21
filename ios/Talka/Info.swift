@@ -602,7 +602,7 @@ struct StarredRow: View {
     @Binding var shown: Bool
 
     var body: some View {
-        let n = engine.starred(in: chatId).count
+        let n = engine.starredCount(in: chatId)
         if n > 0 {
             Button { shown = true } label: {
                 LabeledContent {
