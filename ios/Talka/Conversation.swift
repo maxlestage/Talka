@@ -35,6 +35,8 @@ struct ConversationView: View {
     @State private var shown = ConversationView.firstPage
     /// La dernière fois que des messages plus anciens ont été demandés.
     @State private var grewAt = Date.distantPast
+    /// La place des bulles affichées, telle que le fil l'a donnée en dernier.
+    @State private var places = RowPlaces()
     /// Une page de messages.
     static let page = 300
     /// Ce qui est affiché à l'ouverture : une page (tout, pour une capture
@@ -129,7 +131,10 @@ struct ConversationView: View {
                     .coordinateSpace(.named("fil"))
                     // La date du message tout en haut reste affichée pendant le
                     // défilement, comme dans le navigateur et WhatsApp.
-                    .onPreferenceChange(RowTops.self) { tops in topDay = Self.topDay(tops, messages) }
+                    .onPreferenceChange(RowTops.self) { tops in
+                        places.tops = tops
+                        topDay = Self.topDay(tops, messages)
+                    }
                     .overlay(alignment: .top) {
                         if let topDay {
                             DayChip(text: topDay)
@@ -821,6 +826,19 @@ struct DayChip: View {
     }
 }
 
+/// La place des bulles affichées (leur bas, dans la discussion), gardée hors
+/// de l'état de l'écran : elle change à chaque défilement, et la noter ne
+/// doit rien redessiner.
+final class RowPlaces {
+    var tops: [String: CGFloat] = [:]
+
+    /// Ce message est-il à l'écran (ou tout près) ?
+    func shows(_ id: String) -> Bool {
+        guard let bottom = tops[id] else { return false }
+        return bottom > 0 && bottom < 1_000
+    }
+}
+
 /// Le bas de chaque bulle affichée, dans la discussion : la plus haute donne
 /// la date qui reste en haut de l'écran.
 struct RowTops: PreferenceKey {
@@ -939,6 +957,16 @@ extension ConversationView {
         shown = shown > Int.max - more ? .max : shown + more
         guard let id else { return }
         DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
+        // Le fil ne tombe pas toujours juste du premier coup : il lui arrive
+        // de rester en haut de ce qui vient d'arriver, trois cents messages
+        // trop haut (vu dans le simulateur). Une fois les nouvelles bulles en
+        // place, on y revient, mais seulement si le message n'est pas à
+        // l'écran : qui a déjà repris son défilement n'est pas ramené.
+        for delay in [0.45, 0.8] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                if !places.shows(id) { proxy.scrollTo(id, anchor: .top) }
+            }
+        }
     }
 
     /// Le jour du message tout en haut de l'écran (celui dont le bas est le
