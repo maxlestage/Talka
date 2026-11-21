@@ -84,6 +84,14 @@ public final class Store: @unchecked Sendable {
     /// comptent, sans y être). Sans cela, une fenêtre plus courte que ce
     /// qu'on lui demande serait relue dans SQLite à chaque fois.
     var windowCovers: [String: Int] = [:]
+
+    /// Par discussion, la plus proche échéance parmi ses messages éphémères
+    /// (l'infini : aucun n'en a), telle que le dernier ménage l'a trouvée ;
+    /// absente tant que la discussion n'a pas été examinée. Chaque message
+    /// écrit avec une échéance plus proche la rapproche ; un message retiré
+    /// ou modifié peut la laisser trop proche, ce qui ne coûte qu'un examen
+    /// de plus.
+    var expNext: [String: Double] = [:]
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
     /// La clé de l'appareil (nil : rien n'est chiffré).
@@ -369,9 +377,9 @@ public final class Store: @unchecked Sendable {
     static let batchRows = 1024
     static let batchBytes = 8 << 20
 
-    func decode(_ row: MessageRow) -> Message? {
+    func decode<T: Decodable>(_ row: MessageRow, as type: T.Type) -> T? {
         let json = row.sealed.map { open($0, store: "messages", key: row.key) } ?? row.json
-        return json.flatMap { JSON.decode(Message.self, $0) }
+        return json.flatMap { JSON.decode(type, $0) }
     }
 
     /// Les messages d'une requête (`SELECT key, json …`), dans l'ordre de
@@ -385,7 +393,13 @@ public final class Store: @unchecked Sendable {
 
     /// `rows` : le nombre de lignes lues, lisibles ou non.
     func readMessages(_ sql: String, _ params: [Any], rows: inout Int) -> [Message] {
-        var out: [Message] = []
+        readRows(sql, params, rows: &rows, as: Message.self)
+    }
+
+    /// Les mêmes lignes décodées en autre chose qu'un message entier (ses
+    /// seules échéances, par exemple), de la même façon.
+    func readRows<T: Decodable>(_ sql: String, _ params: [Any], rows: inout Int, as type: T.Type) -> [T] {
+        var out: [T] = []
         var batch: [MessageRow] = []
         var bytes = 0
         var read = 0
@@ -404,32 +418,36 @@ public final class Store: @unchecked Sendable {
                 batch.append(MessageRow(key: k, json: json))
             }
             if batch.count >= Self.batchRows || bytes >= Self.batchBytes {
-                out.append(contentsOf: self.decode(batch))
+                out.append(contentsOf: self.decode(batch, as: type))
                 batch.removeAll(keepingCapacity: true)
                 bytes = 0
             }
         }
-        out.append(contentsOf: decode(batch))
+        out.append(contentsOf: decode(batch, as: type))
         return out
+    }
+
+    func decode(_ rows: [MessageRow]) -> [Message] {
+        decode(rows, as: Message.self)
     }
 
     /// Les messages d'un paquet de lignes, dans le même ordre ; les lignes
     /// illisibles sont sautées. Un petit paquet est décodé sur place ; un
     /// gros est partagé entre les cœurs.
-    func decode(_ rows: [MessageRow]) -> [Message] {
+    func decode<T: Decodable>(_ rows: [MessageRow], as type: T.Type) -> [T] {
         // Assez de lignes, ou assez d'octets (quelques photos suffisent),
         // pour que le partage vaille son coût.
         let weight = rows.reduce(0) { $0 + ($1.sealed?.count ?? $1.json?.utf8.count ?? 0) }
         let workers = min(ProcessInfo.processInfo.activeProcessorCount, 8, rows.count, max(rows.count / 64, weight / 262_144))
-        guard workers > 1 else { return rows.compactMap { decode($0) } }
-        var parts = [[Message]](repeating: [], count: workers)
+        guard workers > 1 else { return rows.compactMap { decode($0, as: type) } }
+        var parts = [[T]](repeating: [], count: workers)
         parts.withUnsafeMutableBufferPointer { buffer in
             let slots = buffer
             DispatchQueue.concurrentPerform(iterations: workers) { w in
                 let range = (rows.count * w / workers)..<(rows.count * (w + 1) / workers)
-                var found: [Message] = []
+                var found: [T] = []
                 found.reserveCapacity(range.count)
-                for i in range { if let m = self.decode(rows[i]) { found.append(m) } }
+                for i in range { if let m = self.decode(rows[i], as: type) { found.append(m) } }
                 slots[w] = found
             }
         }
@@ -638,11 +656,18 @@ public final class Store: @unchecked Sendable {
             remember(m.key, m)
             slide(m.chat, id: m.id, new: m)
         }
+        // Une échéance plus proche que celle qu'on connaissait.
+        if let exp = m.exp, let next = expNext[m.chat], exp < next { expNext[m.chat] = exp }
         put("messages", m.key, JSON.encode(m), chat: m.chat, at: m.at)
     }
 
     public func removeMessage(_ chat: String, _ id: String) {
         lock.lock(); defer { lock.unlock() }
+        drop(chat, id)
+    }
+
+    /// Le retrait d'un message, verrou déjà pris.
+    func drop(_ chat: String, _ id: String) {
         generation += 1
         if messages[chat] != nil {
             if let old = messages[chat]?.removeValue(forKey: id) ?? nil { reorder(chat, old: old, new: nil) }
@@ -653,9 +678,41 @@ public final class Store: @unchecked Sendable {
         delete("messages", "\(chat)|\(id)")
     }
 
+    /// Retire d'une discussion ses messages éphémères arrivés à échéance
+    /// avant `t`, et les renvoie (identifiant, date), du plus ancien au plus
+    /// récent.
+    ///
+    /// Le ménage le demande chaque minute pour chaque discussion à messages
+    /// éphémères : la plus proche échéance restante est retenue, et tant
+    /// qu'elle n'est pas passée rien n'est relu. Quand il faut lire une
+    /// discussion pas chargée, seules les échéances de ses messages sont
+    /// décodées, et rien n'en est gardé en mémoire.
+    public func removeExpired(_ chat: String, before t: Double) -> [(String, Double)] {
+        lock.lock(); defer { lock.unlock() }
+        if let next = expNext[chat], next >= t { return [] }
+        var gone: [(String, Double)] = []
+        var next = Double.infinity
+        func see(_ id: String, _ at: Double, _ exp: Double?) {
+            guard let exp else { return }
+            if exp < t { gone.append((id, at)) } else { next = min(next, exp) }
+        }
+        if messages[chat] != nil {
+            for m in inOrder(chat) { see(m.id, m.at, m.exp) }
+        } else {
+            var rows = 0
+            let heads = readRows("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ? ORDER BY at, key",
+                                 [chat], rows: &rows, as: Message.Expiry.self)
+            for h in heads { see(h.id, h.at, h.exp) }
+        }
+        for (id, _) in gone { drop(chat, id) }
+        expNext[chat] = next
+        return gone
+    }
+
     public func deleteMessages(of chat: String) {
         lock.lock(); defer { lock.unlock() }
         generation += 1
+        expNext[chat] = nil
         messages[chat] = [:]
         ordered[chat] = nil
         dropWindow(chat)
@@ -722,6 +779,8 @@ public final class Store: @unchecked Sendable {
             }
         }
         exec("COMMIT")
+        // Des messages écrits sans passer par `writeMessage`.
+        expNext = [:]
     }
 
     public func wipe() {
@@ -733,6 +792,7 @@ public final class Store: @unchecked Sendable {
         windows = [:]
         windowOrder = []
         windowCovers = [:]
+        expNext = [:]
         singleReads = [:]
         generation += 1
         exec("DELETE FROM rows")
