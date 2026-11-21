@@ -517,6 +517,43 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(cold.starred().map(\.key), ["\(b.id)|m399", "ORPHELINE|m50"])
     }
 
+    /// Ouvrir une autre discussion, ou passer à l'arrière-plan, rend la
+    /// mémoire d'une longue discussion lue en entier ; celle qui est à
+    /// l'écran reste.
+    func testLongChatsAreReleasedWhenAnotherOpens() async throws {
+        let e = phone()
+        let a = e.ensureDirectChat("K7Q2MX9PRT")
+        let b = e.ensureDirectChat("WGSEAJNSZJ")
+        e.store.transaction {
+            for i in 0..<800 {
+                for chat in [a.id, b.id] {
+                    e.store.writeMessage(Message(chat: chat, id: "m\(i)", from: chat, at: Double(i), content: Content(text: "Message \(i)")))
+                }
+            }
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        cold.activeChat = a.id
+        XCTAssertEqual(cold.messages(a.id).count, 800)
+        XCTAssertNotNil(cold.store.messages[a.id])
+        // L'écran des infos la recouvre, on y revient : elle est toujours là.
+        cold.activeChat = nil
+        cold.activeChat = a.id
+        XCTAssertNotNil(cold.store.messages[a.id])
+        // Une autre s'ouvre.
+        cold.activeChat = nil
+        cold.activeChat = b.id
+        XCTAssertNil(cold.store.messages[a.id])
+        XCTAssertEqual(cold.messages(b.id).count, 800)
+        XCTAssertEqual(cold.recentMessages(a.id, limit: 300).list.last?.text, "Message 799")
+        XCTAssertEqual(cold.messages(a.id).count, 800)
+        // À l'arrière-plan : celle qui est à l'écran reste, l'autre part.
+        cold.foreground = false
+        XCTAssertNotNil(cold.store.messages[b.id])
+        XCTAssertNil(cold.store.messages[a.id])
+        cold.foreground = true
+        XCTAssertEqual(cold.messages(a.id).count, 800)
+    }
+
     // ----- Les messages éphémères -----
 
     /// Le ménage retire les messages éphémères échus sans charger la

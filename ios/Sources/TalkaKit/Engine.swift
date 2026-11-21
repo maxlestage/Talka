@@ -45,10 +45,22 @@ public final class Engine {
     public private(set) var revisions: [String: Int] = [:]
     public internal(set) var statusRevision = 0
     public private(set) var callRevision = 0
-    /// La discussion à l'écran (ses messages arrivent lus).
-    public var activeChat: String?
-    /// L'application est-elle au premier plan ?
-    public var foreground = true
+    /// La discussion à l'écran (ses messages arrivent lus). En ouvrir une
+    /// autre rend la mémoire des longues discussions lues en entier avant
+    /// elle (voir `Store.release`).
+    public var activeChat: String? {
+        didSet {
+            if let now = activeChat, now != oldValue { store.release(except: now) }
+        }
+    }
+    /// L'application est-elle au premier plan ? À l'arrière-plan, la mémoire
+    /// des longues discussions lues en entier est rendue (sauf celle qui est
+    /// à l'écran).
+    public var foreground = true {
+        didSet {
+            if oldValue, !foreground { store.release(except: activeChat) }
+        }
+    }
 
     /// Un message arrive : (discussion, message, déjà à l'écran).
     @ObservationIgnored public var onIncoming: ((Chat, Message, Bool) -> Void)?

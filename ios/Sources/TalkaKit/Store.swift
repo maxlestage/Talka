@@ -68,6 +68,8 @@ public final class Store: @unchecked Sendable {
     /// ligne à ligne sans fin.
     var singleReads: [String: Int] = [:]
     static let loadAfter = 96
+    /// Les discussions chargées pour cette raison : `release` les laisse.
+    var busy: Set<String> = []
     /// La fin de discussions pas chargées en entier : leurs derniers
     /// messages, dans l'ordre, lus par l'index puis tenus à jour à chaque
     /// écriture. Il en existe de plus anciens (une discussion qui tient en
@@ -654,7 +656,11 @@ public final class Store: @unchecked Sendable {
         }
         guard let out else { return nil }
         singleReads[chat, default: 0] += 1
-        if singleReads[chat, default: 0] > Self.loadAfter { return loadChat(chat)[id] }
+        if singleReads[chat, default: 0] > Self.loadAfter {
+            // Chargée parce qu'elle sert beaucoup : pas rendue de sitôt.
+            busy.insert(chat)
+            return loadChat(chat)[id]
+        }
         remember(key, out)
         return out
     }
@@ -775,9 +781,33 @@ public final class Store: @unchecked Sendable {
         return st
     }
 
+    /// Une longue discussion ne reste chargée en entier que tant qu'elle
+    /// sert : au-delà de tant de messages, `release` n'en garde que la fin.
+    static let releaseOver = 600
+    static let releaseKeep = 300
+
+    /// Rend la mémoire des longues discussions lues en entier (une
+    /// recherche, une remontée jusqu'au début, un export) : il n'en reste
+    /// que la fin, comme avant de les ouvrir. `keep` : celle qui est à
+    /// l'écran. Rien n'est perdu, tout est dans SQLite ; les relire en entier
+    /// coûtera une lecture.
+    public func release(except keep: String?) {
+        lock.lock(); defer { lock.unlock() }
+        for (chat, all) in messages where chat != keep && all.count > Self.releaseOver && !busy.contains(chat) {
+            let list = inOrder(chat)
+            messages[chat] = nil
+            ordered[chat] = nil
+            singleReads[chat] = nil
+            windows[chat] = Array(list.suffix(Self.releaseKeep))
+            windowCovers[chat] = Self.releaseKeep
+            touchWindow(chat)
+        }
+    }
+
     public func deleteMessages(of chat: String) {
         lock.lock(); defer { lock.unlock() }
         generation += 1
+        busy.remove(chat)
         expNext[chat] = nil
         starredIn[chat] = nil
         piecesIn[chat] = nil
@@ -858,6 +888,7 @@ public final class Store: @unchecked Sendable {
         exec("COMMIT")
         // Des messages écrits sans passer par `writeMessage`.
         expNext = [:]
+        busy = []
         starredIn = [:]
         piecesIn = [:]
     }
@@ -872,6 +903,7 @@ public final class Store: @unchecked Sendable {
         windowOrder = []
         windowCovers = [:]
         expNext = [:]
+        busy = []
         starredIn = [:]
         piecesIn = [:]
         singleReads = [:]
