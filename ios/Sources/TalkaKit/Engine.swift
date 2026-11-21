@@ -958,7 +958,13 @@ public final class Engine {
 
     /// La discussion a-t-elle des messages favoris ?
     public func hasStarred(_ id: String) -> Bool {
-        store.messagesOf(id).contains { $0.isStarred }
+        !store.starredIds(id).isEmpty
+    }
+
+    /// Combien de messages importants dans la discussion (ses infos
+    /// l'affichent), sans la charger.
+    public func starredCount(in chat: String) -> Int {
+        store.starredIds(chat).count
     }
 
     /// Efface tout sauf les messages favoris.
@@ -1446,7 +1452,11 @@ public final class Engine {
 
     /// Les messages importants d'une discussion, les plus récents d'abord.
     public func starred(in chat: String) -> [Message] {
-        store.messagesOf(chat).filter(\.isStarred).sorted { $0.at > $1.at }
+        // Eux seuls sont lus : pas toute la discussion pour quelques étoiles.
+        store.starredIds(chat)
+            .compactMap { store.message(chat, $0) }
+            .filter(\.isStarred)
+            .sorted { ($0.at, $0.id) > ($1.at, $1.id) }
     }
 
     /// Ceux qui parlent de `query` (le texte, qui l'a écrit, la discussion ;

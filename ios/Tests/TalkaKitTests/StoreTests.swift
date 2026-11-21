@@ -652,6 +652,79 @@ final class StoreTests: XCTestCase {
         }
     }
 
+    /// Les messages importants d'une discussion se comptent sans la charger,
+    /// et le compte suit chaque message écrit ou retiré.
+    func testStarredIdsAreKeptWithoutLoadingTheChat() {
+        func starred(_ id: String, at: Double, deleted: Bool = false) -> Message {
+            var m = message("AMI", id, at: at, "texte \(id)")
+            m.starred = true
+            m.deleted = deleted
+            return m
+        }
+        for key in [nil, SymmetricKey(size: .bits256)] {
+            let dir = tempDir()
+            do {
+                let s = Store(directory: dir, key: key)
+                s.transaction {
+                    for i in 0..<200 { s.writeMessage(message("AMI", String(format: "m%03d", i), at: Double(i), "texte \(i)")) }
+                    s.writeMessage(starred("étoile1", at: 10.5))
+                    s.writeMessage(starred("étoile2", at: 150.5))
+                    // Supprimé pour tous : son étoile ne compte plus.
+                    s.writeMessage(starred("supprimé", at: 20.5, deleted: true))
+                    s.writeMessage(message("AUTRE", "x", at: 1, "ailleurs"))
+                }
+            }
+            let s = Store(directory: dir, key: key)
+            XCTAssertNil(s.starredIn["AMI"])
+            XCTAssertEqual(s.starredIds("AMI"), ["étoile1", "étoile2"])
+            XCTAssertNil(s.messages["AMI"])
+            XCTAssertTrue(s.starredIds("AUTRE").isEmpty)
+            // Pas relue : une ligne changée dans le dos de la mémoire ne se voit pas.
+            s.run("DELETE FROM rows WHERE store = 'messages' AND key = ?", ["AMI|étoile2"])
+            XCTAssertEqual(s.starredIds("AMI"), ["étoile1", "étoile2"])
+            // Une étoile posée, une retirée, un message supprimé pour tous, un autre retiré.
+            var m = try! XCTUnwrap(s.message("AMI", "m050"))
+            m.starred = true
+            s.writeMessage(m)
+            XCTAssertEqual(s.starredIds("AMI"), ["étoile1", "étoile2", "m050"])
+            var first = try! XCTUnwrap(s.message("AMI", "étoile1"))
+            first.starred = false
+            s.writeMessage(first)
+            XCTAssertEqual(s.starredIds("AMI"), ["étoile2", "m050"])
+            m.deleted = true
+            s.writeMessage(m)
+            XCTAssertEqual(s.starredIds("AMI"), ["étoile2"])
+            s.removeMessage("AMI", "étoile2")
+            XCTAssertTrue(s.starredIds("AMI").isEmpty)
+            s.writeMessage(starred("neuf", at: 500))
+            XCTAssertEqual(s.starredIds("AMI"), ["neuf"])
+            XCTAssertNil(s.messages["AMI"])
+            // Un message éphémère important qui échoit sort du compte.
+            var brief = starred("bref", at: 501)
+            brief.exp = 1_000
+            s.writeMessage(brief)
+            XCTAssertEqual(s.starredIds("AMI"), ["neuf", "bref"])
+            XCTAssertEqual(s.removeExpired("AMI", before: 2_000).map(\.0), ["bref"])
+            XCTAssertEqual(s.starredIds("AMI"), ["neuf"])
+            // D'une discussion chargée : le même compte, depuis la mémoire.
+            let other = Store(directory: dir, key: key)
+            XCTAssertEqual(other.messagesOf("AMI").count, 203)
+            XCTAssertEqual(other.starredIds("AMI"), ["neuf"])
+            other.removeMessage("AMI", "neuf")
+            XCTAssertTrue(other.starredIds("AMI").isEmpty)
+            // Vidée, ou restaurée d'une sauvegarde : tout est à revoir.
+            s.deleteMessages(of: "AMI")
+            XCTAssertNil(s.starredIn["AMI"])
+            XCTAssertTrue(s.starredIds("AMI").isEmpty)
+            s.writeMessage(starred("après", at: 600))
+            let dump = s.dump()
+            s.writeMessage(starred("oublié", at: 601))
+            s.restore(dump)
+            XCTAssertTrue(s.starredIn.isEmpty)
+            XCTAssertEqual(s.starredIds("AMI"), ["après"])
+        }
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
