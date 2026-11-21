@@ -798,6 +798,58 @@ final class StoreTests: XCTestCase {
         }
     }
 
+    /// Une longue discussion lue en entier rend sa mémoire : il n'en reste
+    /// que la fin, tenue à jour, et tout se relit comme avant.
+    func testALongLoadedChatIsReleased() {
+        let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
+        s.transaction {
+            for i in 0..<1000 { s.writeMessage(message("LONGUE", String(format: "m%04d", i), at: Double(i), "texte \(i)")) }
+            for i in 0..<1000 { s.writeMessage(message("ÉCRAN", String(format: "m%04d", i), at: Double(i), "texte \(i)")) }
+            for i in 0..<(Store.releaseOver) { s.writeMessage(message("COURTE", String(format: "m%04d", i), at: Double(i), "texte \(i)")) }
+            for i in 0..<1000 { s.writeMessage(message("OCCUPÉE", String(format: "m%04d", i), at: Double(i), "texte \(i)")) }
+        }
+        let cold = Store(directory: s.dir, key: s.key)
+        let whole = cold.messagesOf("LONGUE")
+        XCTAssertEqual(whole.count, 1000)
+        XCTAssertEqual(cold.messagesOf("ÉCRAN").count, 1000)
+        XCTAssertEqual(cold.messagesOf("COURTE").count, Store.releaseOver)
+        // Chargée parce que ses messages sont relus un par un sans fin : laissée.
+        for i in 0...Store.loadAfter + 1 { XCTAssertNotNil(cold.message("OCCUPÉE", String(format: "m%04d", i))) }
+        XCTAssertNotNil(cold.messages["OCCUPÉE"])
+
+        cold.release(except: "ÉCRAN")
+        XCTAssertNil(cold.messages["LONGUE"])
+        XCTAssertNil(cold.ordered["LONGUE"])
+        XCTAssertNotNil(cold.messages["ÉCRAN"])
+        XCTAssertNotNil(cold.messages["COURTE"])
+        XCTAssertNotNil(cold.messages["OCCUPÉE"])
+        // La fin est restée en mémoire : rien n'est relu pour l'afficher.
+        XCTAssertEqual(cold.windows["LONGUE"]?.count, Store.releaseKeep)
+        let end = cold.recentMessages("LONGUE", limit: Store.releaseKeep)
+        XCTAssertEqual(end.list, Array(whole.suffix(Store.releaseKeep)))
+        XCTAssertTrue(end.more)
+        XCTAssertEqual(cold.messagesOf("LONGUE", limit: 5), Array(whole.suffix(5)))
+        XCTAssertNil(cold.messages["LONGUE"])
+        // Elle suit toujours les écritures, et un vieux message se lit encore.
+        cold.writeMessage(message("LONGUE", "neuf", at: 5000, "nouveau"))
+        cold.removeMessage("LONGUE", "m0999")
+        XCTAssertEqual(cold.recentMessages("LONGUE", limit: 3).list.suffix(3).map(\.id), ["m0997", "m0998", "neuf"])
+        XCTAssertEqual(cold.message("LONGUE", "m0003")?.text, "texte 3")
+        // Demander plus que la fin : relu dans SQLite ; tout : rechargée.
+        XCTAssertEqual(cold.recentMessages("LONGUE", limit: 500).list.count, 500)
+        XCTAssertNil(cold.messages["LONGUE"])
+        XCTAssertEqual(cold.messagesOf("LONGUE").map(\.id), whole.dropLast().map(\.id) + ["neuf"])
+        XCTAssertNotNil(cold.messages["LONGUE"])
+        // Sans discussion à l'écran, toutes les longues sont rendues ; deux fois ne change rien.
+        cold.release(except: nil)
+        cold.release(except: nil)
+        XCTAssertNil(cold.messages["LONGUE"])
+        XCTAssertNil(cold.messages["ÉCRAN"])
+        XCTAssertNotNil(cold.messages["COURTE"])
+        XCTAssertEqual(cold.messagesOf("ÉCRAN").count, 1000)
+        XCTAssertEqual(Store(directory: s.dir, key: s.key).messagesOf("LONGUE").count, 1000)
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
