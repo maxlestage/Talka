@@ -828,6 +828,19 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         openAt = c.v(.openAt, nil); bro = c.v(.bro, false); mentions = c.v(.mentions, [])
     }
 
+    /// L'échéance d'un message éphémère, lue sans le reste (son texte, sa
+    /// photo) : le ménage de chaque minute n'a besoin que d'elle.
+    struct Expiry: Decodable {
+        var id: String
+        var at: Double
+        var exp: Double?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.v(.id, ""); at = c.v(.at, 0); exp = c.v(.exp, nil)
+        }
+    }
+
     /// `chat|id` : la clé dans le stockage.
     public var key: String { "\(chat)|\(id)" }
 

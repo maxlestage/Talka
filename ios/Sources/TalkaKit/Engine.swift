@@ -269,16 +269,12 @@ public final class Engine {
         for chat in chats.values where chat.muted && (chat.muteUntil ?? .infinity) <= t {
             updateChat(chat.id) { $0.muted = false; $0.muteUntil = nil }
         }
+        // Les messages éphémères arrivés à échéance : la discussion n'est
+        // relue que si l'un d'eux a pu l'atteindre, et pas chargée pour ça.
         for chat in chats.values where chat.timer > 0 || chat.hasExp {
-            var changed = false
-            var gone: [(String, Double)] = []
-            for m in store.messagesOf(chat.id) where (m.exp ?? .infinity) < t {
-                store.removeMessage(chat.id, m.id)
-                gone.append((m.id, m.at))
-                changed = true
-            }
+            let gone = store.removeExpired(chat.id, before: t)
             bury(chat.id, gone)
-            if changed { refreshLast(chat.id); bump(chat.id) }
+            if !gone.isEmpty { refreshLast(chat.id); bump(chat.id) }
         }
         // Les messages trop vieux (3 mois par défaut), une fois par heure.
         if settings.keepDays > 0, t - lastPrune >= 3_600_000 {

@@ -578,6 +578,80 @@ final class StoreTests: XCTestCase {
         XCTAssertNil(s.windowCovers["AMI"])
     }
 
+    /// Les messages éphémères échus sont retirés sans charger la discussion,
+    /// et elle n'est relue que lorsqu'une échéance a pu passer.
+    func testExpiredMessagesLeaveWithoutLoadingTheChat() {
+        func ephemeral(_ id: String, at: Double, exp: Double?) -> Message {
+            var m = message("AMI", id, at: at, "texte \(id)")
+            m.exp = exp
+            return m
+        }
+        for key in [nil, SymmetricKey(size: .bits256)] {
+            let dir = tempDir()
+            do {
+                let s = Store(directory: dir, key: key)
+                s.transaction {
+                    for i in 0..<200 { s.writeMessage(message("AMI", String(format: "m%03d", i), at: Double(i), "texte \(i)")) }
+                    s.writeMessage(ephemeral("tard", at: 50.5, exp: 5_000))
+                    s.writeMessage(ephemeral("échu2", at: 120.5, exp: 900))
+                    s.writeMessage(ephemeral("échu1", at: 10.5, exp: 999))
+                    s.writeMessage(ephemeral("juste", at: 60.5, exp: 1_000))
+                    s.writeMessage(message("AUTRE", "x", at: 1, "ailleurs"))
+                }
+            }
+            let s = Store(directory: dir, key: key)
+            // Les échus, du plus ancien au plus récent ; une échéance qui
+            // tombe pile à l'heure attend le passage suivant.
+            XCTAssertEqual(s.removeExpired("AMI", before: 1_000).map(\.0), ["échu1", "échu2"])
+            XCTAssertNil(s.messages["AMI"])
+            XCTAssertEqual(s.expNext["AMI"], 1_000)
+            XCTAssertNil(s.message("AMI", "échu1"))
+            XCTAssertNotNil(s.message("AMI", "juste"))
+            // Rien n'a pu échoir : la discussion n'est pas relue (une ligne
+            // changée dans le dos de la mémoire ne se voit pas).
+            s.run("DELETE FROM rows WHERE store = 'messages' AND key = ?", ["AMI|juste"])
+            XCTAssertTrue(s.removeExpired("AMI", before: 1_000).isEmpty)
+            XCTAssertEqual(s.expNext["AMI"], 1_000)
+            // L'échéance passée : relue (« juste » n'y est plus).
+            XCTAssertTrue(s.removeExpired("AMI", before: 1_001).isEmpty)
+            XCTAssertEqual(s.expNext["AMI"], 5_000)
+            // Un message écrit avec une échéance plus proche la rapproche,
+            // un autre plus lointaine non.
+            s.writeMessage(ephemeral("loin", at: 300, exp: 9_000))
+            XCTAssertEqual(s.expNext["AMI"], 5_000)
+            s.writeMessage(ephemeral("proche", at: 301, exp: 2_000))
+            XCTAssertEqual(s.expNext["AMI"], 2_000)
+            XCTAssertTrue(s.removeExpired("AMI", before: 2_000).isEmpty)
+            XCTAssertEqual(s.removeExpired("AMI", before: 2_001).map(\.1), [301])
+            XCTAssertEqual(s.expNext["AMI"], 5_000)
+            XCTAssertNil(s.messages["AMI"])
+            // La fin en mémoire suit les retraits.
+            XCTAssertEqual(s.recentMessages("AMI", limit: 3).list.map(\.id), ["m198", "m199", "loin"])
+            XCTAssertEqual(s.removeExpired("AMI", before: 9_500).map(\.0), ["tard", "loin"])
+            XCTAssertEqual(s.recentMessages("AMI", limit: 3).list.map(\.id), ["m197", "m198", "m199"])
+            XCTAssertEqual(s.expNext["AMI"], .infinity)
+            // Une discussion chargée : la même chose, depuis la mémoire.
+            XCTAssertEqual(s.messagesOf("AMI").count, 200)
+            s.writeMessage(ephemeral("chargé", at: 400, exp: 20_000))
+            s.writeMessage(ephemeral("chargé2", at: 401, exp: 30_000))
+            XCTAssertTrue(s.removeExpired("AMI", before: 20_000).isEmpty)
+            XCTAssertEqual(s.removeExpired("AMI", before: 20_001).map(\.0), ["chargé"])
+            XCTAssertEqual(s.expNext["AMI"], 30_000)
+            XCTAssertEqual(s.messagesOf("AMI").count, 201)
+            // Sans message éphémère : rien, et retenu.
+            XCTAssertTrue(s.removeExpired("AUTRE", before: 1e15).isEmpty)
+            XCTAssertEqual(s.expNext["AUTRE"], .infinity)
+            // Une discussion vidée ou une sauvegarde restaurée : tout est à revoir.
+            s.deleteMessages(of: "AMI")
+            XCTAssertNil(s.expNext["AMI"])
+            let dump = s.dump()
+            s.restore(dump)
+            XCTAssertTrue(s.expNext.isEmpty)
+            // Ce qui reste sur le disque est bien ce qu'on croit.
+            XCTAssertEqual(Store(directory: dir, key: key).messagesOf("AUTRE").map(\.id), ["x"])
+        }
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))

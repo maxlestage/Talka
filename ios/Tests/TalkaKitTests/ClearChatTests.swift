@@ -404,6 +404,56 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(e.searchMessages("cafe").count, 3)
     }
 
+    // ----- Les messages éphémères -----
+
+    /// Le ménage retire les messages éphémères échus sans charger la
+    /// discussion : ils sont enterrés, et l'aperçu de la discussion suit.
+    func testExpiredMessagesLeaveAtTheSweep() async throws {
+        let e = phone()
+        let c = e.ensureDirectChat("K7Q2MX9PRT")
+        let now = nowMs()
+        e.store.transaction {
+            for i in 0..<400 {
+                e.store.writeMessage(Message(chat: c.id, id: "m\(i)", from: c.id, at: now - Double(1000 - i) * 1000, content: Content(text: "Message \(i)")))
+            }
+        }
+        var gone = Message(chat: c.id, id: "échu", from: c.id, at: now - 5_000, content: Content(text: "Éphémère échu"))
+        gone.exp = now - 1_000
+        var soon = Message(chat: c.id, id: "bientôt", from: c.id, at: now - 4_000, content: Content(text: "Éphémère"))
+        soon.exp = now + 300
+        e.storeMessage(gone)
+        e.storeMessage(soon)
+        XCTAssertEqual(e.chat(c.id)?.hasExp, true)
+        XCTAssertEqual(e.chat(c.id)?.last?.text, "Éphémère")
+
+        // Un lancement : rien en mémoire.
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        cold.sweep()
+        XCTAssertNil(cold.store.messages[c.id])
+        XCTAssertNil(cold.store.message(c.id, "échu"))
+        XCTAssertNotNil(cold.store.message(c.id, "bientôt"))
+        XCTAssertTrue(cold.buried(c.id, "échu"))
+        XCTAssertFalse(cold.buried(c.id, "bientôt"))
+        XCTAssertEqual(cold.chat(c.id)?.last?.text, "Éphémère")
+        // Le suivant échoit à son tour : l'aperçu revient au dernier message resté.
+        try await Task.sleep(nanoseconds: 400_000_000)
+        cold.sweep()
+        XCTAssertNil(cold.store.message(c.id, "bientôt"))
+        XCTAssertTrue(cold.buried(c.id, "bientôt"))
+        XCTAssertEqual(cold.chat(c.id)?.last?.text, "Message 399")
+        XCTAssertNil(cold.store.messages[c.id])
+        // Un message éphémère reçu ensuite part à son heure lui aussi.
+        var late = Message(chat: c.id, id: "tardif", from: c.id, at: nowMs(), content: Content(text: "Encore un"))
+        late.exp = nowMs() + 200
+        cold.storeMessage(late)
+        cold.sweep()
+        XCTAssertNotNil(cold.store.message(c.id, "tardif"))
+        try await Task.sleep(nanoseconds: 300_000_000)
+        cold.sweep()
+        XCTAssertNil(cold.store.message(c.id, "tardif"))
+        XCTAssertEqual(cold.messages(c.id).count, 400)
+    }
+
     // ----- Les actus -----
 
     /// Le ménage lit la date des actus sans décoder leurs photos : celles de
