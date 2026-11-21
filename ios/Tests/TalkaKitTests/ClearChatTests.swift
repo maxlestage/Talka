@@ -478,6 +478,45 @@ final class ClearChatTests: XCTestCase {
         XCTAssertTrue(cold.store.messages.isEmpty)
     }
 
+    /// Les messages importants de toutes les discussions : les mêmes qu'en
+    /// relisant tous les messages, sans charger aucune discussion, et la
+    /// liste suit ce qui arrive.
+    func testAllStarredMessagesWithoutReadingEverything() async throws {
+        let e = phone()
+        let a = e.ensureDirectChat("K7Q2MX9PRT")
+        let b = e.ensureDirectChat("WGSEAJNSZJ")
+        let now = nowMs()
+        e.store.transaction {
+            for i in 0..<400 {
+                for chat in [a.id, b.id, "ORPHELINE"] {
+                    var m = Message(chat: chat, id: "m\(i)", from: chat, at: now - Double(1000 - i) * 1000 - (chat == a.id ? 500 : 0),
+                                    content: Content(text: "Message \(i) de \(chat)"))
+                    m.starred = (chat == a.id && i == 5) || (chat == b.id && (i == 100 || i == 399)) || (chat == "ORPHELINE" && i == 50)
+                    // Supprimé pour tous : son étoile ne compte plus.
+                    if chat == b.id, i == 200 { m.starred = true; m.deleted = true }
+                    e.store.writeMessage(m)
+                }
+            }
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        let all = cold.starred()
+        XCTAssertEqual(all.map(\.key), ["\(b.id)|m399", "\(b.id)|m100", "ORPHELINE|m50", "\(a.id)|m5"])
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        XCTAssertEqual(all.sorted { $0.key < $1.key }, cold.store.allMessages().filter(\.isStarred).sorted { $0.key < $1.key })
+        XCTAssertEqual(Set(cold.store.chatsWithMessages()), [a.id, b.id, "ORPHELINE"])
+        // Une étoile posée, une retirée, un message important qui arrive.
+        cold.toggleStar(a.id, "m7")
+        cold.toggleStar(b.id, "m100")
+        var fresh = Message(chat: a.id, id: "neuf", from: a.id, at: nowMs(), content: Content(text: "Important"))
+        fresh.starred = true
+        cold.storeMessage(fresh)
+        XCTAssertEqual(cold.starred().map(\.key), ["\(a.id)|neuf", "\(b.id)|m399", "ORPHELINE|m50", "\(a.id)|m7", "\(a.id)|m5"])
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        // Une discussion vidée n'en a plus.
+        cold.clearChat(a.id)
+        XCTAssertEqual(cold.starred().map(\.key), ["\(b.id)|m399", "ORPHELINE|m50"])
+    }
+
     // ----- Les messages éphémères -----
 
     /// Le ménage retire les messages éphémères échus sans charger la

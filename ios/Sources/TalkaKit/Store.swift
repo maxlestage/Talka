@@ -789,6 +789,15 @@ public final class Store: @unchecked Sendable {
         run("DELETE FROM rows WHERE store = 'messages' AND chat = ?", [chat])
     }
 
+    /// Les discussions qui ont des messages (qu'elles soient connues ou
+    /// non) : lu dans l'index, sans ouvrir aucune ligne.
+    public func chatsWithMessages() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [String] = []
+        run("SELECT DISTINCT chat FROM rows WHERE store = 'messages'") { stmt in out.append(column(stmt, 0)) }
+        return out
+    }
+
     /// Tous les messages de toutes les discussions (favoris, sauvegarde).
     public func allMessages() -> [Message] {
         lock.lock(); defer { lock.unlock() }

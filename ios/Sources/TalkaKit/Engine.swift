@@ -1470,14 +1470,16 @@ public final class Engine {
         }
     }
 
-    /// Tous les messages importants, les plus récents d'abord. Les trouver
-    /// demande de relire tous les messages de toutes les discussions : la
-    /// liste est gardée tant qu'aucun message n'a été écrit ni effacé (leur
-    /// écran la redemande à chaque frappe dans sa recherche).
+    /// Tous les messages importants, les plus récents d'abord. La liste est
+    /// gardée tant qu'aucun message n'a été écrit ni effacé (leur écran la
+    /// redemande à chaque frappe dans sa recherche) ; elle est refaite
+    /// discussion par discussion, de leurs seuls messages importants (voir
+    /// `Store.starredIds`), et non en relisant tous les messages de
+    /// l'appareil à chaque message qui arrive.
     public func starred() -> [Message] {
         let generation = store.messagesGeneration
         if let kept = starredKept, kept.generation == generation { return kept.list }
-        let list = store.allMessages().filter(\.isStarred).sorted { $0.at > $1.at }
+        let list = store.chatsWithMessages().flatMap { starred(in: $0) }.sorted { ($0.at, $0.key) > ($1.at, $1.key) }
         starredKept = (generation, list)
         return list
     }
