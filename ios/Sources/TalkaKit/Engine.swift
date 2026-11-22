@@ -1666,17 +1666,25 @@ public final class Engine {
     @discardableResult
     public func markAllRead() -> Int {
         let ids = chats.values.filter { $0.unread > 0 || $0.markedUnread }.map(\.id)
-        for id in ids { markRead(id) }
+        // Une seule transaction pour toutes les discussions.
+        store.transaction {
+            for id in ids { markRead(id) }
+        }
         return ids.count
     }
 
     public func markRead(_ chat: String) {
         guard let c = chats[chat] else { return }
         var bySender: [String: [String]] = [:]
-        for var m in store.messagesOf(chat, limit: 300) where m.from != me.code && m.from != "system" && !m.readByMe {
-            m.readByMe = true
-            store.writeMessage(m)
-            bySender[m.from, default: []].append(m.id)
+        // Des centaines de messages non lus s'écrivent en une transaction,
+        // pas une par message (ouvrir une discussion très en retard, ou
+        // tout marquer comme lu, bloquait l'écran).
+        store.transaction {
+            for var m in store.messagesOf(chat, limit: 300) where m.from != me.code && m.from != "system" && !m.readByMe {
+                m.readByMe = true
+                store.writeMessage(m)
+                bySender[m.from, default: []].append(m.id)
+            }
         }
         let fresh = !bySender.isEmpty
         if settings.readReceipts {
@@ -1692,10 +1700,12 @@ public final class Engine {
     /// Lu sur un autre de nos appareils : jusqu'à `at`, sans accusé.
     func readHere(_ chat: String, at: Double) {
         guard var c = chats[chat] else { return }
-        for var m in store.messagesOf(chat, limit: 300)
-        where m.from != me.code && m.from != "system" && !m.readByMe && m.at <= at + 60_000 {
-            m.readByMe = true
-            store.writeMessage(m)
+        store.transaction {
+            for var m in store.messagesOf(chat, limit: 300)
+            where m.from != me.code && m.from != "system" && !m.readByMe && m.at <= at + 60_000 {
+                m.readByMe = true
+                store.writeMessage(m)
+            }
         }
         if c.unread > 0 || c.mentioned {
             c.unread = 0
