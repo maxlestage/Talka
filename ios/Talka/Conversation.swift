@@ -80,17 +80,18 @@ struct ConversationView: View {
             let now = nowMs()
             let query = (search ?? "").trimmingCharacters(in: .whitespaces)
             // La fin de la discussion (une page, plus ce qu'on a remonté) ; une
-            // recherche fouille toute la discussion.
+            // recherche fouille toute la discussion, dans le cœur, qui garde
+            // ce qu'il a trouvé d'un dessin à l'autre (`Engine.searchChat`).
             let end: (list: [Message], more: Bool) = query.isEmpty
                 ? e.recentMessages(chatId, limit: shown)
-                : (list: e.messages(chatId), more: false)
+                : (list: e.searchChat(chatId, query), more: false)
             let more: Bool = end.more
-            // Sans recherche ni message éphémère, rien à écarter : la liste du
-            // cœur est prise telle quelle (pas de copie à chaque frappe).
+            // Sans message éphémère, rien à écarter : la liste du cœur est
+            // prise telle quelle (pas de copie à chaque frappe).
             let all = end.list
-            let messages = query.isEmpty && !all.contains(where: { $0.exp != nil }) ? all : all.filter { (m: Message) -> Bool in
+            let messages = !all.contains(where: { $0.exp != nil }) ? all : all.filter { (m: Message) -> Bool in
                 if let exp = m.exp, exp <= now { return false }
-                return query.isEmpty || Self.matches(m, query, me: e.me.code)
+                return true
             }
             VStack(spacing: 0) {
                 if search != nil {
@@ -394,14 +395,6 @@ struct ConversationView: View {
     }
 
     // MARK: Recherche
-
-    /// Comme le navigateur : le texte et le nom (fichier, contact), sans
-    /// tenir compte des majuscules ni des accents.
-    static func matches(_ m: Message, _ query: String, me: String) -> Bool {
-        // La recherche ne trouve pas ce qu'une capsule scellée cache.
-        guard m.kind != "system", !m.deleted, !m.sealed(for: me) else { return false }
-        return "\(m.text) \(m.name)".range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-    }
 
     func searchBar(found: Int, active: Bool) -> some View {
         HStack(spacing: 8) {
@@ -921,13 +914,23 @@ extension ConversationView {
     /// Builds Debug seulement (pour les captures de la CI) : remonte tout
     /// seul en haut du fil, deux fois, pour montrer les messages plus anciens
     /// qui arrivent (`-TalkaDemoTop YES`), ou saute vers le vieux message
-    /// épinglé (`-TalkaDemoJump YES`).
+    /// épinglé (`-TalkaDemoJump YES`), ou cherche un mot dans la discussion
+    /// (`-TalkaDemoSearch 99`).
     func climb(_ proxy: ScrollViewProxy) async {
         #if DEBUG
         if Demo.jumps {
             // Le message épinglé, plus ancien que ce qui est affiché.
             try? await Task.sleep(for: .seconds(5))
             jumpTo = Demo.pinned
+            return
+        }
+        if let word = Demo.search {
+            // La recherche dans la discussion, tapée lettre après lettre.
+            try? await Task.sleep(for: .seconds(4))
+            for end in word.indices {
+                search = String(word[...end])
+                try? await Task.sleep(for: .milliseconds(400))
+            }
             return
         }
         guard Demo.climbs else { return }

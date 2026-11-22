@@ -452,6 +452,87 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(e.searchMessages("cafe").count, 3)
     }
 
+    /// La recherche dans une discussion (son écran) trouve ce que l'écran
+    /// trouvait en la lisant en entier, dans le même ordre ; un mot rare ne
+    /// la charge pas ; gardée d'un dessin à l'autre, elle n'est jamais
+    /// périmée (message reçu, supprimé, modifié, capsule qui s'ouvre).
+    func testSearchInAChatFindsWhatTheScreenFound() async throws {
+        let e = phone()
+        let c = e.ensureDirectChat("K7Q2MX9PRT")
+        let other = e.ensureDirectChat("WGSEAJNSZJ")
+        let now = nowMs()
+        e.store.transaction {
+            for i in 0..<700 {
+                var content = Content(text: i % 100 == 42 ? "Un café numéro \(i)" : "Message \(i)")
+                if i == 300 { content = Content(kind: "file", text: "", data: "data:application/pdf;base64,AAAA", name: "Carte du Café.pdf") }
+                var m = Message(chat: c.id, id: "m\(i)", from: i % 2 == 0 ? c.id : e.me.code, at: now - Double(1000 - i) * 1000, content: content)
+                if i == 142 { m.deleted = true }
+                if i == 242 { m.kind = "system" }
+                // Une capsule encore scellée (reçue), une autre écrite par soi.
+                if i == 342 || i == 343 { m.openAt = now + 3_600_000; m.text = "Le café de plus tard" }
+                if i == 442 { m.exp = now + 600_000 }
+                e.store.writeMessage(m)
+            }
+            e.store.writeMessage(Message(chat: other.id, id: "x", from: other.id, at: now, content: Content(text: "Un café ailleurs")))
+        }
+        /// Ce que faisait l'écran : toute la discussion, filtrée.
+        func screen(_ engine: Engine, _ q: String) -> [String] {
+            engine.messages(c.id).filter { m in
+                m.kind != "system" && !m.deleted && !m.sealed(for: engine.me.code)
+                    && "\(m.text) \(m.name)".range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }.map(\.id)
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        XCTAssertTrue(cold.searchChat(c.id, "  ").isEmpty)
+        // Un mot rare : trouvé sans lire la discussion en entier.
+        let found = cold.searchChat(c.id, " CAFE ")
+        XCTAssertEqual(found.map(\.id), ["m42", "m300", "m343", "m442", "m542", "m642"])
+        XCTAssertEqual(found.first?.text, "Un café numéro 42")
+        XCTAssertEqual(found[1].name, "Carte du Café.pdf")
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        // La même recherche n'est pas refaite ; une autre, si.
+        let kept = cold.chatSearchKept?.at
+        XCTAssertEqual(cold.searchChat(c.id, "CAFE  ").count, 6)
+        XCTAssertEqual(cold.chatSearchKept?.at, kept)
+        XCTAssertEqual(cold.searchChat(c.id, "numéro 64").map(\.id), ["m642"])
+        XCTAssertEqual(cold.searchChat(other.id, "cafe").map(\.id), ["x"])
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        // Un message reçu, un supprimé, un modifié : la recherche suit.
+        cold.storeMessage(Message(chat: c.id, id: "neuf", from: c.id, at: nowMs(), content: Content(text: "Encore un CAFÉ")))
+        cold.delete(c.id, "m42", forEveryone: false)
+        var edited = try XCTUnwrap(cold.store.message(c.id, "m542"))
+        edited.text = "Un thé"
+        cold.store.writeMessage(edited)
+        XCTAssertEqual(cold.searchChat(c.id, "cafe").map(\.id), ["m300", "m343", "m442", "m642", "neuf"])
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        // Les mêmes que l'écran d'avant, pour des mots rares ou très courants
+        // (une lettre, ou plus d'une centaine de messages : la discussion est lue).
+        for q in ["cafe", "Message 1", "9", "m", "é", "numero", "pdf", "zzz", "plus tard", "message 69", "E 6"] {
+            XCTAssertEqual(cold.searchChat(c.id, q).map(\.id), screen(cold, q), "« \(q) »")
+        }
+        XCTAssertGreaterThan(cold.searchChat(c.id, "Message 1").count, Engine.searchSingles)
+        XCTAssertEqual(cold.searchChat(c.id, "zzz"), [])
+        // Une capsule scellée ne se trahit pas ; ouverte, elle se trouve.
+        let t = nowMs()
+        var capsule = Message(chat: c.id, id: "capsule", from: c.id, at: t, content: Content(text: "Le café de tout à l'heure"))
+        capsule.openAt = t + 400
+        cold.storeMessage(capsule)
+        XCTAssertEqual(cold.searchChat(c.id, "tout à l'heure"), [])
+        XCTAssertEqual(cold.searchChat(c.id, "tout à l'heure"), [])
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertEqual(cold.searchChat(c.id, "tout à l'heure").map(\.id), ["capsule"])
+        // Quitter la discussion rend ce que la recherche tenait.
+        cold.activeChat = c.id
+        XCTAssertEqual(cold.searchChat(c.id, "neuf").count, 0)
+        XCTAssertEqual(cold.searchChat(c.id, "encore un").map(\.id), ["neuf"])
+        XCTAssertNotNil(cold.chatSearchKept)
+        cold.activeChat = nil
+        XCTAssertNil(cold.chatSearchKept)
+        XCTAssertEqual(cold.searchChat(c.id, "encore un").map(\.id), ["neuf"])
+        cold.foreground = false
+        XCTAssertNil(cold.chatSearchKept)
+    }
+
     /// Les messages importants d'une longue discussion pas chargée : leur
     /// compte et leur liste (les plus récents d'abord) sans la lire en
     /// entier, et « tout vider sauf eux » les garde.

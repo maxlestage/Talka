@@ -90,6 +90,13 @@ jobs:
           xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaDemo YES -TalkaDemoJump YES
           sleep 11
           xcrun simctl io "$UDID" screenshot shots/8-saut.png
+          xcrun simctl terminate "$UDID" com.maxlestage.talka
+          # La recherche dans la discussion : « 99 », tapé 4 secondes après
+          # l'ouverture, trouve 17 messages (99, 199… 899, et 990 à 999 sans
+          # les deux photos).
+          xcrun simctl launch "$UDID" com.maxlestage.talka -TalkaDemo YES -TalkaDemoSearch 99
+          sleep 10
+          xcrun simctl io "$UDID" screenshot shots/9-recherche.png
           for f in shots/*.png; do
             # La discussion en plus grand : ses messages doivent se lire.
             case "$f" in shots/[12]-*) side=420 ;; *) side=1000 ;; esac
