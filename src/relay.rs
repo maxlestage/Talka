@@ -392,6 +392,182 @@ fn numbered(mut json: String, n: Option<u64>) -> String {
     json
 }
 
+/// Les champs d'un envoi, lus comme dans un `Value` : une chaîne, un
+/// booléen ou un entier positif, sinon rien (un champ absent ou d'un autre
+/// type).
+trait Fields {
+    fn text(&self, name: &str) -> Option<&str>;
+    fn flag(&self, name: &str) -> Option<bool>;
+    fn number(&self, name: &str) -> Option<u64>;
+}
+
+impl Fields for Value {
+    fn text(&self, name: &str) -> Option<&str> {
+        self[name].as_str()
+    }
+    fn flag(&self, name: &str) -> Option<bool> {
+        self[name].as_bool()
+    }
+    fn number(&self, name: &str) -> Option<u64> {
+        self[name].as_u64()
+    }
+}
+
+/// Un envoi (`"t":"send"`, le gros du trafic : photos, vocaux) lu sans
+/// recopier son corps (jusqu'à 8 Mio), qui reste dans le texte reçu : moitié
+/// moins de temps à le lire, et 8 Mio de moins en mémoire par envoi. Lu
+/// comme un `Value` : la dernière occurrence d'un champ compte, un champ
+/// d'un autre type est ignoré.
+#[derive(Default)]
+struct SendMsg<'a> {
+    t: Option<std::borrow::Cow<'a, str>>,
+    text: Vec<(&'static str, std::borrow::Cow<'a, str>)>,
+    flags: Vec<(&'static str, bool)>,
+    ttl: Option<u64>,
+}
+
+/// Les champs texte d'un envoi.
+const SEND_TEXT: [&str; 9] = [
+    "id", "body", "to", "dev", "boite", "sign", "dh", "jeton", "apercu",
+];
+
+impl Fields for SendMsg<'_> {
+    fn text(&self, name: &str) -> Option<&str> {
+        self.text
+            .iter()
+            .rev()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| v.as_ref())
+    }
+    fn flag(&self, name: &str) -> Option<bool> {
+        self.flags
+            .iter()
+            .rev()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| *v)
+    }
+    fn number(&self, name: &str) -> Option<u64> {
+        (name == "ttl").then_some(self.ttl).flatten()
+    }
+}
+
+/// Une valeur JSON quelconque, réduite à ce que `Fields` en lit.
+enum Scalar<'a> {
+    Text(std::borrow::Cow<'a, str>),
+    Flag(bool),
+    Number(u64),
+    Other,
+}
+
+impl<'de> serde::Deserialize<'de> for Scalar<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Scalar<'de>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("une valeur JSON")
+            }
+            fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Scalar<'de>, E> {
+                Ok(Scalar::Text(std::borrow::Cow::Borrowed(v)))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Scalar<'de>, E> {
+                Ok(Scalar::Text(std::borrow::Cow::Owned(v.to_owned())))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Scalar<'de>, E> {
+                Ok(Scalar::Text(std::borrow::Cow::Owned(v)))
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Scalar<'de>, E> {
+                Ok(Scalar::Flag(v))
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Scalar<'de>, E> {
+                Ok(Scalar::Number(v))
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Scalar<'de>, E> {
+                Ok(u64::try_from(v).map_or(Scalar::Other, Scalar::Number))
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Scalar<'de>, E> {
+                Ok(Scalar::Other)
+            }
+            fn visit_unit<E>(self) -> Result<Scalar<'de>, E> {
+                Ok(Scalar::Other)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<Scalar<'de>, A::Error> {
+                while a.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(Scalar::Other)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<Scalar<'de>, A::Error> {
+                while a
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(Scalar::Other)
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SendMsg<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = SendMsg<'de>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("un objet JSON")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<SendMsg<'de>, A::Error> {
+                let mut m = SendMsg::default();
+                while let Some(key) = a.next_key::<std::borrow::Cow<'de, str>>()? {
+                    let value: Scalar<'de> = a.next_value()?;
+                    let text = SEND_TEXT.iter().find(|n| **n == key);
+                    let flag = ["live", "wake"].into_iter().find(|n| *n == key);
+                    match value {
+                        Scalar::Text(v) if key == "t" => m.t = Some(v),
+                        _ if key == "t" => m.t = None,
+                        Scalar::Text(v) if text.is_some() => {
+                            m.text.push((text.copied().unwrap_or_default(), v));
+                        }
+                        Scalar::Flag(v) if flag.is_some() => {
+                            m.flags.push((flag.unwrap_or_default(), v));
+                        }
+                        Scalar::Number(v) if key == "ttl" => m.ttl = Some(v),
+                        // Un champ connu d'un autre type efface le précédent.
+                        _ => {
+                            if let Some(name) = text {
+                                m.text.retain(|(n, _)| n != name);
+                            }
+                            if let Some(name) = flag {
+                                m.flags.retain(|(n, _)| *n != name);
+                            }
+                            if key == "ttl" {
+                                m.ttl = None;
+                            }
+                        }
+                    }
+                }
+                Ok(m)
+            }
+        }
+        d.deserialize_map(V)
+    }
+}
+
+/// Un envoi, s'il en est un, lu sans recopier son corps (voir `SendMsg`).
+fn as_send(text: &str) -> Option<SendMsg<'_>> {
+    serde_json::from_str::<SendMsg>(text)
+        .ok()
+        .filter(|m| m.t.as_deref() == Some("send"))
+}
+
 /// La boîte d'un appareil (v4), ou celle du code.
 fn box_key(code: &str, dev: &str) -> String {
     if dev.is_empty() {
@@ -1627,13 +1803,13 @@ impl Relay {
         }
     }
 
-    fn send(&self, from: Sender, msg: &Value, limit: &mut Limit) -> Value {
-        let id = msg["id"].as_str().unwrap_or("").to_owned();
-        let body = msg["body"].as_str().unwrap_or("");
-        let to = msg["to"].as_str().and_then(code::normalize);
-        let dev = msg["dev"].as_str().unwrap_or("");
-        let boite = msg["boite"].as_str().unwrap_or("");
-        let field = |name: &str| msg[name].as_str().unwrap_or("");
+    fn send(&self, from: Sender, msg: &impl Fields, limit: &mut Limit) -> Value {
+        let id = msg.text("id").unwrap_or("").to_owned();
+        let body = msg.text("body").unwrap_or("");
+        let to = msg.text("to").and_then(code::normalize);
+        let dev = msg.text("dev").unwrap_or("");
+        let boite = msg.text("boite").unwrap_or("");
+        let field = |name: &str| msg.text(name).unwrap_or("");
         let error = if !limit.allow() || !limit.allow_bytes(body.len()) {
             Some("rate")
         } else if id.is_empty() || id.len() > 64 {
@@ -1672,18 +1848,18 @@ impl Relay {
         } else {
             Dest::Device(to.as_deref().expect("checked above"), dev)
         };
-        let live = msg["live"].as_bool().unwrap_or(false);
+        let live = msg.flag("live").unwrap_or(false);
         // L'aperçu, chiffré par l'expéditeur pour le destinataire (illisible ici).
-        let apercu = msg["apercu"]
-            .as_str()
+        let apercu = msg
+            .text("apercu")
             .filter(|a| !a.is_empty() && a.len() <= crate::push::MAX_APERCU);
-        let wake = match (msg["wake"].as_bool().unwrap_or(false), apercu) {
+        let wake = match (msg.flag("wake").unwrap_or(false), apercu) {
             (false, _) => Wake::No,
             (true, None) => Wake::Empty,
             (true, Some(a)) => Wake::Apercu(a.to_owned()),
         };
         // Combien de temps garder (une liaison : une heure).
-        let ttl = msg["ttl"].as_u64().map_or(MAILBOX_TTL, Duration::from_secs);
+        let ttl = msg.number("ttl").map_or(MAILBOX_TTL, Duration::from_secs);
         match self.deliver(from, dest, &id, body, live, wake, ttl) {
             Ok((ts, online)) => json!({ "t": "ack", "id": id, "ts": ts, "online": online }),
             Err(error) => json!({ "t": "error", "id": id, "error": error }),
@@ -1844,6 +2020,14 @@ impl Relay {
                         Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                         Some(Ok(_)) => continue,
                     };
+                    if let Some(m) = as_send(&text) {
+                        last = Instant::now();
+                        let answer = self.send(None, &m, &mut limit);
+                        if tx.send(answer.to_string()).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
                     let Ok(msg) = serde_json::from_str::<Value>(&text) else {
                         continue;
                     };
@@ -2048,6 +2232,10 @@ impl Relay {
                 Message::Close(_) => break,
                 _ => continue,
             };
+            if let Some(m) = as_send(&text) {
+                reply(self.send(Some((&me, &dev)), &m, &mut limit).to_string());
+                continue;
+            }
             let Ok(msg) = serde_json::from_str::<Value>(&text) else {
                 continue;
             };
@@ -3139,6 +3327,48 @@ mod tests {
         relay.forget(&[box_key(to, dev)], &[n]);
         drop(live);
         assert_eq!(Arc::strong_count(&pending), 1);
+    }
+
+    /// Un envoi lu sans recopier son corps dit exactement ce qu'en dit un
+    /// `Value`, même avec des champs répétés, absents ou d'un autre type.
+    #[test]
+    fn a_send_reads_like_a_value() {
+        let cases = [
+            r#"{"t":"send","id":"1","to":"BBBBBBBBBB","body":"corps"}"#,
+            r#"{"t":"send","id":"1","body":"a\"b\\c\u00e9","live":true,"wake":false,"ttl":3600}"#,
+            r#"{"t":"send","id":2,"body":["x"],"live":"oui","wake":1,"ttl":-5}"#,
+            r#"{"t":"send","id":"a","id":"b","live":true,"live":null,"ttl":5,"ttl":5.5}"#,
+            r#"{"t":"send","body":{"x":[1,{"y":2}]},"apercu":"vu","boite":"b","dev":"d","sign":"s","dh":"h","jeton":"j"}"#,
+            r#"{"id":"1","t":"x","t":"send","wake":true,"wake":true,"extra":{"a":[]}}"#,
+            r#"{"t":"send","ttl":18446744073709551615,"ttl2":1}"#,
+        ];
+        for case in cases {
+            let value: Value = serde_json::from_str(case).unwrap();
+            let msg = as_send(case).unwrap_or_else(|| panic!("{case}"));
+            // Ce que `send` lit : les champs texte, deux booléens, la durée.
+            for name in SEND_TEXT {
+                assert_eq!(msg.text(name), value.text(name), "{case} {name}");
+            }
+            for name in ["live", "wake"] {
+                assert_eq!(msg.flag(name), value.flag(name), "{case} {name}");
+            }
+            assert_eq!(msg.number("ttl"), value.number("ttl"), "{case} ttl");
+        }
+        // Ce qui n'est pas un envoi passe par le chemin habituel.
+        for other in [
+            r#"{"t":"got","n":[1]}"#,
+            r#"{"t":1}"#,
+            r#"{"t":"send","t":2}"#,
+            "[1]",
+            "pas du JSON",
+        ] {
+            assert!(as_send(other).is_none(), "{other}");
+        }
+        // Le corps reste dans le texte reçu : il n'est pas recopié.
+        let text = r#"{"t":"send","id":"1","body":"une photo"}"#;
+        let msg = as_send(text).unwrap();
+        let body = msg.text.iter().find(|(n, _)| *n == "body").unwrap();
+        assert!(matches!(body.1, std::borrow::Cow::Borrowed(_)));
     }
 
     /// Au plus `MAX_PER_IP` connexions depuis une même adresse.
