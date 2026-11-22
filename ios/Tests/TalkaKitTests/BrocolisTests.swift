@@ -209,6 +209,50 @@ final class BrocolisEngineTests: XCTestCase {
         XCTAssertFalse(e.decryptNow(chat.id, "m1"), "déjà ouvert")
     }
 
+    /// Une clé ajoutée ouvre les messages déjà reçus qu'elle déverrouille,
+    /// dans toutes les discussions, sans les charger : elles sont relues une
+    /// à une, au passage.
+    func testAddingAKeyReopensEveryChatWithoutLoadingAny() async throws {
+        let e = phone()
+        let a = e.ensureDirectChat("K7Q2MX9PRT")
+        let b = e.ensureDirectChat("WGSEAJNSZJ")
+        let pasted = Brocolis.generateKey()
+        let key = try XCTUnwrap(Brocolis.key(base64: pasted))
+        let other = try XCTUnwrap(Brocolis.key(base64: Brocolis.generateKey()))
+        e.store.transaction {
+            for i in 0..<700 {
+                for chat in [a.id, b.id] {
+                    var text = "Message \(i)"
+                    if i % 150 == 20 { text = Brocolis.sealToken("Secret \(i) de \(chat)", keys: [key])! }
+                    if i == 333 { text = Brocolis.sealToken("Pour une autre clé", keys: [other])! }
+                    var m = Message(chat: chat, id: "m\(i)", from: chat, at: Double(i), content: Content(text: text))
+                    if i == 400 { m.reply = Reply(id: "m20", from: chat, text: Brocolis.sealToken("Citation secrète", keys: [key])!) }
+                    e.store.writeMessage(m)
+                }
+            }
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        XCTAssertTrue(Brocolis.hasToken(try XCTUnwrap(cold.store.message(a.id, "m170")).text))
+        XCTAssertEqual(cold.store.chatsWithMessages(), [a.id, b.id].sorted())
+        XCTAssertEqual(cold.store.passingMessages(of: a.id).map(\.id), (0..<700).map { "m\($0)" })
+        XCTAssertTrue(cold.store.messages.isEmpty)
+
+        let k = try cold.addBrocolisKey(name: "Nous", pasted: pasted)
+        XCTAssertTrue(cold.store.messages.isEmpty, "aucune discussion chargée")
+        for chat in [a.id, b.id] {
+            for i in [20, 170, 320, 470, 620] {
+                let m = try XCTUnwrap(cold.store.message(chat, "m\(i)"))
+                XCTAssertEqual(m.text, "Secret \(i) de \(chat)")
+                XCTAssertTrue(m.bro)
+            }
+            XCTAssertEqual(cold.store.message(chat, "m400")?.reply?.text, "Citation secrète")
+            XCTAssertTrue(Brocolis.hasToken(try XCTUnwrap(cold.store.message(chat, "m333")).text), "pas la bonne clé")
+            XCTAssertEqual(cold.store.message(chat, "m21")?.text, "Message 21")
+            XCTAssertEqual(cold.messages(chat).count, 700)
+        }
+        XCTAssertEqual(cold.brocolisKeys.map(\.id), [k.id])
+    }
+
     func testAcceptingARenewedKeyRetiresTheOldOne() async throws {
         let e = phone()
         let chat = e.ensureDirectChat("K7Q2MX9PRT")
