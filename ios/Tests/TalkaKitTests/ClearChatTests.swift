@@ -360,8 +360,8 @@ final class ClearChatTests: XCTestCase {
             XCTAssertEqual(got.found, want, q)
             XCTAssertEqual(got.nextOpen, open, q)
         }
-        XCTAssertTrue(Message.matching([], "café", me: "MOI", now: now).found.isEmpty)
-        XCTAssertEqual(Message.matching([[]], "café", me: "MOI", now: now).nextOpen, .infinity)
+        XCTAssertTrue(Message.matching([[Message]](), "café", me: "MOI", now: now).found.isEmpty)
+        XCTAssertEqual(Message.matching([[Message]()], "café", me: "MOI", now: now).nextOpen, .infinity)
     }
 
     /// La même recherche n'est pas refaite deux fois de suite, mais elle
@@ -552,6 +552,50 @@ final class ClearChatTests: XCTestCase {
         XCTAssertNil(cold.store.messages[a.id])
         cold.foreground = true
         XCTAssertEqual(cold.messages(a.id).count, 800)
+    }
+
+    /// La recherche dans toutes les discussions ne charge aucune discussion :
+    /// les mêmes résultats qu'en lisant tout, et elle suit ce qui arrive.
+    func testSearchingEveryChatLoadsNone() async throws {
+        let e = phone()
+        let a = e.ensureDirectChat("K7Q2MX9PRT")
+        let b = e.ensureDirectChat("WGSEAJNSZJ")
+        let now = nowMs()
+        e.store.transaction {
+            for i in 0..<700 {
+                for chat in [a.id, b.id] {
+                    let text = i % 100 == 42 ? "Un café numéro \(i) chez \(chat)" : "Message \(i)"
+                    e.store.writeMessage(Message(chat: chat, id: "m\(i)", from: chat, at: now - Double(1000 - i) * 1000 - (chat == a.id ? 500 : 0), content: Content(text: text)))
+                }
+            }
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        let found = cold.searchMessages("cafe", limit: 5)
+        XCTAssertEqual(found.map(\.key), ["\(b.id)|m642", "\(a.id)|m642", "\(b.id)|m542", "\(a.id)|m542", "\(b.id)|m442"])
+        XCTAssertEqual(found.first?.text, "Un café numéro 642 chez \(b.id)")
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        // Les mêmes qu'en fouillant les discussions lues en entier.
+        let whole = Message.matching([a.id, b.id].map { cold.store.messagesOf($0) }, "cafe", me: cold.me.code, now: nowMs()).found
+        XCTAssertEqual(cold.searchMessages("cafe", limit: 100).sorted { $0.key < $1.key }, whole.sorted { $0.key < $1.key })
+        XCTAssertEqual(whole.count, 14)
+        // Une autre discussion s'ouvre (les longues rendent leur mémoire), un
+        // message arrive, un autre est supprimé : la recherche suit, sans rien recharger.
+        cold.activeChat = "AAAAAAAAAA"
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        cold.storeMessage(Message(chat: a.id, id: "neuf", from: a.id, at: nowMs(), content: Content(text: "Encore un CAFÉ")))
+        cold.delete(b.id, "m642", forEveryone: false)
+        XCTAssertEqual(cold.searchMessages("cafe", limit: 3).map(\.key), ["\(a.id)|neuf", "\(a.id)|m642", "\(b.id)|m542"])
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        // Un contact bloqué n'est plus fouillé.
+        cold.setBlocked(a.id, true)
+        XCTAssertEqual(cold.searchMessages("cafe", limit: 2).map(\.key), ["\(b.id)|m542", "\(b.id)|m442"])
+        cold.setBlocked(a.id, false)
+        // À l'arrière-plan les textes sont oubliés ; au retour la recherche les relit.
+        cold.foreground = false
+        XCTAssertTrue(cold.store.linesIn.isEmpty)
+        cold.foreground = true
+        XCTAssertEqual(cold.searchMessages("encore un").map(\.key), ["\(a.id)|neuf"])
+        XCTAssertTrue(cold.store.messages.isEmpty)
     }
 
     // ----- Les messages éphémères -----

@@ -850,6 +850,68 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(Store(directory: s.dir, key: s.key).messagesOf("LONGUE").count, 1000)
     }
 
+    /// Le texte des messages d'une discussion, pour la recherche : lu sans la
+    /// charger, il suit chaque message écrit ou retiré.
+    func testSearchLinesFollowTheMessages() {
+        func texts(_ s: Store, _ chat: String) -> [String] { s.lines(of: chat).sorted { $0.at < $1.at }.map(\.text) }
+        for key in [nil, SymmetricKey(size: .bits256)] {
+            let dir = tempDir()
+            do {
+                let s = Store(directory: dir, key: key)
+                s.transaction {
+                    for i in 0..<100 { s.writeMessage(message("AMI", String(format: "m%03d", i), at: Double(i), "texte \(i)")) }
+                    var photo = message("AMI", "photo", at: 50.5, "une légende")
+                    photo.kind = "image"
+                    photo.data = "data:image/jpeg;base64," + String(repeating: "/9j/4AAQ", count: 5_000)
+                    photo.name = "plage.jpg"
+                    photo.openAt = 1_234
+                    s.writeMessage(photo)
+                    s.writeMessage(message("AUTRE", "x", at: 1, "ailleurs"))
+                }
+            }
+            let s = Store(directory: dir, key: key)
+            XCTAssertEqual(s.lines(of: "AMI").count, 101)
+            XCTAssertNil(s.messages["AMI"])
+            XCTAssertNil(s.windows["AMI"])
+            let line = try! XCTUnwrap(s.lines(of: "AMI").first { $0.id == "photo" })
+            XCTAssertEqual(line, Message.Line(try! XCTUnwrap(s.message("AMI", "photo"))))
+            XCTAssertEqual([line.chat, line.kind, line.text, line.name, line.from], ["AMI", "image", "une légende", "plage.jpg", "WGSEAJNSZJ"])
+            XCTAssertEqual(line.openAt, 1_234)
+            XCTAssertEqual(texts(s, "AUTRE"), ["ailleurs"])
+            XCTAssertTrue(s.lines(of: "INCONNUE").isEmpty)
+            // Un message modifié, un nouveau, un retiré (au milieu, puis le dernier).
+            var edited = try! XCTUnwrap(s.message("AMI", "m003"))
+            edited.text = "corrigé"
+            s.writeMessage(edited)
+            s.writeMessage(message("AMI", "neuf", at: 500, "tout neuf"))
+            s.removeMessage("AMI", "m000")
+            s.removeMessage("AMI", "neuf")
+            s.removeMessage("AMI", "pas là")
+            var want = (1..<100).map { "texte \($0)" }
+            want[2] = "corrigé"
+            want.insert("une légende", at: 50)
+            XCTAssertEqual(texts(s, "AMI"), want)
+            XCTAssertEqual(Set(s.lines(of: "AMI").map(\.id)).count, 100)
+            XCTAssertNil(s.messages["AMI"])
+            // Les mêmes lignes qu'en lisant tout.
+            let other = Store(directory: dir, key: key)
+            XCTAssertEqual(other.messagesOf("AMI").map(Message.Line.init), s.lines(of: "AMI").sorted { $0.at < $1.at })
+            XCTAssertEqual(other.lines(of: "AMI").sorted { $0.at < $1.at }, s.lines(of: "AMI").sorted { $0.at < $1.at })
+            // Oubliées (l'arrière-plan), vidée, restaurée : relues à la demande.
+            s.forgetLines()
+            XCTAssertTrue(s.linesIn.isEmpty)
+            XCTAssertEqual(texts(s, "AMI"), want)
+            s.deleteMessages(of: "AMI")
+            XCTAssertTrue(s.lines(of: "AMI").isEmpty)
+            s.writeMessage(message("AMI", "après", at: 600, "après"))
+            let dump = s.dump()
+            s.writeMessage(message("AMI", "oublié", at: 601, "oublié"))
+            s.restore(dump)
+            XCTAssertTrue(s.linesIn.isEmpty)
+            XCTAssertEqual(texts(s, "AMI"), ["après"])
+        }
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
