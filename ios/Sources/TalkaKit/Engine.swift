@@ -854,9 +854,14 @@ public final class Engine {
     /// Les messages gardés avec des jetons qu'une nouvelle clé peut ouvrir.
     func reopenMessages() {
         var touched = Set<String>()
-        for var m in store.allMessages() where openMessage(&m) {
-            store.writeMessage(m)
-            touched.insert(m.chat)
+        // Une discussion après l'autre, dans le même ordre qu'en les lisant
+        // toutes d'un coup (les jetons s'ouvrent dans l'ordre), mais sans
+        // tenir tous les messages de l'appareil en mémoire.
+        for chat in store.chatsWithMessages() {
+            for var m in store.passingMessages(of: chat) where openMessage(&m) {
+                store.writeMessage(m)
+                touched.insert(m.chat)
+            }
         }
         for chat in touched {
             refreshLast(chat)

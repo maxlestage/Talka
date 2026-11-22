@@ -880,12 +880,23 @@ public final class Store: @unchecked Sendable {
     }
 
     /// Les discussions qui ont des messages (qu'elles soient connues ou
-    /// non) : lu dans l'index, sans ouvrir aucune ligne.
+    /// non), dans l'ordre de `allMessages` : lu dans l'index, sans ouvrir
+    /// aucune ligne.
     public func chatsWithMessages() -> [String] {
         lock.lock(); defer { lock.unlock() }
         var out: [String] = []
-        run("SELECT DISTINCT chat FROM rows WHERE store = 'messages'") { stmt in out.append(column(stmt, 0)) }
+        run("SELECT DISTINCT chat FROM rows WHERE store = 'messages' ORDER BY chat") { stmt in out.append(column(stmt, 0)) }
         return out
+    }
+
+    /// Les messages d'une discussion, du plus ancien au plus récent, lus au
+    /// passage : elle n'est pas chargée et rien n'en est gardé. Pour ce qui
+    /// parcourt tout l'appareil, une discussion après l'autre, sans le tenir
+    /// en entier en mémoire.
+    public func passingMessages(of chat: String) -> [Message] {
+        lock.lock(); defer { lock.unlock() }
+        if messages[chat] != nil { return inOrder(chat) }
+        return readMessages("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ? ORDER BY at, key", [chat])
     }
 
     /// Tous les messages de toutes les discussions (favoris, sauvegarde).
