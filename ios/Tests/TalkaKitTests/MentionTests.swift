@@ -182,6 +182,17 @@ final class GroupsInCommonTests: XCTestCase {
                        ["https://talka.example/a?b=1", "http://x.org/y"])
         XCTAssertEqual(Message.findLinks("«https://a.fr»"), ["https://a.fr"])
         XCTAssertTrue(Message.findLinks("pas un lien : xhttps://a.fr ni https://").isEmpty)
+        // Le rejet rapide des textes sans « http » ne change rien à ce qui est trouvé.
+        XCTAssertTrue(Message.findLinks("").isEmpty)
+        XCTAssertTrue(Message.findLinks("Un message sans lien, htt p, h t t p, HTTP://MAJUSCULES.FR").isEmpty)
+        XCTAssertFalse(Message.hasHTTP("htt hthtp ptth HTTP"))
+        XCTAssertTrue(Message.hasHTTP("hhttp"))
+        XCTAssertTrue(Message.hasHTTP("hthttp://"))
+        XCTAssertEqual(Message.findLinks("hhttp://a.fr http://b.fr"), ["http://b.fr"])
+        XCTAssertEqual(Message.findLinks("hé ! https://é.fr/ça?x=1. Puis “http://c.fr/d” et <https://e.fr>"),
+                       ["https://é.fr/ça?x=1", "http://c.fr/d"])
+        XCTAssertEqual(Message.findLinks("https://a.fr\nhttp://b.fr\thttps://c.fr"), ["https://a.fr", "http://b.fr", "https://c.fr"])
+        XCTAssertEqual(Message.findLinks("🥦https://a.fr 🥦 https://b.fr"), ["https://b.fr"])
         func m(_ id: String, _ from: String, _ text: String, deleted: Bool = false, openAt: Double? = nil) -> Message {
             var x = Message(chat: "LEA", id: id, from: from, at: 0, content: Content())
             x.text = text; x.deleted = deleted; x.openAt = openAt
