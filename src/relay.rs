@@ -173,9 +173,14 @@ pub fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Le texte d'un message, partagé entre sa boîte et les connexions qui
+/// le reçoivent : recopié seulement quand il part sur le réseau, hors du
+/// verrou du relais (et pas du tout si la boîte l'a déjà oublié).
+type Text = Arc<String>;
+
 struct Stored {
     n: u64,
-    json: String,
+    json: Text,
     at: Instant,
     /// Combien de temps le garder (`MAILBOX_TTL` au plus).
     ttl: Duration,
@@ -209,7 +214,7 @@ struct Bundle {
 
 struct Conn {
     id: u64,
-    tx: mpsc::Sender<String>,
+    tx: mpsc::Sender<Text>,
     hidden: bool,
     /// L'appareil (v4), vide pour un ancien client.
     dev: String,
@@ -220,8 +225,8 @@ struct Conn {
 impl Conn {
     /// Met un message dans la file de la connexion ; pleine, elle est
     /// marquée pour être coupée.
-    fn send(&self, text: String) {
-        if self.tx.try_send(text).is_err() {
+    fn send(&self, text: impl Into<Text>) {
+        if self.tx.try_send(text.into()).is_err() {
             self.overflow
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -703,7 +708,7 @@ impl State {
                     let mb = self.mailboxes.entry(key).or_default();
                     mb.queue.push_back(Stored {
                         n,
-                        json,
+                        json: Arc::new(json),
                         at: Instant::now(),
                         ttl: Duration::from_millis(until - now).min(MAILBOX_TTL),
                         kept,
@@ -1003,7 +1008,7 @@ impl Relay {
         dev: &str,
     ) -> (
         u64,
-        mpsc::Receiver<String>,
+        mpsc::Receiver<Text>,
         Arc<std::sync::atomic::AtomicBool>,
     ) {
         let (tx, rx) = mpsc::channel(OUT_QUEUE);
@@ -1245,7 +1250,7 @@ impl Relay {
                 copy.push_str(base);
                 copy
             };
-            let json = numbered(start, Some(n));
+            let json: Text = Arc::new(numbered(start, Some(n)));
             let readers: Vec<&Conn> = st.readers(key);
             let read_now = !readers.is_empty();
             for conn in readers {
@@ -1720,7 +1725,7 @@ impl Relay {
                 .then(|| Arc::new(sub))
         });
         st.sweep();
-        let mut pending: Vec<String> = Vec::new();
+        let mut pending: Vec<Text> = Vec::new();
         // Les boîtes que cet abonnement Web Push réveille désormais.
         let mut woken: Vec<&str> = Vec::new();
         for addr in &list {
@@ -1873,7 +1878,8 @@ impl Relay {
                 }
                 next = outbox.recv() => {
                     let Some(text) = next else { break };
-                    if tx.send(text).await.is_err() {
+                    // Recopié ici seulement si sa boîte le garde encore.
+                    if tx.send(Arc::unwrap_or_clone(text)).await.is_err() {
                         break;
                     }
                 }
@@ -2003,7 +2009,8 @@ impl Relay {
                 tokio::select! {
                     next = outbox.recv() => {
                         let Some(text) = next else { break };
-                        if tx.send(text).await.is_err() {
+                        // Recopié ici seulement si sa boîte le garde encore.
+                        if tx.send(Arc::unwrap_or_clone(text)).await.is_err() {
                             break;
                         }
                     }
@@ -2446,10 +2453,10 @@ mod tests {
         let st = relay.lock();
         let conn = st.online["BBBBBBBBBB"].iter().find(|c| c.id == id).unwrap();
         for _ in 0..OUT_QUEUE {
-            conn.send("x".into());
+            conn.send("x".to_owned());
         }
         assert!(!overflow.load(std::sync::atomic::Ordering::Relaxed));
-        conn.send("x".into());
+        conn.send("x".to_owned());
         assert!(overflow.load(std::sync::atomic::Ordering::Relaxed));
     }
 
@@ -2776,7 +2783,7 @@ mod tests {
         assert_eq!(st.watchers["BBBBBBBBBB"].len(), 1);
     }
 
-    fn drain(rx: &mut mpsc::Receiver<String>) -> Vec<Value> {
+    fn drain(rx: &mut mpsc::Receiver<Text>) -> Vec<Value> {
         let mut out = Vec::new();
         while let Ok(text) = rx.try_recv() {
             out.push(serde_json::from_str(&text).unwrap());
@@ -3093,6 +3100,45 @@ mod tests {
             assert_eq!(new.capacity(), capacity);
             assert_eq!(serde_json::from_str::<Value>(&new).unwrap(), old);
         }
+    }
+
+    /// Un message que lit une connexion n'est pas recopié sous le verrou :
+    /// elle reçoit le texte même que garde la boîte, en direct comme à la
+    /// reconnexion (42 Mio en attente coûtaient 8,8 ms de verrou).
+    #[test]
+    fn a_reader_shares_the_text_its_mailbox_keeps() {
+        let relay = Relay::default();
+        let to = "BBBBBBBBBB";
+        let dev = "0123456789abcdef";
+        let (_, mut rx, _) = relay.register(to, String::new(), String::new(), false, dev);
+        let mut limit = Limit::default();
+        let ack = relay.send(
+            Some(("AAAAAAAAAA", "")),
+            &json!({ "t": "send", "id": "1", "to": to, "dev": dev, "body": "photo" }),
+            &mut limit,
+        );
+        assert_eq!(ack["online"], true);
+        let kept = || {
+            relay.lock().mailboxes[&box_key(to, dev)].queue[0]
+                .json
+                .clone()
+        };
+        let live = rx.try_recv().unwrap();
+        assert!(Arc::ptr_eq(&live, &kept()));
+        let (_, mut again, _) = relay.register(to, String::new(), String::new(), false, dev);
+        let pending = again.try_recv().unwrap();
+        assert!(Arc::ptr_eq(&pending, &kept()));
+        assert_eq!(
+            serde_json::from_str::<Value>(&pending).unwrap()["body"],
+            "photo"
+        );
+        // Rangé : la boîte l'oublie, et ce qui part n'est plus partagé.
+        let n = serde_json::from_str::<Value>(&pending).unwrap()["n"]
+            .as_u64()
+            .unwrap();
+        relay.forget(&[box_key(to, dev)], &[n]);
+        drop(live);
+        assert_eq!(Arc::strong_count(&pending), 1);
     }
 
     /// Au plus `MAX_PER_IP` connexions depuis une même adresse.
