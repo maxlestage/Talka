@@ -113,6 +113,56 @@ final class WatchTests: XCTestCase {
         XCTAssertFalse(s.chats[0].messages.isEmpty)
     }
 
+    /// Le résumé part vers la montre tel qu'il a été mesuré, et ses octets
+    /// sont gardés tant qu'il ne change pas : un message, un non-lu, le
+    /// code de verrouillage ou la limite de taille le refont.
+    func testWatchDataIsKeptUntilTheSnapshotChanges() async throws {
+        let e = phone()
+        for i in 0..<20 {
+            let c = e.ensureDirectChat(String(format: "K7Q2MX%04d", i))
+            for n in 0..<15 { e.send(c.id, Content(text: "Message \(n) " + String(repeating: "Bonjour ", count: 70))) }
+        }
+        func decoded(_ data: Data?) -> WatchSnapshot? { WatchLink.decode(WatchSnapshot.self, data) }
+        // Trop gros en entier : réduit, et ce sont bien les octets du résumé réduit.
+        let first = try XCTUnwrap(e.fittedWatchData())
+        XCTAssertLessThanOrEqual(first.count, WatchLink.maxSnapshotBytes)
+        XCTAssertEqual(decoded(first), e.fittedWatchSnapshot())
+        XCTAssertLessThan(decoded(first)?.chats[0].messages.count ?? 99, 15)
+        // Rien n'a changé : les mêmes octets, à l'octet près.
+        XCTAssertEqual(e.fittedWatchData(), first)
+        XCTAssertEqual(e.fittedWatchData(), first)
+        // Le verrouillage (réglé par l'iPhone à chaque envoi) fait un autre résumé…
+        let hidden = try XCTUnwrap(e.fittedWatchData { $0.hidden = true })
+        XCTAssertEqual(decoded(hidden)?.hidden, true)
+        XCTAssertEqual(decoded(hidden), e.fittedWatchSnapshot { $0.hidden = true })
+        // … et sans lui, on retrouve le premier.
+        XCTAssertEqual(decoded(e.fittedWatchData()), decoded(first))
+        // Un message de plus : le résumé suit aussitôt.
+        let c = e.ensureDirectChat("K7Q2MX0003")
+        e.send(c.id, Content(text: "Du nouveau"))
+        let next = try XCTUnwrap(decoded(e.fittedWatchData()))
+        XCTAssertEqual(next, e.fittedWatchSnapshot())
+        XCTAssertEqual(next.chats.first?.id, c.id)
+        XCTAssertEqual(next.chats.first?.last, "Du nouveau")
+        XCTAssertNotEqual(next, decoded(first))
+        // Un non-lu : pareil.
+        var chat = try XCTUnwrap(e.chats[c.id])
+        chat.unread = 3
+        e.saveChat(chat)
+        XCTAssertEqual(decoded(e.fittedWatchData())?.chats.first?.unread, 3)
+        // Une autre limite de taille n'est pas servie par les octets gardés.
+        let small = try XCTUnwrap(e.fittedWatchData(maxBytes: 4_000))
+        XCTAssertLessThan(small.count, e.fittedWatchData()?.count ?? 0)
+        XCTAssertEqual(decoded(small), e.fittedWatchSnapshot(maxBytes: 4_000))
+        // Tout tient d'emblée : le résumé complet, gardé lui aussi.
+        let light = phone()
+        let d = light.ensureDirectChat("K7Q2MX9PRT")
+        light.send(d.id, Content(text: "Salut"))
+        let whole = try XCTUnwrap(light.fittedWatchData())
+        XCTAssertEqual(decoded(whole), light.watchSnapshot())
+        XCTAssertEqual(light.fittedWatchData(), whole)
+    }
+
     func testMarkAllRead() async {
         let e = phone()
         for (code, n) in [("WGSEAJNSZJ", 2), ("K7Q2MX9PRT", 0), ("AAAAAAAAAA", 5)] {

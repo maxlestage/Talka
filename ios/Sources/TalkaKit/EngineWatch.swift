@@ -44,14 +44,37 @@ extension Engine {
     /// messages par discussion, puis moins de discussions, si besoin.
     public func fittedWatchSnapshot(maxBytes: Int = WatchLink.maxSnapshotBytes,
                                     adjust: (inout WatchSnapshot) -> Void = { _ in }) -> WatchSnapshot {
+        fittedWatch(maxBytes, adjust).snapshot
+    }
+
+    /// Le même, tel qu'il part vers la montre : il a déjà été encodé pour
+    /// être mesuré, il ne l'est pas une seconde fois (à chaque message reçu
+    /// et toutes les deux secondes tant que Talka est ouvert).
+    public func fittedWatchData(maxBytes: Int = WatchLink.maxSnapshotBytes,
+                                adjust: (inout WatchSnapshot) -> Void = { _ in }) -> Data? {
+        fittedWatch(maxBytes, adjust).data
+    }
+
+    private func fittedWatch(_ maxBytes: Int, _ adjust: (inout WatchSnapshot) -> Void) -> (snapshot: WatchSnapshot, data: Data?) {
         let steps = [(20, 15), (20, 8), (15, 4), (12, 2), (12, 0), (6, 0)]
         var s = WatchSnapshot()
+        var data: Data?
+        var full: WatchSnapshot?
         for (chats, messages) in steps {
             s = watchSnapshot(chats: chats, messages: messages)
             adjust(&s)
-            if (WatchLink.encode(s)?.count ?? .max) <= maxBytes { return s }
+            if full == nil {
+                // Le résumé complet n'a pas changé : celui qu'on en avait
+                // tiré non plus (les suivants n'en sont que des parties),
+                // et ses octets sont rendus tels quels, sans réencoder.
+                if let kept = watchKept, kept.full == s, kept.maxBytes == maxBytes { return (kept.snapshot, kept.data) }
+                full = s
+            }
+            data = WatchLink.encode(s)
+            if (data?.count ?? .max) <= maxBytes { break }
         }
-        return s
+        if let full { watchKept = (full, maxBytes, s, data) }
+        return (s, data)
     }
 
     func watchMessage(_ m: Message, group: Bool) -> WatchMessage {

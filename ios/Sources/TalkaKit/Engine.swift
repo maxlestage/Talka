@@ -899,6 +899,10 @@ public final class Engine {
     /// liste (jusqu'à 20 000 tombes) n'est redécodée que si sa ligne a changé.
     @ObservationIgnored var tombCache: [String: Tombs] = [:]
 
+    /// Le dernier résumé envoyé à la montre et ses octets, gardés tant que
+    /// le résumé complet reste le même (voir `fittedWatchData`).
+    @ObservationIgnored var watchKept: (full: WatchSnapshot, maxBytes: Int, snapshot: WatchSnapshot, data: Data?)?
+
     func tombs(_ chat: String) -> Tombs? {
         guard let json = store.readRaw("kv", "tombes:\(chat)") else {
             tombCache[chat] = nil

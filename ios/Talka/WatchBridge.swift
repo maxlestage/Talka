@@ -58,11 +58,12 @@ final class WatchBridge: NSObject {
         if WidgetShare.write(data) { WidgetCenter.shared.reloadAllTimelines() }
     }
 
-    /// Le résumé pour la montre, réduit s'il le faut pour passer par
-    /// WatchConnectivity (trop gros, il ne partirait pas du tout).
-    func snapshot(_ e: Engine) -> WatchSnapshot {
+    /// Le résumé pour la montre, encodé, réduit s'il le faut pour passer par
+    /// WatchConnectivity (trop gros, il ne partirait pas du tout). Les mêmes
+    /// octets tant qu'il n'a pas changé.
+    func snapshotData(_ e: Engine) -> Data? {
         let hidden = model?.hasPin ?? false
-        return e.fittedWatchSnapshot { $0.hidden = hidden }
+        return e.fittedWatchData { $0.hidden = hidden }
     }
 
     /// Le moteur, démarré s'il ne l'est pas encore (iPhone réveillé en
@@ -76,7 +77,7 @@ final class WatchBridge: NSObject {
     func push(force: Bool = false) {
         updateWidgets()
         guard let session, watchReady, let e = model?.engine,
-              let data = WatchLink.encode(snapshot(e)) else { return }
+              let data = snapshotData(e) else { return }
         guard force || data != lastSent else { return }
         lastSent = data
         // Le dernier résumé, que la montre retrouve même en se réveillant plus tard…
@@ -110,7 +111,7 @@ final class WatchBridge: NSObject {
 
     private func answer(_ e: Engine) -> Data? {
         updateWidgets()
-        let snapshot = WatchLink.encode(snapshot(e))
+        let snapshot = snapshotData(e)
         lastSent = snapshot
         if let snapshot, let session, watchReady {
             try? session.updateApplicationContext([WatchLink.snapshotKey: snapshot])
