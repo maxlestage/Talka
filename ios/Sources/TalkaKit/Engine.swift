@@ -917,6 +917,34 @@ public final class Engine {
         let kept = tombs(chat)
         // Rien à enterrer, et aucune tombe assez vieille pour partir.
         if msgs.isEmpty, t - (kept?.oldest ?? .infinity) < Self.tombWindow { return }
+        // Le cas de tous les jours : aucune tombe assez vieille pour partir,
+        // et de la place. Les nouvelles s'écrivent au bout de la ligne, sans
+        // réencoder les milliers d'autres.
+        if var grown = kept, !grown.list.isEmpty, t - grown.oldest < Self.tombWindow,
+           grown.json.utf8.last == UInt8(ascii: "]") {
+            var fresh: [Tomb] = []
+            for (id, at) in msgs where t - at < Self.tombWindow && !grown.ids.contains(id)
+                && !fresh.contains(where: { $0.id == id }) {
+                fresh.append(Tomb(id: id, at: at))
+            }
+            if grown.list.count + fresh.count <= 20_000 {
+                guard !fresh.isEmpty else { return }
+                // Seule référence à la liste et aux identifiants : ils
+                // grandissent sur place, sans copie.
+                tombCache[chat] = nil
+                grown.json.removeLast()
+                grown.json += ","
+                grown.json += JSON.encode(fresh).dropFirst()
+                for tomb in fresh {
+                    grown.ids.insert(tomb.id)
+                    grown.oldest = min(grown.oldest, tomb.at)
+                }
+                grown.list.append(contentsOf: fresh)
+                store.writeRaw("kv", key, grown.json)
+                tombCache[chat] = grown
+                return
+            }
+        }
         var list = kept?.list ?? []
         var ids = kept?.ids ?? []
         let before = list.count
