@@ -231,11 +231,14 @@ public final class Engine {
     /// (une fois) : ils pourront nous écrire sans que le relais sache qui
     /// écrit. Chacun a le sien ; l'ancien jeton commun est révoqué.
     func shareJeton() {
-        for var c in contacts.values where c.saved && !c.blocked && !c.jetonPerso {
-            c.jetonPerso = true
-            c.jetonSent = true
-            saveContact(c)
-            enqueue(c.code, Wire(profileBody(for: c.code)))
+        // Une seule transaction pour tous les contacts.
+        store.transaction {
+            for var c in contacts.values where c.saved && !c.blocked && !c.jetonPerso {
+                c.jetonPerso = true
+                c.jetonSent = true
+                saveContact(c)
+                enqueue(c.code, Wire(profileBody(for: c.code)))
+            }
         }
         if let nonce = me.jeton.split(separator: ".").first { revokeJeton(String(nonce)) }
         sendRevoked()
@@ -342,8 +345,12 @@ public final class Engine {
 
     /// Notre profil à tous nos contacts.
     func announceProfile() {
-        for c in contacts.values where c.saved && !c.blocked {
-            enqueue(c.code, Wire(profileBody(for: c.code)))
+        // Chacun reçoit son propre jeton avec le profil : un message par
+        // contact, mais tous écrits dans une seule transaction.
+        store.transaction {
+            for c in contacts.values where c.saved && !c.blocked {
+                enqueue(c.code, Wire(profileBody(for: c.code)))
+            }
         }
         Task { await flush() }
     }

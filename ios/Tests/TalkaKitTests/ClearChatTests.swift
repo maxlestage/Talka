@@ -900,6 +900,36 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(e.chat(group.id)?.members.contains(e.me.code), false)
     }
 
+    /// Un profil changé part à chaque contact enregistré (pas aux bloqués ni
+    /// aux inconnus), chacun avec son propre jeton de remise.
+    func testAProfileChangeReachesEveryContactWithItsOwnToken() async throws {
+        let e = phone()
+        for i in 0..<8 {
+            var c = Contact(code: String(format: "AMI%07d", i))
+            c.saved = i != 6
+            c.blocked = i == 7
+            e.saveContact(c)
+        }
+        for key in e.store.rawRows("outbox").keys { e.store.remove("outbox", key) }
+        e.saveProfile { $0.name = "Léa D." }
+        let rows = e.store.all("outbox", as: OutItem.self)
+        XCTAssertEqual(Set(rows.map(\.to)), Set((0..<6).map { String(format: "AMI%07d", $0) }))
+        XCTAssertEqual(rows.count, 6)
+        var tokens = Set<String>()
+        for row in rows {
+            guard case .profile(let p, let jeton, _, _, _, _, _) = try XCTUnwrap(Wire.parse(row.payload)).body else {
+                return XCTFail("pas un profil")
+            }
+            XCTAssertEqual(p.name, "Léa D.")
+            // La signature du jeton change à chaque fois : on compare ce qu'elle signe.
+            let nonce = String(jeton.split(separator: ".").first ?? "")
+            XCTAssertEqual(nonce, e.me.jetonNonce(for: row.to, epoch: 0))
+            XCTAssertFalse(nonce.isEmpty)
+            tokens.insert(nonce)
+        }
+        XCTAssertEqual(tokens.count, 6, "un jeton par contact")
+    }
+
     // ----- Le journal d'appels -----
 
     /// Le journal d'appels n'est pas redécodé à chaque affichage, et suit
