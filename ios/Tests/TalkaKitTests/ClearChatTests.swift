@@ -692,6 +692,49 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(Set(rows.map(\.id)).count, 5)
     }
 
+    /// Tout marquer comme lu : chaque message reçu l'est, sur le disque
+    /// aussi, un accusé de lecture part par discussion, et les compteurs
+    /// tombent à zéro.
+    func testMarkingEverythingReadIsKept() async throws {
+        let e = phone()
+        let codes = ["K7Q2MX9PRT", "WGSEAJNSZJ", "AAAAAAAAAA"]
+        e.store.transaction {
+            for code in codes {
+                var chat = e.ensureDirectChat(code)
+                for i in 0..<120 {
+                    let from = i % 10 == 0 ? e.me.code : code
+                    e.store.writeMessage(Message(chat: code, id: "m\(i)", from: from, at: Double(i), content: Content(text: "Message \(i)")))
+                }
+                chat.unread = code == "AAAAAAAAAA" ? 0 : 108
+                e.saveChat(chat)
+            }
+        }
+        for key in e.store.rawRows("outbox").keys { e.store.remove("outbox", key) }
+        XCTAssertEqual(e.markAllRead(), 2)
+        XCTAssertEqual(codes.map { e.chat($0)?.unread }, [0, 0, 0])
+        // Relu depuis le disque : lus dans les deux discussions marquées, pas dans la troisième.
+        let cold = Store(directory: e.store.dir)
+        for code in codes.prefix(2) {
+            let received = cold.messagesOf(code).filter { $0.from == code }
+            XCTAssertEqual(received.count, 108)
+            XCTAssertTrue(received.allSatisfy(\.readByMe))
+            XCTAssertFalse(cold.messagesOf(code).filter { $0.from == e.me.code }.contains(where: \.readByMe))
+        }
+        XCTAssertFalse(cold.messagesOf("AAAAAAAAAA").contains(where: \.readByMe))
+        // Un accusé de lecture attend pour chaque discussion lue (ils partent groupés, peu après).
+        if e.settings.readReceipts {
+            XCTAssertEqual(Set(e.receipts.keys), Set(codes.prefix(2).map { "\($0)|read|\($0)" }))
+            XCTAssertEqual(e.receipts.values.map(\.count), [108, 108])
+        }
+        // Rien de plus à faire la deuxième fois.
+        XCTAssertEqual(e.markAllRead(), 0)
+        // Une discussion ouverte très en retard.
+        e.updateChat("AAAAAAAAAA") { $0.unread = 108 }
+        e.markRead("AAAAAAAAAA")
+        XCTAssertEqual(e.chat("AAAAAAAAAA")?.unread, 0)
+        XCTAssertTrue(Store(directory: e.store.dir).messagesOf("AAAAAAAAAA").filter { $0.from == "AAAAAAAAAA" }.allSatisfy(\.readByMe))
+    }
+
     // ----- Le journal d'appels -----
 
     /// Le journal d'appels n'est pas redécodé à chaque affichage, et suit
