@@ -976,6 +976,27 @@ public struct OutItem: Codable, Equatable, Sendable {
         case msgId = "msg_id"
     }
 
+    /// Le JSON de l'élément, quand son contenu est déjà échappé
+    /// (`escapedPayload` : `JSON.encode(payload)`, guillemets compris). Un
+    /// envoi à tout un groupe écrit le même contenu pour chaque membre :
+    /// l'échapper une fois, pas cinquante (une photo pèse des centaines de
+    /// Ko). Le texte rendu se relit comme celui de `JSON.encode(self)`.
+    func json(escapedPayload: String) -> String {
+        var light = self
+        light.payload = Self.marker
+        let json = JSON.encode(light)
+        guard let hole = json.range(of: Self.escapedMarker) else { return JSON.encode(self) }
+        var out = String(json[..<hole.lowerBound])
+        out.reserveCapacity(json.utf8.count + escapedPayload.utf8.count)
+        out += escapedPayload
+        out += json[hole.upperBound...]
+        return out
+    }
+
+    /// Ce qui tient la place du contenu le temps d'encoder le reste.
+    static let marker = "\u{1}contenu\u{1}"
+    static let escapedMarker = JSON.encode(marker)
+
     public init(id: String, to: String, payload: String, chat: String, msgId: String, seq: Double, sent: [String] = []) {
         self.id = id; self.to = to; self.payload = payload; self.chat = chat; self.msgId = msgId; self.seq = seq
         self.sent = sent

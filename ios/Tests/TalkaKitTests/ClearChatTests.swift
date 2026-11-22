@@ -598,6 +598,60 @@ final class ClearChatTests: XCTestCase {
         XCTAssertTrue(cold.store.messages.isEmpty)
     }
 
+    // ----- L'envoi à un groupe -----
+
+    /// Un envoi à tout un groupe n'encode et n'échappe son contenu qu'une
+    /// fois : la boîte d'envoi garde pourtant, pour chaque membre, exactement
+    /// la même ligne qu'en l'encodant un par un.
+    func testSendingToAGroupWritesTheSameOutboxRows() async throws {
+        // Le JSON assemblé se relit comme celui de l'encodeur (qui ne range
+        // pas ses clés deux fois dans le même ordre : les textes ne se comparent pas).
+        for payload in ["", "simple", "des \"guillemets\" et des \\ barres / obliques\n\tet un saut",
+                        "accents éàü, emoji 🥦, \u{1}contenu\u{1} (la marque elle-même)", String(repeating: "/9j/4AAQ+abc=", count: 3_000)] {
+            var item = OutItem(id: "m1:AMI", to: "AMI", payload: payload, chat: "g:groupe", msgId: "m1", seq: 1_234_567, sent: ["a", "b"])
+            item.boot = "démarrage"
+            item.got = ["a"]
+            let json = item.json(escapedPayload: JSON.encode(payload))
+            XCTAssertEqual(JSON.decode(OutItem.self, json), item)
+            XCTAssertEqual(json.utf8.count, JSON.encode(item).utf8.count)
+        }
+
+        let e = phone()
+        let members = (0..<12).map { String(format: "AMI%07d", $0) }
+        let group = e.createGroup(name: "Les douze", members: members, avatar: "")
+        for key in e.store.rawRows("outbox").keys { e.store.remove("outbox", key) }
+        var photo = Content(text: "Une \"légende\" / avec des barres \\")
+        photo.kind = "image"
+        photo.data = "data:image/jpeg;base64," + String(repeating: "/9j/4AAQSkZJRg+abc=", count: 2_000)
+        let m = try XCTUnwrap(e.send(group.id, photo))
+        let rows = e.store.rawRows("outbox")
+        XCTAssertEqual(Set(rows.keys), Set(members.map { "\(m.id):\($0)" }))
+        var payloads = Set<String>()
+        for (key, json) in rows {
+            let item = try XCTUnwrap(JSON.decode(OutItem.self, json))
+            XCTAssertEqual(item.id, key)
+            XCTAssertEqual(item.chat, group.id)
+            XCTAssertEqual(item.msgId, m.id)
+            XCTAssertEqual(json.utf8.count, JSON.encode(item).utf8.count, "la même ligne qu'encodée d'un bloc")
+            XCTAssertEqual(item.to, String(key.split(separator: ":").last ?? ""))
+            XCTAssertTrue(item.sent.isEmpty && item.got.isEmpty && item.boot.isEmpty)
+            payloads.insert(item.payload)
+        }
+        // Le même contenu pour tous, et c'est bien le message.
+        XCTAssertEqual(payloads.count, 1)
+        let wire = try XCTUnwrap(Wire.parse(try XCTUnwrap(payloads.first)))
+        guard case .msg(let id, _, _, let content) = wire.body else { return XCTFail("pas un message") }
+        XCTAssertEqual(id, m.id)
+        XCTAssertEqual(content.data, photo.data)
+        XCTAssertEqual(content.text, photo.text)
+        // À une seule personne : une ligne, comme avant.
+        let one = e.ensureDirectChat("K7Q2MX9PRT")
+        let direct = try XCTUnwrap(e.send(one.id, Content(text: "Bonjour")))
+        let row = try XCTUnwrap(e.store.read("outbox", "\(direct.id):K7Q2MX9PRT", as: OutItem.self))
+        XCTAssertEqual(row.to, "K7Q2MX9PRT")
+        XCTAssertEqual(row.msgId, direct.id)
+    }
+
     // ----- Le journal d'appels -----
 
     /// Le journal d'appels n'est pas redécodé à chaque affichage, et suit

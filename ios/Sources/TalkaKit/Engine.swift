@@ -1113,9 +1113,17 @@ public final class Engine {
     /// Une enveloppe à envoyer à `to`, gardée jusqu'à ce que le relais confirme ;
     /// `live` : seulement si le destinataire est en ligne, sans garde.
     func enqueue(_ to: String, _ wire: Wire, chat: String = "", msgId: String = "", live: Bool = false) {
+        enqueue(to, payload: wire.json(), chat: chat, msgId: msgId, live: live)
+    }
+
+    /// `payload` : le message déjà mis en JSON. Un envoi à tout un groupe ne
+    /// le refait pas pour chaque membre (une photo pèse des centaines de Ko),
+    /// et ne l'échappe qu'une fois pour la boîte d'envoi (`escaped`, voir
+    /// `OutItem.json(escapedPayload:)`).
+    func enqueue(_ to: String, payload: String, escaped: String? = nil, chat: String = "", msgId: String = "", live: Bool = false) {
         seq += 1
         let item = OutItem(
-            id: "\(msgId.isEmpty ? randomId(10) : msgId):\(to)", to: to, payload: wire.json(),
+            id: "\(msgId.isEmpty ? randomId(10) : msgId):\(to)", to: to, payload: payload,
             chat: chat, msgId: msgId, seq: nowMs() * 1000 + Double(seq % 1000))
         if live {
             Task {
@@ -1124,7 +1132,11 @@ public final class Engine {
             }
             return
         }
-        store.write("outbox", item.id, item)
+        if let escaped {
+            store.writeRaw("outbox", item.id, item.json(escapedPayload: escaped))
+        } else {
+            store.write("outbox", item.id, item)
+        }
         Task { await flush() }
     }
 
@@ -1394,7 +1406,12 @@ public final class Engine {
         // Le nom choisi voyage avec le message : un membre de groupe qui ne
         // vous connaît pas voit « ~Nom » plutôt qu'un code.
         let wire = envelope(c, .msg(id: id, at: at, pn: profile.name, content: sealed))
-        for code in to { enqueue(code, wire, chat: chatId, msgId: id) }
+        let payload = wire.json()
+        let escaped = to.count > 1 ? JSON.encode(payload) : nil
+        // Une seule transaction pour toute la boîte d'envoi de ce message.
+        store.transaction {
+            for code in to { enqueue(code, payload: payload, escaped: escaped, chat: chatId, msgId: id) }
+        }
         // Nos autres appareils l'affichent aussi (v4) : gardé, comme pour un
         // destinataire, jusqu'à ce que chacun l'ait (et renvoyé si le relais
         // redémarre entre-temps).
@@ -1407,7 +1424,8 @@ public final class Engine {
 
     func broadcast(_ c: Chat, _ body: Body, live: Bool = false) {
         let wire = envelope(c, body)
-        for code in recipients(c) where !blocked(code) { enqueue(code, wire, live: live) }
+        let payload = wire.json()
+        for code in recipients(c) where !blocked(code) { enqueue(code, payload: payload, live: live) }
         // Ce qui change la discussion (réaction, modification, suppression,
         // minuterie) : refait sur nos autres appareils (v4).
         switch body {
