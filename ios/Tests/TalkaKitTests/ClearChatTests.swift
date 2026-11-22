@@ -785,6 +785,50 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(Store(directory: e.store.dir).messagesOf(codes[1]).count, 2)
     }
 
+    /// Un accusé de lecture pour des centaines de messages ne charge pas la
+    /// discussion : chacun est marqué, y compris un vieux message hors de la
+    /// fin lue d'un coup, et un accusé rejoué ne réécrit rien.
+    func testAReceiptForHundredsOfMessagesLoadsNothing() async throws {
+        let e = phone()
+        let x = "K7Q2MX9PRT"
+        _ = e.ensureDirectChat(x)
+        let now = nowMs()
+        e.store.transaction {
+            for i in 0..<2_000 {
+                var m = Message(chat: x, id: "m\(i)", from: i % 2 == 0 ? e.me.code : x, at: now - Double(2_000 - i) * 1000, content: Content(text: "Message \(i)"))
+                if i % 2 == 0 { m.to = [x]; m.status = "sent" }
+                e.store.writeMessage(m)
+            }
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        // Les 200 derniers messages envoyés, un très ancien, un reçu (pas à nous) et un inconnu.
+        let ids = (0..<200).map { "m\(1_600 + $0 * 2)" } + ["m10", "m1999", "inconnu"]
+        cold.handle(x, Wire(.receipt(st: "read", ids: ids, dev: "")), ts: nowMs(), live: true)
+        XCTAssertNil(cold.store.messages[x], "pas chargée")
+        for id in ["m1600", "m1998", "m10"] {
+            let m = try XCTUnwrap(cold.store.message(x, id))
+            XCTAssertEqual(m.readBy, [x], id)
+            XCTAssertEqual(m.deliveredTo, [x], id)
+            XCTAssertEqual(m.tick, .read, id)
+        }
+        XCTAssertEqual(cold.store.message(x, "m1999")?.readBy, [], "un message reçu n'a pas d'accusé")
+        XCTAssertEqual(cold.store.message(x, "m1598")?.readBy, [], "pas dans l'accusé")
+        // Gardé sur le disque.
+        let disk = Store(directory: e.store.dir)
+        XCTAssertEqual(disk.messagesOf(x).filter { $0.readBy == [x] }.count, 201)
+        // Rejoué (un autre appareil du contact) : rien n'est réécrit.
+        let generation = cold.store.messagesGeneration
+        let revision = cold.revisions[x]
+        cold.handle(x, Wire(.receipt(st: "read", ids: ids, dev: "")), ts: nowMs(), live: true)
+        XCTAssertEqual(cold.store.messagesGeneration, generation)
+        XCTAssertEqual(cold.revisions[x], revision)
+        // Un accusé de réception seul, pour un message : comme avant.
+        cold.handle(x, Wire(.receipt(st: "delivered", ids: ["m1598"], dev: "")), ts: nowMs(), live: true)
+        XCTAssertEqual(cold.store.message(x, "m1598")?.deliveredTo, [x])
+        XCTAssertEqual(cold.store.message(x, "m1598")?.readBy, [])
+        XCTAssertNil(cold.store.messages[x])
+    }
+
     // ----- Le journal d'appels -----
 
     /// Le journal d'appels n'est pas redécodé à chaque affichage, et suit

@@ -2056,21 +2056,33 @@ public final class Engine {
             onIncoming?(chats[c.id] ?? c, m, active)
         case let .receipt(st, ids, rdev):
             var changed = false
-            for id in ids {
-                guard var m = store.message(c.id, id), m.from == me.code else { continue }
-                let before = (m.deliveredTo.count, m.readBy.count)
-                if !m.deliveredTo.contains(from) { m.deliveredTo.append(from) }
-                if st == "read", !m.readBy.contains(from) { m.readBy.append(from) }
-                // L'accusé d'un second appareil du même contact (ou un accusé
-                // rejoué) ne change rien au message : il n'est pas réécrit
-                // (photo comprise), ni l'écran redessiné.
-                if (m.deliveredTo.count, m.readBy.count) != before {
-                    store.writeMessage(m)
-                    changed = true
+            // Un accusé pour beaucoup de messages (quelqu'un rouvre Talka après
+            // une absence) porte sur les derniers : la fin de la discussion est
+            // lue d'un coup, plutôt que chaque message un par un (ce qui
+            // finissait par charger toute la discussion), et tout est écrit en
+            // une transaction.
+            var near: [String: Message] = [:]
+            if ids.count > 8 {
+                for m in store.messagesOf(c.id, limit: min(max(ids.count * 2, 64), 600)) { near[m.id] = m }
+            }
+            store.transaction {
+                for id in ids {
+                    guard var m = near[id] ?? store.message(c.id, id), m.from == me.code else { continue }
+                    let before = (m.deliveredTo.count, m.readBy.count)
+                    if !m.deliveredTo.contains(from) { m.deliveredTo.append(from) }
+                    if st == "read", !m.readBy.contains(from) { m.readBy.append(from) }
+                    // L'accusé d'un second appareil du même contact (ou un accusé
+                    // rejoué) ne change rien au message : il n'est pas réécrit
+                    // (photo comprise), ni l'écran redessiné.
+                    if (m.deliveredTo.count, m.readBy.count) != before {
+                        store.writeMessage(m)
+                        if near[id] != nil { near[id] = m }
+                        changed = true
+                    }
+                    // Bien arrivé : plus besoin de le garder pour un renvoi (v4 :
+                    // quand chacun de ses appareils l'a).
+                    gotBy("\(id):\(from)", rdev)
                 }
-                // Bien arrivé : plus besoin de le garder pour un renvoi (v4 :
-                // quand chacun de ses appareils l'a).
-                gotBy("\(id):\(from)", rdev)
             }
             if changed { bump(c.id) }
         case let .react(id, emoji):
