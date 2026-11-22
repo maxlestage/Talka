@@ -159,7 +159,34 @@ extension Message {
     /// Une capsule temporelle compte à partir de son ouverture (sinon elle
     /// partirait avant de s'ouvrir).
     public func tooOld(keepDays: Int, now: Double) -> Bool {
-        keepDays > 0 && !isStarred && max(at, openAt ?? 0) < now - Double(keepDays) * 86_400_000
+        Self.tooOld(at: at, openAt: openAt, starred: isStarred, keepDays: keepDays, now: now)
+    }
+
+    static func tooOld(at: Double, openAt: Double?, starred: Bool, keepDays: Int, now: Double) -> Bool {
+        keepDays > 0 && !starred && max(at, openAt ?? 0) < now - Double(keepDays) * 86_400_000
+    }
+
+    /// L'âge d'un message, lu sans le reste : le ménage des vieux messages
+    /// n'a besoin ni de leur texte ni de leurs photos pour les effacer.
+    struct Age: Decodable {
+        var id: String
+        var at: Double
+        var openAt: Double?
+        var starred: Bool
+
+        init(_ m: Message) {
+            id = m.id; at = m.at; openAt = m.openAt; starred = m.isStarred
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.v(.id, ""); at = c.v(.at, 0); openAt = c.v(.openAt, nil)
+            starred = c.v(.starred, false) && !c.v(.deleted, false)
+        }
+
+        func tooOld(keepDays: Int, now: Double) -> Bool {
+            Message.tooOld(at: at, openAt: openAt, starred: starred, keepDays: keepDays, now: now)
+        }
     }
 
     /// Les photos d'une discussion, pour sa fiche (« Photos », comme

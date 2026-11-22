@@ -829,6 +829,59 @@ final class ClearChatTests: XCTestCase {
         XCTAssertNil(cold.store.messages[x])
     }
 
+    /// Le ménage des vieux messages ne lit que leur âge : les trop vieux
+    /// partent, sauf les importants et une capsule pas encore ouverte depuis
+    /// assez longtemps ; la discussion n'est pas chargée, et une discussion
+    /// chargée est nettoyée de la même façon.
+    func testOldMessagesLeaveByTheirAgeAlone() async throws {
+        let e = phone()
+        let codes = ["K7Q2MX9PRT", "WGSEAJNSZJ"]
+        let now = nowMs()
+        let limit = now - Double(e.settings.keepDays) * 86_400_000
+        e.store.transaction {
+            for code in codes {
+                var chat = e.ensureDirectChat(code)
+                for i in 0..<400 {
+                    // Les 150 premiers sont trop vieux.
+                    let at = (i < 150 ? limit - 3_600_000 : now) - Double(400 - i) * 1000
+                    var m = Message(chat: code, id: "m\(i)", from: code, at: at, content: Content(text: "Message \(i)"))
+                    if i == 10 || i == 300 { m.starred = true }
+                    if i == 20 { m.starred = true; m.deleted = true }
+                    if i == 30 { m.openAt = now - 1_000 }
+                    if i == 40 { m.openAt = limit - 10_000 }
+                    e.store.writeMessage(m)
+                    if i == 399 { chat.last = e.lastOf(m); chat.lastAt = m.at }
+                }
+                e.saveChat(chat)
+            }
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        _ = cold.messages(codes[1])
+        cold.sweep()
+        XCTAssertNil(cold.store.messages[codes[0]], "pas chargée pour son ménage")
+        XCTAssertNotNil(cold.store.messages[codes[1]])
+        for code in codes {
+            let left = cold.store.datesOf(code).map(\.0)
+            XCTAssertEqual(left.count, 252, code)
+            XCTAssertEqual(Array(left.prefix(3)), ["m10", "m30", "m150"], code)
+            XCTAssertNil(cold.store.message(code, "m20"), "une étoile sur un message supprimé ne le garde pas")
+            XCTAssertNil(cold.store.message(code, "m40"), "une capsule ouverte depuis trop longtemps part")
+            XCTAssertEqual(cold.starredCount(in: code), 2)
+            XCTAssertEqual(cold.chat(code)?.last?.text, "Message 399")
+            XCTAssertFalse(cold.buried(code, "m0"), "trop vieux pour revenir : pas enterré")
+        }
+        XCTAssertEqual(Store(directory: e.store.dir).messagesOf(codes[0]).count, 252)
+        // Plus rien à faire l'heure suivante.
+        let generation = cold.store.messagesGeneration
+        cold.lastPrune = 0
+        cold.sweep()
+        XCTAssertEqual(cold.store.messagesGeneration, generation)
+        // « Toujours garder » : rien ne part.
+        XCTAssertTrue(cold.store.removeOld(codes[0], before: now + 1, keepDays: 0, now: now).isEmpty)
+        XCTAssertEqual(cold.store.removeOld(codes[0], before: now + 1, keepDays: 1, now: now + 3 * 86_400_000).count, 250)
+        XCTAssertEqual(cold.store.datesOf(codes[0]).map(\.0), ["m10", "m300"])
+    }
+
     // ----- Le journal d'appels -----
 
     /// Le journal d'appels n'est pas redécodé à chaque affichage, et suit

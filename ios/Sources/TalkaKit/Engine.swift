@@ -299,16 +299,12 @@ public final class Engine {
             // Seuls les messages d'avant la limite sont lus (par l'index) :
             // au lancement, pas tout l'historique de toutes les discussions.
             let limit = t - Double(settings.keepDays) * 86_400_000
+            // Leur âge suffit pour les effacer : ni texte ni photo décodés,
+            // et une transaction par discussion, pas une par message.
             for chat in chats.values {
-                var changed = false
-                var gone: [(String, Double)] = []
-                for m in store.messagesBefore(chat.id, limit) where m.tooOld(keepDays: settings.keepDays, now: t) {
-                    store.removeMessage(chat.id, m.id)
-                    gone.append((m.id, m.at))
-                    changed = true
-                }
+                let gone = store.removeOld(chat.id, before: limit, keepDays: settings.keepDays, now: t)
                 bury(chat.id, gone)
-                if changed { refreshLast(chat.id); bump(chat.id) }
+                if !gone.isEmpty { refreshLast(chat.id); bump(chat.id) }
             }
         }
         for s in statusDates() where s.at + dayMs < t {
