@@ -1009,11 +1009,16 @@ public final class Store: @unchecked Sendable {
     // ----- La sauvegarde : le même format que le navigateur -----
 
     /// `{ magasin: [[clé, json], …] }` (les messages : `[clé, json, discussion, heure]`).
-    public func dump() -> [String: Any] {
+    public func dump(messages: Bool = true) -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
         var out: [String: [[Any]]] = [:]
         for name in Self.stores { out[name] = [] }
-        run("SELECT store, key, json, chat, at FROM rows ORDER BY store, key") { stmt in
+        // Sans les messages : pour qui n'en veut qu'une partie (voir
+        // `newestMessageRows`), sans les lire tous.
+        let sql = messages
+            ? "SELECT store, key, json, chat, at FROM rows ORDER BY store, key"
+            : "SELECT store, key, json, chat, at FROM rows WHERE store != 'messages' ORDER BY store, key"
+        run(sql) { stmt in
             let store = column(stmt, 0), k = column(stmt, 1)
             guard let json = self.value(stmt, 2, store: store, key: k) else { return }
             var row: [Any] = [k, json]
@@ -1021,6 +1026,28 @@ public final class Store: @unchecked Sendable {
             out[store, default: []].append(row)
         }
         return out
+    }
+
+    /// Les lignes de messages, de la plus récente à la plus ancienne, telles
+    /// que `dump` les rend (clé, JSON, discussion, heure), tant que `take`
+    /// répond `true`. Seules les lignes demandées sont lues et déchiffrées :
+    /// lier un appareil n'emporte que les plus récentes, pas toute la base
+    /// en mémoire.
+    public func newestMessageRows(_ take: (_ key: String, _ json: String, _ chat: String, _ at: Double) -> Bool) {
+        lock.lock(); defer { lock.unlock() }
+        // D'abord les clés et les heures (petites), triées ; puis une ligne à la fois.
+        var order: [(key: String, at: Double)] = []
+        run("SELECT key, at FROM rows WHERE store = 'messages' ORDER BY at DESC") { stmt in
+            order.append((column(stmt, 0), sqlite3_column_double(stmt, 1)))
+        }
+        for (key, at) in order {
+            var row: (json: String, chat: String)?
+            run("SELECT json, chat FROM rows WHERE store = 'messages' AND key = ?", [key]) { stmt in
+                if let json = self.value(stmt, 0, store: "messages", key: key) { row = (json, column(stmt, 1)) }
+            }
+            guard let row else { continue }
+            if !take(key, row.json, row.chat, at) { return }
+        }
     }
 
     public func restore(_ data: [String: Any]) {

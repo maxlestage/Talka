@@ -549,7 +549,8 @@ extension Engine {
     /// qui est propre à cet appareil, ni les pièces jointes de plus de
     /// 512 Kio, ni plus de 32 Mio de messages (les plus anciens restent).
     func linkDump() -> [String: Any] {
-        var dump = store.dump()
+        // Sans les messages : seuls les plus récents partent, lus plus bas.
+        var dump = store.dump(messages: false)
         var kv = (dump["kv"] as? [[Any]] ?? []).filter {
             let key = $0.first as? String ?? ""
             return !Self.deviceOnly(key) && key != "brocolis"
@@ -559,23 +560,21 @@ extension Engine {
         if !brocolisKeys.isEmpty { kv.append(["brocolis", JSON.encode(brocolisKeys)]) }
         dump["kv"] = kv
         dump["outbox"] = [[Any]]()
-        // Les plus récents d'abord.
-        let rows = (dump["messages"] as? [[Any]] ?? []).sorted {
-            ($0.count > 3 ? ($0[3] as? Double ?? 0) : 0) > ($1.count > 3 ? ($1[3] as? Double ?? 0) : 0)
-        }
+        // Les plus récents d'abord, lus un à un jusqu'à 32 Mio : pas toute
+        // la base en mémoire pour n'en envoyer qu'une partie.
         var kept: [[Any]] = []
         var total = 0
-        for row in rows {
-            guard row.count >= 2, var json = row[1] as? String else { continue }
-            if var m = JSON.decode(Message.self, json), m.data.utf8.count > 512 * 1024 {
+        store.newestMessageRows { key, json, chat, at in
+            var json = json
+            // Seule une ligne assez grosse peut porter une pièce jointe de plus de 512 Kio.
+            if json.utf8.count > 512 * 1024, var m = JSON.decode(Message.self, json), m.data.utf8.count > 512 * 1024 {
                 m.data = ""
                 json = JSON.encode(m)
             }
             total += json.utf8.count
-            guard total <= 32 * 1024 * 1024 else { break }
-            var out = row
-            out[1] = json
-            kept.append(out)
+            guard total <= 32 * 1024 * 1024 else { return false }
+            kept.append([key, json, chat, at])
+            return true
         }
         dump["messages"] = kept
         return dump
