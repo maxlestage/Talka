@@ -840,6 +840,60 @@ public final class Store: @unchecked Sendable {
         linesIn = [:]
     }
 
+    /// L'identifiant et la date des messages d'une discussion datés d'après
+    /// `at` (tous, sans `at`), du plus ancien au plus récent : lus dans
+    /// l'index, sans ouvrir ni déchiffrer aucune ligne. Vider ou supprimer
+    /// une discussion n'a besoin que de cela pour noter ce qui part.
+    public func datesOf(_ chat: String, after at: Double? = nil) -> [(String, Double)] {
+        lock.lock(); defer { lock.unlock() }
+        if messages[chat] != nil {
+            let sorted = inOrder(chat)
+            return sorted.filter { at == nil || $0.at > at! }.map { ($0.id, $0.at) }
+        }
+        var out: [(String, Double)] = []
+        let prefix = chat.utf8.count + 1
+        let each: (OpaquePointer) -> Void = { stmt in
+            let key = column(stmt, 0)
+            out.append((String(key.utf8.dropFirst(prefix)) ?? "", sqlite3_column_double(stmt, 1)))
+        }
+        if let at {
+            run("SELECT key, at FROM rows WHERE store = 'messages' AND chat = ? AND at > ? ORDER BY at, key", [chat, at], each: each)
+        } else {
+            run("SELECT key, at FROM rows WHERE store = 'messages' AND chat = ? ORDER BY at, key", [chat], each: each)
+        }
+        return out
+    }
+
+    /// Efface les messages d'une discussion sauf ceux de `keep` (ses
+    /// messages importants), d'un coup. Elle n'est pas chargée pour autant :
+    /// ce qui reste se relira à la demande.
+    public func deleteMessages(of chat: String, keeping keep: Set<String>) {
+        guard !keep.isEmpty else { return deleteMessages(of: chat) }
+        let gone = keep.count > 500 ? datesOf(chat).map(\.0).filter { !keep.contains($0) } : []
+        transaction {
+            lock.lock(); defer { lock.unlock() }
+            generation += 1
+            messages[chat] = nil
+            ordered[chat] = nil
+            dropWindow(chat)
+            singleReads[chat] = nil
+            forgetSingles(of: chat)
+            busy.remove(chat)
+            expNext[chat] = nil
+            starredIn[chat] = nil
+            piecesIn[chat] = nil
+            linesIn[chat] = nil
+            if keep.count > 500 {
+                // Trop de messages gardés pour une seule requête : un par un.
+                for id in gone { delete("messages", "\(chat)|\(id)") }
+            } else {
+                let keys = keep.map { "\(chat)|\($0)" }
+                let marks = [String](repeating: "?", count: keys.count).joined(separator: ",")
+                run("DELETE FROM rows WHERE store = 'messages' AND chat = ? AND key NOT IN (\(marks))", [chat] + keys)
+            }
+        }
+    }
+
     /// Une longue discussion ne reste chargée en entier que tant qu'elle
     /// sert : au-delà de tant de messages, `release` n'en garde que la fin.
     static let releaseOver = 600

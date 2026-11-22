@@ -945,7 +945,9 @@ public final class Engine {
 
     func buryAll(_ chat: String) {
         let t = nowMs()
-        bury(chat, store.messagesOf(chat).filter { t - $0.at < Self.tombWindow }.map { ($0.id, $0.at) })
+        // Leurs identifiants et leurs dates suffisent : la discussion n'est
+        // pas chargée (ni même déchiffrée) pour être vidée ou supprimée.
+        bury(chat, store.datesOf(chat, after: t - Self.tombWindow))
     }
 
     /// Une offre d'appel jamais vue (les 200 dernières sont gardées) ?
@@ -992,11 +994,11 @@ public final class Engine {
     /// Efface tout sauf les messages favoris.
     func emptyChatButStarred(_ id: String) {
         let t = nowMs()
-        var gone: [(String, Double)] = []
-        for m in store.messagesOf(id) where !m.isStarred {
-            store.removeMessage(id, m.id)
-            if t - m.at < Self.tombWindow { gone.append((m.id, m.at)) }
-        }
+        // Les messages importants restent ; tout le reste part d'un coup,
+        // sans charger la discussion ni l'effacer message par message.
+        let keep = store.starredIds(id)
+        let gone = store.datesOf(id, after: t - Self.tombWindow).filter { !keep.contains($0.0) }
+        store.deleteMessages(of: id, keeping: keep)
         bury(id, gone)
         refreshLast(id)
         if var c = chats[id] {
