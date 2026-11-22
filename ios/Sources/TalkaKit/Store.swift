@@ -748,6 +748,16 @@ public final class Store: @unchecked Sendable {
     /// discussion pas chargée, seules les échéances de ses messages sont
     /// décodées, et rien n'en est gardé en mémoire.
     public func removeExpired(_ chat: String, before t: Double) -> [(String, Double)] {
+        lock.lock()
+        let nothing = expNext[chat].map { $0 >= t } ?? false
+        lock.unlock()
+        if nothing { return [] }
+        // Tout ce qui est échu part en une transaction : au retour d'une
+        // absence il y en a des milliers, pas une transaction par message.
+        return transaction { removeExpiredNow(chat, before: t) }
+    }
+
+    private func removeExpiredNow(_ chat: String, before t: Double) -> [(String, Double)] {
         lock.lock(); defer { lock.unlock() }
         if let next = expNext[chat], next >= t { return [] }
         var gone: [(String, Double)] = []
