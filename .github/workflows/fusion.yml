@@ -98,6 +98,13 @@ jobs:
       - name: Lance ce qu'un push dans master aurait lancé
         if: steps.merge.outputs.pushed == 'true'
         run: |
+          # Juste après le push, GitHub peut encore voir l'ancien master : un
+          # workflow lancé tout de suite partirait de lui.
+          head=$(git rev-parse HEAD)
+          for _ in $(seq 1 30); do
+            [ "$(gh api "repos/$GITHUB_REPOSITORY/commits/master" --jq .sha)" = "$head" ] && break
+            sleep 2
+          done
           gh workflow run pages.yml --ref master
           if [ "${{ steps.merge.outputs.heroku }}" = "true" ]; then
             gh workflow run heroku.yml --ref master
