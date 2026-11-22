@@ -967,6 +967,42 @@ final class StoreTests: XCTestCase {
         }
     }
 
+    /// Les messages les plus récents d'abord, toutes discussions mêlées, lus
+    /// un à un tant qu'on en veut ; et la sauvegarde sans les messages.
+    func testNewestMessageRowsStopWhenAsked() {
+        for key in [nil, SymmetricKey(size: .bits256)] {
+            let s = Store(directory: tempDir(), key: key)
+            s.transaction {
+                for i in 0..<50 {
+                    s.writeMessage(message("A", "a\(i)", at: Double(i * 2), "A \(i)"))
+                    s.writeMessage(message("B", "b\(i)", at: Double(i * 2 + 1), "B \(i)"))
+                }
+            }
+            s.write("kv", "profile", Profile(name: "Léa"))
+            // Une ligne abîmée est rendue telle quelle, comme dans la sauvegarde.
+            s.run("UPDATE rows SET json = ? WHERE store = 'messages' AND key = ?", ["{abîmé", "B|b48"])
+            var seen: [(String, String, Double)] = []
+            s.newestMessageRows { k, json, chat, at in
+                XCTAssertEqual(JSON.decode(Message.self, json)?.key ?? k, k)
+                if k == "B|b48" { XCTAssertEqual(json, "{abîmé") }
+                seen.append((k, chat, at))
+                return seen.count < 5
+            }
+            XCTAssertEqual(seen.map(\.0), ["B|b49", "A|a49", "B|b48", "A|a48", "B|b47"])
+            XCTAssertEqual(seen.first?.1, "B")
+            XCTAssertEqual(seen.first?.2, 99)
+            // Tout, si on ne s'arrête pas : les mêmes lignes que la sauvegarde.
+            var all = 0
+            s.newestMessageRows { _, _, _, _ in all += 1; return true }
+            XCTAssertEqual(all, ((s.dump()["messages"] as? [[Any]]) ?? []).count)
+            // Sans les messages : le reste est là.
+            let light = s.dump(messages: false)
+            XCTAssertEqual((light["messages"] as? [[Any]])?.count, 0)
+            XCTAssertEqual((light["kv"] as? [[Any]])?.count, 1)
+            XCTAssertEqual((s.dump()["kv"] as? [[Any]])?.count, 1)
+        }
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
