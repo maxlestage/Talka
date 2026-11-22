@@ -1,0 +1,111 @@
+# Fusionne dans `master`, toute seule, chaque branche `claude/*` dont les
+# vérifications passent : la CI, et l'iOS quand `ios/` a changé. C'est le
+# commit vérifié qui est fusionné (pas un plus récent de la branche, qui
+# attendra ses propres vérifications) : en avance rapide si possible, sinon
+# par un commit de fusion ; un conflit arrête tout, et `master` ne bouge pas.
+#
+# Un push fait avec le jeton du workflow ne lance pas les autres workflows :
+# le déploiement Heroku, GitHub Pages et l'audit des dépendances sont donc
+# lancés ici, quand les fichiers qu'ils suivent ont changé (comme le ferait
+# un push dans `master`), et la CI aussi après un vrai commit de fusion.
+#
+# Seuls les pushs de ce dépôt comptent (pas les pull requests de forks). Les
+# anciennes branches ne sont fusionnées que si on y pousse à nouveau.
+
+name: Fusion
+
+on:
+  workflow_run:
+    workflows: [CI, iOS]
+    types: [completed]
+    branches: ["claude/**"]
+
+permissions:
+  contents: write
+  actions: write
+
+# Une fusion à la fois.
+concurrency:
+  group: fusion-master
+  cancel-in-progress: false
+
+jobs:
+  fusion:
+    name: Fusion dans master
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+    steps:
+      - name: Toutes les vérifications de ce commit ont-elles passé ?
+        id: checks
+        run: |
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&event=push&per_page=100" \
+            --jq '.workflow_runs[] | select(.name == "CI" or .name == "iOS") | "\(.name) \(.status) \(.conclusion)"')
+          echo "$runs"
+          if echo "$runs" | grep -qvE ' completed success$'; then
+            if echo "$runs" | grep -qE ' completed '; then
+              echo "::notice::Une vérification a échoué (ou a été annulée) : pas de fusion."
+            else
+              echo "::notice::Une vérification tourne encore : la fusion se fera quand elle aura fini."
+            fi
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.checks.outputs.ok == 'true'
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Fusionne ${{ github.event.workflow_run.head_branch }}
+        id: merge
+        if: steps.checks.outputs.ok == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git merge-base --is-ancestor "$SHA" HEAD; then
+            echo "::notice::$BRANCH ($SHA) est déjà dans master."
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          before=$(git rev-parse HEAD)
+          if git merge --ff-only "$SHA"; then
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+          elif git merge --no-edit -m "Fusion de $BRANCH dans master" "$SHA"; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort || true
+            echo "::error::$BRANCH ne se fusionne pas dans master sans conflit : à fusionner à la main."
+            exit 1
+          fi
+          git push origin HEAD:master
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          changed=$(git diff --name-only "$before" HEAD)
+          echo "$changed"
+          # Ce que suit chaque workflow lancé par un push dans master.
+          echo "$changed" | grep -qvE '(\.md$|^ios/)' && echo "heroku=true" >> "$GITHUB_OUTPUT" || true
+          echo "$changed" | grep -qE '(^|/)Cargo\.(lock|toml)$|^\.github/workflows/securite\.yml$' \
+            && echo "securite=true" >> "$GITHUB_OUTPUT" || true
+
+      - name: Lance ce qu'un push dans master aurait lancé
+        if: steps.merge.outputs.pushed == 'true'
+        run: |
+          gh workflow run pages.yml --ref master
+          if [ "${{ steps.merge.outputs.heroku }}" = "true" ]; then
+            gh workflow run heroku.yml --ref master
+          fi
+          if [ "${{ steps.merge.outputs.securite }}" = "true" ]; then
+            gh workflow run securite.yml --ref master
+          fi
+          # Un commit de fusion n'a été vérifié nulle part : la CI le vérifie.
+          if [ "${{ steps.merge.outputs.merged }}" = "true" ]; then
+            gh workflow run ci.yml --ref master
+          fi

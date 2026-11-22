@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  # Lancée aussi par la fusion automatique (fusion.yml) après un commit de
+  # fusion, qu'un push du jeton du workflow ne vérifierait pas.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
