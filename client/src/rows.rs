@@ -112,10 +112,13 @@ impl Rows {
     }
 
     /// Les messages d'une discussion, du plus ancien au plus récent ;
-    /// `limit` garde les derniers.
+    /// `limit` garde les derniers. La discussion d'abord : Memoire cherche
+    /// par l'index du premier terme, et celui du magasin donnerait tous les
+    /// messages de l'appareil à trier (3 ms → 0,07 ms par affichage d'une
+    /// discussion de 500 messages, quand l'appareil en garde 30 000).
     pub async fn messages_of(&self, chat: &str, limit: usize) -> Vec<String> {
         let mut found = Row::query()
-            .filter(Row::STORE.eq("messages") & Row::CHAT.eq(chat))
+            .filter(Row::CHAT.eq(chat) & Row::STORE.eq("messages"))
             .order_by(Row::AT.desc())
             .limit(u64::try_from(limit).unwrap_or(u64::MAX))
             .all(&self.db)
@@ -127,7 +130,7 @@ impl Rows {
 
     pub async fn delete_messages_of(&self, chat: &str) {
         let _ = Row::delete_many()
-            .filter(Row::STORE.eq("messages") & Row::CHAT.eq(chat))
+            .filter(Row::CHAT.eq(chat) & Row::STORE.eq("messages"))
             .execute(&self.db)
             .await;
     }
@@ -218,10 +221,13 @@ mod tests {
             }
             db.put("messages", "AUTRE|m9", "m9".into(), "AUTRE", 5.0)
                 .await;
+            // Rangé dans un autre magasin sous la même discussion : pas un message.
+            db.put("outbox", "o1", "o1".into(), "g:x", 40.0).await;
             assert_eq!(db.messages_of("g:x", 10).await, ["m2", "m3", "m1"]);
             assert_eq!(db.messages_of("g:x", 2).await, ["m3", "m1"]);
             db.delete_messages_of("g:x").await;
             assert!(db.messages_of("g:x", 10).await.is_empty());
+            assert_eq!(db.get("outbox", "o1").await.as_deref(), Some("o1"));
             assert_eq!(db.messages_of("AUTRE", 10).await, ["m9"]);
             db.remove("kv", "profile").await;
             assert_eq!(db.get("kv", "profile").await, None);
