@@ -882,6 +882,24 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(cold.store.datesOf(codes[0]).map(\.0), ["m10", "m300"])
     }
 
+    /// Quitter un groupe prévient chaque membre restant, une fois, du même message.
+    func testLeavingAGroupTellsEveryMember() async throws {
+        let e = phone()
+        let members = (0..<6).map { String(format: "AMI%07d", $0) }
+        let group = e.createGroup(name: "Six", members: members, avatar: "")
+        for key in e.store.rawRows("outbox").keys { e.store.remove("outbox", key) }
+        e.leaveGroup(group.id)
+        let rows = e.store.all("outbox", as: OutItem.self)
+        XCTAssertEqual(Set(rows.map(\.to)), Set(members))
+        XCTAssertEqual(rows.count, 6)
+        XCTAssertEqual(Set(rows.map(\.payload)).count, 1)
+        let wire = try XCTUnwrap(Wire.parse(rows[0].payload))
+        guard case .group(let op, _) = wire.body else { return XCTFail("pas un message de groupe") }
+        XCTAssertEqual(op, "leave")
+        XCTAssertEqual(e.chat(group.id)?.left, true)
+        XCTAssertEqual(e.chat(group.id)?.members.contains(e.me.code), false)
+    }
+
     // ----- Le journal d'appels -----
 
     /// Le journal d'appels n'est pas redécodé à chaque affichage, et suit

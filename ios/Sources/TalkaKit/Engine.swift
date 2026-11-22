@@ -1632,7 +1632,7 @@ public final class Engine {
         if c.admins.isEmpty, let first = c.members.first { c.admins = [first] }
         c.v = max(c.v, 1) + 1
         c.left = true
-        for code in c.members { enqueue(code, Wire(.group(op: "leave", note: ""), grp: groupInfo(c))) }
+        enqueueAll(c.members, Wire(.group(op: "leave", note: ""), grp: groupInfo(c)))
         saveChat(c)
         systemMessage(id, "Vous avez quitté le groupe.")
         syncGroup(c, note: "Vous avez quitté le groupe.")
