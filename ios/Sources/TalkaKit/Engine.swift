@@ -1140,6 +1140,18 @@ public final class Engine {
         Task { await flush() }
     }
 
+    /// Le même message pour plusieurs destinataires (un groupe, une actu
+    /// pour tous ses contacts) : encodé et échappé une fois, et toute sa
+    /// boîte d'envoi écrite en une transaction.
+    func enqueueAll(_ codes: [String], _ wire: Wire, chat: String = "", msgId: String = "") {
+        guard !codes.isEmpty else { return }
+        let payload = wire.json()
+        let escaped = codes.count > 1 ? JSON.encode(payload) : nil
+        store.transaction {
+            for code in codes { enqueue(code, payload: payload, escaped: escaped, chat: chat, msgId: msgId) }
+        }
+    }
+
     /// Comme `enqueue`, pour un seul appareil du destinataire (v4) : les
     /// autres sont marqués comme déjà servis.
     func enqueueTo(_ to: String, dev d: String, _ wire: Wire) {
@@ -1406,12 +1418,7 @@ public final class Engine {
         // Le nom choisi voyage avec le message : un membre de groupe qui ne
         // vous connaît pas voit « ~Nom » plutôt qu'un code.
         let wire = envelope(c, .msg(id: id, at: at, pn: profile.name, content: sealed))
-        let payload = wire.json()
-        let escaped = to.count > 1 ? JSON.encode(payload) : nil
-        // Une seule transaction pour toute la boîte d'envoi de ce message.
-        store.transaction {
-            for code in to { enqueue(code, payload: payload, escaped: escaped, chat: chatId, msgId: id) }
-        }
+        enqueueAll(to, wire, chat: chatId, msgId: id)
         // Nos autres appareils l'affichent aussi (v4) : gardé, comme pour un
         // destinataire, jusqu'à ce que chacun l'ait (et renvoyé si le relais
         // redémarre entre-temps).
@@ -1424,8 +1431,13 @@ public final class Engine {
 
     func broadcast(_ c: Chat, _ body: Body, live: Bool = false) {
         let wire = envelope(c, body)
-        let payload = wire.json()
-        for code in recipients(c) where !blocked(code) { enqueue(code, payload: payload, live: live) }
+        let to = recipients(c).filter { !blocked($0) }
+        if live {
+            let payload = wire.json()
+            for code in to { enqueue(code, payload: payload, live: true) }
+        } else {
+            enqueueAll(to, wire)
+        }
         // Ce qui change la discussion (réaction, modification, suppression,
         // minuterie) : refait sur nos autres appareils (v4).
         switch body {
@@ -2098,16 +2110,15 @@ public final class Engine {
         store.write("statuses", st.key, st)
         statusRevision += 1
         sync("status", d: jsonValue(st))
-        for c in contacts.values where c.saved && !c.blocked {
-            enqueue(c.code, Wire(.status(id: id, kind: kind, text: text, bg: bg, data: data, at: at)))
-        }
+        enqueueAll(contacts.values.filter { $0.saved && !$0.blocked }.map(\.code),
+                   Wire(.status(id: id, kind: kind, text: text, bg: bg, data: data, at: at)))
     }
 
     public func deleteStatus(_ id: String) {
         store.remove("statuses", "\(me.code)|\(id)")
         statusRevision += 1
         sync("status", d: .object(["deleted": .string(id)]))
-        for c in contacts.values where c.saved && !c.blocked { enqueue(c.code, Wire(.statusDelete(id: id))) }
+        enqueueAll(contacts.values.filter { $0.saved && !$0.blocked }.map(\.code), Wire(.statusDelete(id: id)))
     }
 
     /// Les actus de moins de 24 heures, de la plus ancienne à la plus
