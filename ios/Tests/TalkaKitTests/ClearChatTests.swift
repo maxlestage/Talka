@@ -533,6 +533,46 @@ final class ClearChatTests: XCTestCase {
         XCTAssertNil(cold.chatSearchKept)
     }
 
+    /// Des recherches de suite dans une longue discussion (dans son écran
+    /// ou dans toutes les discussions) ne finissent pas par la charger en
+    /// entier ni par la garder en mémoire : lire un message trouvé ne compte
+    /// pas parmi les lectures qui font charger une discussion.
+    func testSearchingAgainAndAgainDoesNotLoadTheChat() async throws {
+        let e = phone()
+        let c = e.ensureDirectChat("K7Q2MX9PRT")
+        let now = nowMs()
+        let words = ["anniversaire", "vacances", "piscine", "dentiste", "facture", "concert"]
+        e.store.transaction {
+            for i in 0..<900 {
+                // Chaque mot dans trente messages, répartis dans toute la discussion.
+                let text = "Message \(i)" + (i % 30 < words.count ? " \(words[i % 30])" : "")
+                e.store.writeMessage(Message(chat: c.id, id: "m\(i)", from: c.id, at: now - Double(1000 - i) * 1000, content: Content(text: text)))
+            }
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        for (n, word) in words.enumerated() {
+            let here = cold.searchChat(c.id, word)
+            XCTAssertEqual(here.count, 30)
+            XCTAssertEqual(here.first?.text, "Message \(n) \(word)")
+            XCTAssertEqual(here.last?.id, "m\(870 + n)")
+            let everywhere = cold.searchMessages(word, limit: 40)
+            XCTAssertEqual(everywhere.count, 30)
+            XCTAssertEqual(everywhere.first?.id, "m\(870 + n)")
+        }
+        // 180 messages lus, plus qu'il n'en faut pour charger une discussion
+        // quand ils sont demandés un par un.
+        XCTAssertGreaterThan(words.count * 30, Store.loadAfter)
+        XCTAssertTrue(cold.store.messages.isEmpty)
+        XCTAssertTrue(cold.store.busy.isEmpty)
+        XCTAssertTrue(cold.store.singles.isEmpty)
+        // Demandés un par un pour autre chose, ils comptent toujours.
+        for i in 0...Store.loadAfter { _ = cold.store.message(c.id, "m\(i)") }
+        XCTAssertEqual(cold.store.messages[c.id]?.count, 900)
+        XCTAssertEqual(cold.store.busy, [c.id])
+        XCTAssertEqual(cold.store.passingMessage(c.id, "m5")?.text, "Message 5 concert")
+        XCTAssertNil(cold.store.passingMessage(c.id, "absent"))
+    }
+
     /// Les messages importants d'une longue discussion pas chargée : leur
     /// compte et leur liste (les plus récents d'abord) sans la lire en
     /// entier, et « tout vider sauf eux » les garde.
