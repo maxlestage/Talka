@@ -162,6 +162,54 @@ final class ClearChatTests: XCTestCase {
         XCTAssertFalse(e.buried("AMI", "autre"))
     }
 
+    /// Une tombe de plus s'écrit au bout de la ligne gardée, sans réencoder
+    /// les autres : la ligne reste celle qu'on aurait réécrite en entier
+    /// (identifiants, dates, ordre), doublons d'un même envoi compris, et
+    /// une ligne d'une autre forme est réécrite comme avant.
+    func testANewTombIsAppendedToTheStoredRow() async {
+        let e = phone()
+        let now = nowMs()
+        var ref: [Engine.Tomb] = []
+        func check(_ label: String) {
+            let row = e.store.read("kv", "tombes:AMI", as: [Engine.Tomb].self) ?? []
+            XCTAssertEqual(row.map(\.id), ref.map(\.id), label)
+            XCTAssertEqual(row.map(\.at), ref.map(\.at), label)
+            for tomb in ref { XCTAssertTrue(e.buried("AMI", tomb.id), label) }
+        }
+        let steps: [[(String, Double)]] = [
+            [("a", now - 5000.5)],
+            [("b", now - 4000), ("b", now - 3000), ("a", now), ("c \"é\"\\", now - 2000.25)],
+            [("trop vieux", now - Engine.tombWindow - 1000)],
+            [("d", now - 1)],
+            (0..<300).map { ("m\($0)", now - Double($0)) },
+            [("m7", now), ("e", now - 10)],
+        ]
+        for (i, msgs) in steps.enumerated() {
+            let before = e.store.readRaw("kv", "tombes:AMI")
+            e.bury("AMI", msgs)
+            oldBury(&ref, msgs, now: nowMs())
+            check("étape \(i)")
+            // Rien de neuf : la ligne n'est pas réécrite.
+            if i == 2 { XCTAssertEqual(e.store.readRaw("kv", "tombes:AMI"), before) }
+        }
+        XCTAssertEqual(ref.count, 305)
+        // La ligne fait foi : relue par un autre moteur, elle dit la même chose.
+        let again = Engine(store: e.store, server: URL(string: "http://localhost:1")!)
+        XCTAssertTrue(again.buried("AMI", "c \"é\"\\"))
+        XCTAssertTrue(again.buried("AMI", "m299"))
+        XCTAssertFalse(again.buried("AMI", "trop vieux"))
+        // Une ligne écrite autrement (des blancs autour) : réécrite en entier.
+        e.store.writeRaw("kv", "tombes:AMI", " [ {\"id\":\"x\",\"at\":\(now - 100)} ] \n")
+        ref = [Engine.Tomb(id: "x", at: now - 100)]
+        e.bury("AMI", [("y", now - 50)])
+        oldBury(&ref, [("y", now - 50)], now: nowMs())
+        check("ligne d'une autre forme")
+        e.bury("AMI", [("z", now - 25)])
+        oldBury(&ref, [("z", now - 25)], now: nowMs())
+        check("puis au bout")
+        XCTAssertEqual(ref.map(\.id), ["x", "y", "z"])
+    }
+
     /// Au plus 20 000 tombes par discussion : les plus anciennes sortent.
     func testTombsAreCapped() async {
         let e = phone()
