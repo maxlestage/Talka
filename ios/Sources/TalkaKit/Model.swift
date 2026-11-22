@@ -176,15 +176,38 @@ extension Message {
         attachments(messages, kind: "file", me: me, now: now)
     }
 
+    /// Le texte contient-il « http » (en octets, sans le découper en
+    /// caractères) ?
+    static func hasHTTP(_ text: String) -> Bool {
+        var seen = 0
+        for byte in text.utf8 {
+            switch (seen, byte) {
+            case (0, UInt8(ascii: "h")): seen = 1
+            case (1, UInt8(ascii: "t")): seen = 2
+            case (2, UInt8(ascii: "t")): seen = 3
+            case (3, UInt8(ascii: "p")): return true
+            case (_, UInt8(ascii: "h")): seen = 1
+            default: seen = 0
+            }
+        }
+        return false
+    }
+
     /// Les liens d'un texte, avec la règle des liens cliquables des bulles
     /// (`richText`) : `http://` ou `https://` en début de mot (ou après une
     /// parenthèse, un guillemet), jusqu'à l'espace, sans la ponctuation
     /// finale. Le même que le navigateur (`model::find_links`).
     public static func findLinks(_ text: String) -> [String] {
+        // Presque aucun message n'a de lien : sans « http », rien à chercher
+        // (la fiche d'une discussion fouille ainsi 500 messages à chaque
+        // affichage).
+        guard hasHTTP(text) else { return [] }
         let chars = Array(text)
         var out: [String] = []
         var i = 0
         while i < chars.count {
+            // Un lien commence par un « h » : le reste n'est regardé que là.
+            guard chars[i] == "h" else { i += 1; continue }
             let atStart = i == 0 || chars[i - 1].isWhitespace || "([{«\"'“‘".contains(chars[i - 1])
             let rest = String(chars[i..<min(i + 8, chars.count)])
             if atStart, rest.hasPrefix("https://") || rest.hasPrefix("http://") {
