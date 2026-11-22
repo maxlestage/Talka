@@ -840,6 +840,28 @@ public final class Store: @unchecked Sendable {
         linesIn = [:]
     }
 
+    /// Efface d'une discussion ses messages trop vieux (datés d'avant
+    /// `limit`, et que `keepDays` ne garde pas : voir `Message.tooOld`) et les
+    /// renvoie (identifiant, date), du plus ancien au plus récent. Seul leur
+    /// âge est décodé, par l'index, et tout part en une transaction.
+    public func removeOld(_ chat: String, before limit: Double, keepDays: Int, now: Double) -> [(String, Double)] {
+        transaction {
+            lock.lock(); defer { lock.unlock() }
+            let ages: [Message.Age]
+            if messages[chat] != nil {
+                let sorted = inOrder(chat)
+                ages = sorted.prefix(Self.rank(limit, "", in: sorted)).map(Message.Age.init)
+            } else {
+                var rows = 0
+                ages = readRows("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ? AND at < ? ORDER BY at, key",
+                                [chat, limit], rows: &rows, as: Message.Age.self)
+            }
+            let gone = ages.filter { $0.tooOld(keepDays: keepDays, now: now) }
+            for age in gone { drop(chat, age.id) }
+            return gone.map { ($0.id, $0.at) }
+        }
+    }
+
     /// L'identifiant et la date des messages d'une discussion datés d'après
     /// `at` (tous, sans `at`), du plus ancien au plus récent : lus dans
     /// l'index, sans ouvrir ni déchiffrer aucune ligne. Vider ou supprimer
