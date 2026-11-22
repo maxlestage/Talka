@@ -51,6 +51,9 @@ public final class Engine {
     public var activeChat: String? {
         didSet {
             if let now = activeChat, now != oldValue { store.release(except: now) }
+            // La recherche gardée d'une discussion qu'on quitte tient ses
+            // messages (photos comprises) : rendue aussi.
+            if activeChat != oldValue { chatSearchKept = nil }
         }
     }
     /// L'application est-elle au premier plan ? À l'arrière-plan, la mémoire
@@ -61,6 +64,7 @@ public final class Engine {
             if oldValue, !foreground {
                 store.release(except: activeChat)
                 store.forgetLines()
+                chatSearchKept = nil
             }
         }
     }
@@ -81,6 +85,8 @@ public final class Engine {
     /// La dernière recherche dans toutes les discussions, et ce dont elle
     /// dépend : voir `searchMessages`.
     @ObservationIgnored var searchKept: (query: String, limit: Int, generation: Int, chats: [String], at: Double, until: Double, list: [Message])?
+    /// La dernière recherche dans une discussion : voir `searchChat`.
+    @ObservationIgnored var chatSearchKept: (chat: String, query: String, generation: Int, at: Double, until: Double, list: [Message])?
     /// Les actus déjà décodées (clé → la ligne lue, l'actu), et leurs seules
     /// dates : voir `statuses` et `statusDates`.
     @ObservationIgnored var statusKept: [String: (json: String, item: StatusItem)] = [:]
@@ -1081,6 +1087,46 @@ public final class Engine {
         searchKept = (q, limit, generation, ids, now, nextOpen, list)
         return list
     }
+
+    /// La recherche dans une discussion (son écran) : ses messages qui
+    /// contiennent `query` (accents et majuscules ignorés), dans l'ordre de
+    /// la discussion. Ni messages système ou supprimés, ni capsule scellée.
+    /// Une longue discussion n'est pas chargée en entier pour être fouillée :
+    /// son texte, gardé à part, suffit, et seuls les messages trouvés sont
+    /// lus (au-delà d'une centaine, la discussion l'est d'un coup). L'écran
+    /// la redemande à chaque dessin : la même recherche n'est pas refaite
+    /// tant qu'aucun message n'a changé et qu'aucune capsule ne s'est ouverte.
+    public func searchChat(_ chatId: String, _ query: String) -> [Message] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return [] }
+        let now = nowMs()
+        let generation = store.messagesGeneration
+        if let kept = chatSearchKept, kept.chat == chatId, kept.query == q, kept.generation == generation,
+           now >= kept.at, now < kept.until {
+            return kept.list
+        }
+        let list: [Message]
+        let nextOpen: Double
+        if q.count == 1 {
+            // Une seule lettre trouve presque tout : la discussion est lue
+            // en entier de toute façon, autant la fouiller directement.
+            (list, nextOpen) = Message.matching([messages(chatId)], q, me: me.code, now: now)
+        } else {
+            let found: [Message.Line]
+            (found, nextOpen) = Message.matching([store.lines(of: chatId)], q, me: me.code, now: now)
+            if found.count > Self.searchSingles {
+                let ids = Set(found.map(\.id))
+                list = messages(chatId).filter { ids.contains($0.id) }
+            } else {
+                list = found.sorted { ($0.at, $0.id) < ($1.at, $1.id) }.compactMap { store.message(chatId, $0.id) }
+            }
+        }
+        chatSearchKept = (chatId, q, generation, now, nextOpen, list)
+        return list
+    }
+
+    /// Jusqu'à combien de messages trouvés sont lus un par un.
+    static let searchSingles = 80
 
     /// Ce qu'on lit d'un message sur une ligne (épingle, favoris, réponse) :
     /// son texte, sauf s'il est supprimé ou si c'est une capsule encore

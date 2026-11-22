@@ -9,7 +9,7 @@
 // arrivent quand on remonte (`-TalkaDemoTop YES` remonte tout seul).
 // Trois de ses derniers messages sont des photos ; un vieux message est
 // épinglé (`-TalkaDemoJump YES` y saute tout seul) ; `-TalkaDemoUnread 350`
-// l'ouvre avec 350 messages non lus.
+// l'ouvre avec 350 messages non lus ; `-TalkaDemoSearch 99` y cherche « 99 ».
 
 #if DEBUG
 import Foundation
@@ -27,6 +27,11 @@ enum Demo {
     /// Sauter tout seul vers le message épinglé, plus ancien que ce qui est
     /// affiché à l'ouverture.
     static var jumps: Bool { UserDefaults.standard.bool(forKey: "TalkaDemoJump") }
+    /// Chercher tout seul ce mot dans la discussion.
+    static var search: String? {
+        let word = UserDefaults.standard.string(forKey: "TalkaDemoSearch") ?? ""
+        return word.isEmpty ? nil : word
+    }
     /// Le message épinglé.
     static let pinned = "demo120"
     /// Les messages qui sont des photos (parmi les derniers).
