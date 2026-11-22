@@ -652,6 +652,46 @@ final class ClearChatTests: XCTestCase {
         XCTAssertEqual(row.msgId, direct.id)
     }
 
+    /// Une actu part à chaque contact enregistré (pas aux bloqués ni aux
+    /// inconnus), avec le même contenu pour tous ; une réaction dans un
+    /// groupe, à chaque membre.
+    func testAStatusAndAGroupReactionReachEveryone() async throws {
+        let e = phone()
+        for i in 0..<8 {
+            var c = Contact(code: String(format: "AMI%07d", i))
+            c.saved = i != 6
+            c.blocked = i == 7
+            e.saveContact(c)
+        }
+        let photo = "data:image/jpeg;base64," + String(repeating: "/9j/4AAQ\"\\/+abc=", count: 500)
+        e.postStatus(kind: "image", text: "Une \"légende\"", bg: "", data: photo)
+        let st = try XCTUnwrap(e.statuses().first)
+        var rows = e.store.all("outbox", as: OutItem.self)
+        XCTAssertEqual(Set(rows.map(\.to)), Set((0..<6).map { String(format: "AMI%07d", $0) }))
+        XCTAssertEqual(Set(rows.map(\.payload)).count, 1)
+        guard case .status(let id, let kind, let text, _, let data, _) = try XCTUnwrap(Wire.parse(rows[0].payload)).body else {
+            return XCTFail("pas une actu")
+        }
+        XCTAssertEqual([id, kind, text], [st.id, "image", "Une \"légende\""])
+        XCTAssertEqual(data, photo)
+        // La retirer prévient les mêmes.
+        for key in e.store.rawRows("outbox").keys { e.store.remove("outbox", key) }
+        e.deleteStatus(st.id)
+        rows = e.store.all("outbox", as: OutItem.self)
+        XCTAssertEqual(rows.count, 6)
+        XCTAssertEqual(Set(rows.map(\.payload)).count, 1)
+        // Une réaction dans un groupe : une ligne par membre.
+        let members = (0..<5).map { String(format: "AMI%07d", $0) }
+        let group = e.createGroup(name: "Cinq", members: members, avatar: "")
+        let m = try XCTUnwrap(e.send(group.id, Content(text: "Bonjour")))
+        for key in e.store.rawRows("outbox").keys { e.store.remove("outbox", key) }
+        e.react(group.id, m.id, "👍")
+        rows = e.store.all("outbox", as: OutItem.self)
+        XCTAssertEqual(Set(rows.map(\.to)), Set(members))
+        XCTAssertEqual(Set(rows.map(\.payload)).count, 1)
+        XCTAssertEqual(Set(rows.map(\.id)).count, 5)
+    }
+
     // ----- Le journal d'appels -----
 
     /// Le journal d'appels n'est pas redécodé à chaque affichage, et suit
