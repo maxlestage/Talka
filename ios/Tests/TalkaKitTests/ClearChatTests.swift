@@ -598,6 +598,36 @@ final class ClearChatTests: XCTestCase {
         XCTAssertTrue(cold.store.messages.isEmpty)
     }
 
+    // ----- Le journal d'appels -----
+
+    /// Le journal d'appels n'est pas redécodé à chaque affichage, et suit
+    /// chaque ligne qui arrive, change ou part.
+    func testTheCallLogFollowsItsRows() async {
+        let e = phone()
+        func call(_ id: String, at: Double, missed: Bool = false) -> CallEntry {
+            CallEntry(id: id, peer: "K7Q2MX9PRT", video: false, incoming: true, at: at, dur: 12, missed: missed)
+        }
+        XCTAssertTrue(e.callLog().isEmpty)
+        e.logCall(call("a", at: 10))
+        e.logCall(call("b", at: 30))
+        e.logCall(call("c", at: 20, missed: true))
+        XCTAssertEqual(e.callLog().map(\.id), ["b", "c", "a"])
+        XCTAssertEqual(e.callLog(), e.store.all("calls", as: CallEntry.self).sorted { $0.at > $1.at })
+        XCTAssertEqual(Set(e.callsKept.keys), ["a", "b", "c"])
+        // Une ligne changée sans passer par le moteur, une retirée, une ajoutée.
+        e.store.write("calls", "a", call("a", at: 40, missed: true))
+        e.store.remove("calls", "c")
+        e.store.write("calls", "d", call("d", at: 5))
+        XCTAssertEqual(e.callLog().map(\.id), ["a", "b", "d"])
+        XCTAssertEqual(e.callLog().first?.missed, true)
+        XCTAssertEqual(Set(e.callsKept.keys), ["a", "b", "d"])
+        e.clearCalls()
+        XCTAssertTrue(e.callLog().isEmpty)
+        XCTAssertTrue(e.callsKept.isEmpty)
+        e.logCall(call("e", at: 1))
+        XCTAssertEqual(e.callLog().map(\.id), ["e"])
+    }
+
     // ----- Les messages éphémères -----
 
     /// Le ménage retire les messages éphémères échus sans charger la

@@ -85,6 +85,8 @@ public final class Engine {
     /// dates : voir `statuses` et `statusDates`.
     @ObservationIgnored var statusKept: [String: (json: String, item: StatusItem)] = [:]
     @ObservationIgnored var statusHeads: [String: (json: String, head: StatusItem.Head)] = [:]
+    /// Les appels du journal déjà décodés, par clé, avec la ligne dont ils viennent.
+    @ObservationIgnored var callsKept: [String: (json: String, entry: CallEntry)] = [:]
     /// Les messages importants de toutes les discussions, tels que trouvés à
     /// cette génération de la mémoire : voir `starred()`.
     @ObservationIgnored var starredKept: (generation: Int, list: [Message])?
@@ -2152,8 +2154,23 @@ public final class Engine {
         callRevision += 1
     }
 
+    /// Le journal d'appels, le plus récent d'abord. L'onglet le redemande à
+    /// chaque affichage : un appel déjà décodé n'est pas redécodé tant que
+    /// sa ligne n'a pas changé (comme les actus).
     public func callLog() -> [CallEntry] {
-        store.all("calls", as: CallEntry.self).sorted { $0.at > $1.at }
+        var kept: [String: (json: String, entry: CallEntry)] = [:]
+        var out: [CallEntry] = []
+        for (key, json) in store.rawRows("calls") {
+            if let known = callsKept[key], known.json == json {
+                kept[key] = known
+                out.append(known.entry)
+            } else if let entry = JSON.decode(CallEntry.self, json) {
+                kept[key] = (json, entry)
+                out.append(entry)
+            }
+        }
+        callsKept = kept
+        return out.sorted { $0.at > $1.at }
     }
 
     public func clearCalls() {
