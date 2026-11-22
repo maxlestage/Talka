@@ -218,6 +218,12 @@ codes, et discutez.
 
 ## Déployer
 
+- **Fusion automatique** ([`.github/workflows/fusion.yml`](.github/workflows/fusion.yml)) :
+  une branche `claude/*` poussée sur ce dépôt est fusionnée toute seule dans
+  `master` dès que ses vérifications passent (la CI, et l'iOS quand `ios/` a
+  changé), puis déployée comme après un push dans `master` (Heroku, GitHub
+  Pages). Un conflit arrête la fusion : `master` ne bouge pas, et le
+  workflow échoue pour le dire.
 - **Heroku** : `app.json`, `Procfile` et `RustConfig` (buildpack `emk/rust`,
   qui compile d'abord le navigateur en WebAssembly). Une seule instance
   (`web: 1`) : le relais vit en mémoire.
