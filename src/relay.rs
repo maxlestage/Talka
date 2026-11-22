@@ -521,6 +521,31 @@ impl State {
         }
     }
 
+    /// Retire de la boîte `key` les messages `numbers`.
+    fn forget_in(&mut self, key: &str, numbers: &HashSet<u64>) {
+        let Some(mb) = self.mailboxes.get_mut(key) else {
+            return;
+        };
+        let mut freed = 0;
+        let mut gone: Vec<(u64, usize)> = Vec::new();
+        mb.queue.retain(|s| {
+            let keep = !numbers.contains(&s.n);
+            if !keep {
+                freed += s.json.len();
+                if s.kept > 0 {
+                    gone.push((s.n, s.kept));
+                }
+            }
+            keep
+        });
+        mb.bytes -= freed;
+        if mb.queue.is_empty() {
+            self.mailboxes.remove(key);
+        }
+        self.total_bytes -= freed;
+        self.unkeep_messages(key, &gone);
+    }
+
     /// Tout ce qui est retenu, à recopier d'un coup (après une panne du
     /// magasin).
     fn snapshot(&self) -> Vec<Op> {
@@ -956,24 +981,31 @@ impl Relay {
                 .filter(|c| !st.online.contains_key(*c))
                 .map(|c| (c.clone(), st.seen.get(c).copied().unwrap_or(0)))
                 .collect();
-            oldest.sort_by_key(|(_, seen)| *seen);
-            for (c, _) in oldest.into_iter().take(MAX_KEYS / 10) {
-                st.keys.remove(&c);
-                st.unkeep('k', &c);
-                if let Some(devs) = st.bundles.remove(&c) {
+            // Les plus anciens, sans trier les autres.
+            let take = (MAX_KEYS / 10).min(oldest.len());
+            if take < oldest.len() {
+                oldest.select_nth_unstable_by_key(take, |(_, seen)| *seen);
+                oldest.truncate(take);
+            }
+            let gone: HashSet<String> = oldest.into_iter().map(|(c, _)| c).collect();
+            for c in &gone {
+                st.keys.remove(c);
+                st.unkeep('k', c);
+                if let Some(devs) = st.bundles.remove(c) {
                     for dev in devs.keys() {
-                        st.unkeep('b', &box_key(&c, dev));
+                        st.unkeep('b', &box_key(c, dev));
                     }
                 }
-                st.devices.remove(&c);
-                st.unkeep('d', &c);
-                st.seen.remove(&c);
-                st.unkeep('s', &c);
-                st.push
-                    .retain(|k, _| k.split('/').next() != Some(c.as_str()));
-                st.woke
-                    .retain(|k, _| k.split('/').next() != Some(c.as_str()));
+                st.devices.remove(c);
+                st.unkeep('d', c);
+                st.seen.remove(c);
+                st.unkeep('s', c);
             }
+            // Leurs adresses Web Push et leurs réveils : un seul passage pour
+            // tous, plutôt qu'un par code parti.
+            let of_gone = |k: &String| gone.contains(k.split('/').next().unwrap_or(k));
+            st.push.retain(|k, _| !of_gone(k));
+            st.woke.retain(|k, _| !of_gone(k));
         }
         st.keys.insert(code.to_owned(), Keys { sign, dh });
         st.keep_keys(code);
@@ -1273,30 +1305,45 @@ impl Relay {
     /// Le destinataire a rangé ces messages : ils quittent ses boîtes
     /// (`keys` : celles qu'il lit).
     fn forget(&self, keys: &[String], numbers: &[u64]) {
-        let mut st = self.lock();
+        if numbers.is_empty() {
+            return;
+        }
         let numbers: HashSet<u64> = numbers.iter().copied().collect();
+        let mut st = self.lock();
         for key in keys {
-            let Some(mb) = st.mailboxes.get_mut(key) else {
-                continue;
-            };
-            let mut freed = 0;
-            let mut gone: Vec<(u64, usize)> = Vec::new();
-            mb.queue.retain(|s| {
-                let keep = !numbers.contains(&s.n);
-                if !keep {
-                    freed += s.json.len();
-                    if s.kept > 0 {
-                        gone.push((s.n, s.kept));
-                    }
-                }
-                keep
-            });
-            mb.bytes -= freed;
-            if mb.queue.is_empty() {
-                st.mailboxes.remove(key);
-            }
-            st.total_bytes -= freed;
-            st.unkeep_messages(key, &gone);
+            st.forget_in(key, &numbers);
+        }
+    }
+
+    /// Une connexion anonyme a rangé ces messages : ils quittent les boîtes
+    /// tournantes qu'elle suit. Elle en suit jusqu'à `MAX_BOITES`, presque
+    /// toutes vides : seules celles qui ont une boîte sont parcourues, sans
+    /// recopier la liste.
+    fn forget_boites(&self, conn_id: u64, numbers: &[u64]) {
+        if numbers.is_empty() {
+            return;
+        }
+        let numbers: HashSet<u64> = numbers.iter().copied().collect();
+        let mut st = self.lock();
+        let mut key = String::new();
+        let full: Vec<String> = st
+            .boites_of
+            .get(&conn_id)
+            .map(|addrs| {
+                addrs
+                    .iter()
+                    .filter(|addr| {
+                        key.clear();
+                        key.push('@');
+                        key.push_str(addr);
+                        st.mailboxes.contains_key(&key)
+                    })
+                    .map(|addr| boite_key(addr))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for key in &full {
+            st.forget_in(key, &numbers);
         }
     }
 
@@ -1681,15 +1728,6 @@ impl Relay {
         }
     }
 
-    /// Les boîtes tournantes que suit une connexion anonyme.
-    fn subscribed(&self, conn_id: u64) -> Vec<String> {
-        self.lock()
-            .boites_of
-            .get(&conn_id)
-            .map(|addrs| addrs.iter().map(|addr| boite_key(addr)).collect())
-            .unwrap_or_default()
-    }
-
     /// Une connexion anonyme : seulement des envois scellés (et `ping`).
     /// Le relais ne sait pas qui est derrière ; il ne la compte pas comme
     /// une présence.
@@ -1785,7 +1823,7 @@ impl Relay {
                                 .as_array()
                                 .map(|a| a.iter().filter_map(Value::as_u64).collect())
                                 .unwrap_or_default();
-                            self.forget(&self.subscribed(conn_id), &numbers);
+                            self.forget_boites(conn_id, &numbers);
                             continue;
                         }
                         "ping" => json!({ "t": "pong", "time": now_ms() }),
@@ -2863,7 +2901,7 @@ mod tests {
             first[0]["n"].as_u64().unwrap(),
             second[0]["n"].as_u64().unwrap(),
         ];
-        relay.forget(&relay.subscribed(77), &ns);
+        relay.forget_boites(77, &ns);
         assert!(!relay.lock().mailboxes.contains_key(&boite_key(addr)));
         // Un dépôt d'une heure, au-delà : effacé.
         relay.send(
@@ -2881,6 +2919,96 @@ mod tests {
             st.evict_expired();
             assert!(!st.mailboxes.contains_key(&boite_key(addr)));
         }
+    }
+
+    /// Plein, le relais oublie les codes déconnectés depuis le plus
+    /// longtemps, et leurs adresses Web Push avec eux, d'un seul passage
+    /// (un par code parti bloquait le relais deux minutes et demie).
+    #[test]
+    fn a_full_relay_forgets_the_oldest_codes_at_once() {
+        let relay = Relay::default();
+        {
+            let mut st = relay.lock();
+            for i in 0..MAX_KEYS {
+                let c = format!("C{i:09}");
+                if i % 2 == 0 {
+                    st.push.insert(format!("{c}/dev"), Vec::new());
+                    st.woke.insert(c.clone(), Instant::now());
+                }
+                st.keys.insert(
+                    c.clone(),
+                    Keys {
+                        sign: String::new(),
+                        dh: String::new(),
+                    },
+                );
+                st.seen.insert(c, i as u64);
+            }
+        }
+        let started = Instant::now();
+        let _ = relay.register("NEWCODE000", String::new(), String::new(), false, "");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let st = relay.lock();
+        let gone = MAX_KEYS / 10;
+        assert_eq!(st.keys.len(), MAX_KEYS - gone + 1);
+        assert_eq!(st.push.len(), (MAX_KEYS - gone) / 2);
+        assert_eq!(st.woke.len(), (MAX_KEYS - gone) / 2);
+        // Les plus anciens sont partis, les autres restent.
+        assert!(!st.keys.contains_key(&format!("C{:09}", gone - 1)));
+        assert!(!st.push.contains_key(&format!("C{:09}/dev", gone - 2)));
+        assert!(!st.woke.contains_key(&format!("C{:09}", gone - 2)));
+        assert!(st.keys.contains_key(&format!("C{gone:09}")));
+        assert!(st.push.contains_key(&format!("C{gone:09}/dev")));
+        assert!(st.woke.contains_key(&format!("C{gone:09}")));
+        assert!(st.keys.contains_key("NEWCODE000"));
+    }
+
+    /// Une connexion anonyme qui suit beaucoup de boîtes tournantes : ses
+    /// accusés ne retirent que ce qui lui était destiné.
+    #[test]
+    fn an_anonymous_ack_only_clears_its_own_boxes() {
+        let relay = Relay::default();
+        let (tx, _rx) = mpsc::channel(OUT_QUEUE);
+        let addrs: Vec<String> = (0..1000).map(|i| format!("b{i:021}")).collect();
+        {
+            let mut st = relay.lock();
+            st.anon_conns.insert(
+                1,
+                Conn {
+                    id: 1,
+                    tx,
+                    hidden: true,
+                    dev: String::new(),
+                    overflow: Default::default(),
+                },
+            );
+            st.boites_of
+                .insert(1, addrs[..500].iter().cloned().collect());
+        }
+        let mut limit = Limit::default();
+        for (i, addr) in [&addrs[3], &addrs[7], &addrs[900]].into_iter().enumerate() {
+            let ack = relay.send(
+                None,
+                &json!({ "t": "send", "id": i.to_string(), "boite": addr, "body": "x" }),
+                &mut limit,
+            );
+            assert_eq!(ack["t"], "ack");
+        }
+        let n = |addr: &str| relay.lock().mailboxes[&boite_key(addr)].queue[0].n;
+        let ns = [n(&addrs[3]), n(&addrs[7]), n(&addrs[900])];
+        // Rien à ranger : rien ne change.
+        relay.forget_boites(1, &[]);
+        assert_eq!(relay.lock().mailboxes.len(), 3);
+        relay.forget_boites(1, &ns);
+        let st = relay.lock();
+        assert!(!st.mailboxes.contains_key(&boite_key(&addrs[3])));
+        assert!(!st.mailboxes.contains_key(&boite_key(&addrs[7])));
+        // Une boîte qu'elle ne suit pas garde son message.
+        assert!(st.mailboxes.contains_key(&boite_key(&addrs[900])));
+        assert_eq!(
+            st.total_bytes,
+            st.mailboxes.values().map(|mb| mb.bytes).sum::<usize>()
+        );
     }
 
     /// Au plus `MAX_PER_IP` connexions depuis une même adresse.
