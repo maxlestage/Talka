@@ -1080,10 +1080,10 @@ public final class Engine {
         }
         // Dans le texte des messages, gardé à part : pas en chargeant toutes
         // les discussions en entier, photos comprises. Seuls les messages
-        // trouvés sont lus.
+        // trouvés sont lus, sans que cela finisse par charger leur discussion.
         let (found, nextOpen) = Message.matching(ids.map { store.lines(of: $0) }, q, me: me.code, now: now)
         let list = found.sorted { ($0.at, $0.chat, $0.id) > ($1.at, $1.chat, $1.id) }.prefix(limit)
-            .compactMap { store.message($0.chat, $0.id) }
+            .compactMap { store.passingMessage($0.chat, $0.id) }
         searchKept = (q, limit, generation, ids, now, nextOpen, list)
         return list
     }
@@ -1118,7 +1118,7 @@ public final class Engine {
                 let ids = Set(found.map(\.id))
                 list = messages(chatId).filter { ids.contains($0.id) }
             } else {
-                list = found.sorted { ($0.at, $0.id) < ($1.at, $1.id) }.compactMap { store.message(chatId, $0.id) }
+                list = found.sorted { ($0.at, $0.id) < ($1.at, $1.id) }.compactMap { store.passingMessage(chatId, $0.id) }
             }
         }
         chatSearchKept = (chatId, q, generation, now, nextOpen, list)

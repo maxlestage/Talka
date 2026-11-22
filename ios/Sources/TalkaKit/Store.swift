@@ -696,6 +696,24 @@ public final class Store: @unchecked Sendable {
         return out
     }
 
+    /// Un message lu pour être montré une fois (un résultat de recherche).
+    /// Comme `message`, mais sa lecture ne compte pas parmi celles qui
+    /// finissent par charger toute la discussion et la garder (`loadAfter`,
+    /// `busy`), et il n'est pas gardé : quelques recherches de suite dans
+    /// une longue discussion ne la tiennent pas en mémoire.
+    public func passingMessage(_ chat: String, _ id: String) -> Message? {
+        lock.lock(); defer { lock.unlock() }
+        if let loaded = messages[chat] { return loaded[id] }
+        let key = "\(chat)|\(id)"
+        if let m = singles[key] { return m }
+        if let m = windows[chat]?.last(where: { $0.id == id }) { return m }
+        var out: Message?
+        run("SELECT json FROM rows WHERE store = 'messages' AND key = ?", [key]) { stmt in
+            if let json = self.value(stmt, 0, store: "messages", key: key) { out = JSON.decode(Message.self, json) }
+        }
+        return out
+    }
+
     public func writeMessage(_ m: Message) {
         lock.lock(); defer { lock.unlock() }
         generation += 1
