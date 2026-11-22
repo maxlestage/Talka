@@ -38,12 +38,29 @@ hkdf = "0.12"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
+# Les fichiers du navigateur compressés une fois, à la compilation (build.rs) :
+# Brotli, et gzip pour les navigateurs qui ne le prennent pas.
+[build-dependencies]
+brotli = "9"
+flate2 = "1"
+
 [dev-dependencies]
+# Les tests décompressent ce que build.rs a compressé.
+brotli = "9"
+flate2 = "1"
 # Les tests chiffrent exactement comme le navigateur : avec le même code Rust.
 talka-web = { path = "client" }
 tokio-tungstenite = "0.26"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+
+# build.rs compresse le navigateur (Brotli 11) : optimisé, il le fait en
+# quelques secondes au lieu d'une demi-minute.
+[profile.dev.build-override]
+opt-level = 3
+
+[profile.release.build-override]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

@@ -223,6 +223,20 @@ async fn pages_and_api() {
     assert_eq!(client.get("/api/qr/pas-un-code").await.status(), 404);
     let main = format!("/s/{}/talka_web.js", talka::assets::version());
     assert_eq!(client.get(&main).await.status(), 200);
+    // Compressé une fois à la compilation, envoyé selon `Accept-Encoding`.
+    if talka::assets::has_client() {
+        let wasm = format!("/s/{}/talka_web_bg.wasm", talka::assets::version());
+        let br = client
+            .get(&wasm)
+            .header("accept-encoding", "gzip, deflate, br")
+            .await;
+        assert_eq!(br.header("content-encoding"), Some("br"));
+        let gz = client.get(&wasm).header("accept-encoding", "gzip").await;
+        assert_eq!(gz.header("content-encoding"), Some("gzip"));
+        let plain = client.get(&wasm).await;
+        assert_eq!(plain.header("content-encoding"), None);
+        assert!(br.bytes().len() * 3 < plain.bytes().len());
+    }
     assert_eq!(client.get("/ws").await.status(), 426);
 }
 
