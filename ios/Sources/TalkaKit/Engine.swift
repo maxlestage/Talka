@@ -55,10 +55,13 @@ public final class Engine {
     }
     /// L'application est-elle au premier plan ? À l'arrière-plan, la mémoire
     /// des longues discussions lues en entier est rendue (sauf celle qui est
-    /// à l'écran).
+    /// à l'écran), et celle des textes gardés pour la recherche.
     public var foreground = true {
         didSet {
-            if oldValue, !foreground { store.release(except: activeChat) }
+            if oldValue, !foreground {
+                store.release(except: activeChat)
+                store.forgetLines()
+            }
         }
     }
 
@@ -1025,8 +1028,12 @@ public final class Engine {
            kept.chats == ids, now >= kept.at, now < kept.until {
             return kept.list
         }
-        let (found, nextOpen) = Message.matching(ids.map { store.messagesOf($0) }, q, me: me.code, now: now)
-        let list = Array(found.sorted { $0.at > $1.at }.prefix(limit))
+        // Dans le texte des messages, gardé à part : pas en chargeant toutes
+        // les discussions en entier, photos comprises. Seuls les messages
+        // trouvés sont lus.
+        let (found, nextOpen) = Message.matching(ids.map { store.lines(of: $0) }, q, me: me.code, now: now)
+        let list = found.sorted { ($0.at, $0.chat, $0.id) > ($1.at, $1.chat, $1.id) }.prefix(limit)
+            .compactMap { store.message($0.chat, $0.id) }
         searchKept = (q, limit, generation, ids, now, nextOpen, list)
         return list
     }

@@ -107,6 +107,37 @@ public final class Store: @unchecked Sendable {
     /// tenues à jour à chaque message écrit ou retiré. « Gérer le stockage »
     /// les additionne, sans charger aucune discussion.
     var piecesIn: [String: [String: Storage.Piece]] = [:]
+
+    /// Les lignes de texte d'une discussion, pour la recherche : une liste,
+    /// et la place de chaque message dedans.
+    struct Lines {
+        var list: [Message.Line] = []
+        var place: [String: Int] = [:]
+
+        mutating func put(_ line: Message.Line) {
+            if let i = place[line.id] {
+                list[i] = line
+            } else {
+                place[line.id] = list.count
+                list.append(line)
+            }
+        }
+
+        mutating func remove(_ id: String) {
+            guard let i = place.removeValue(forKey: id) else { return }
+            let last = list.removeLast()
+            if i < list.count {
+                list[i] = last
+                place[last.id] = i
+            }
+        }
+    }
+
+    /// Par discussion, le texte de ses messages (sans leurs photos) ;
+    /// absent tant que la recherche dans toutes les discussions ne l'a pas
+    /// demandé, puis tenu à jour à chaque message écrit ou retiré. Oublié à
+    /// l'arrière-plan (`forgetLines`).
+    var linesIn: [String: Lines] = [:]
     /// La profondeur des lots ouverts (`transaction`).
     var depth = 0
     /// La clé de l'appareil (nil : rien n'est chiffré).
@@ -678,6 +709,7 @@ public final class Store: @unchecked Sendable {
         if starredIn[m.chat] != nil {
             if m.isStarred { starredIn[m.chat]?.insert(m.id) } else { starredIn[m.chat]?.remove(m.id) }
         }
+        linesIn[m.chat]?.put(Message.Line(m))
         if piecesIn[m.chat] != nil {
             piecesIn[m.chat]?[m.id] = Storage.Piece(kind: m.kind, deleted: m.deleted, size: m.size, data: m.data)
         }
@@ -696,6 +728,7 @@ public final class Store: @unchecked Sendable {
         generation += 1
         starredIn[chat]?.remove(id)
         piecesIn[chat]?[id] = nil
+        linesIn[chat]?.remove(id)
         if messages[chat] != nil {
             if let old = messages[chat]?.removeValue(forKey: id) ?? nil { reorder(chat, old: old, new: nil) }
         } else {
@@ -781,6 +814,32 @@ public final class Store: @unchecked Sendable {
         return st
     }
 
+    /// Le texte des messages d'une discussion, sans ordre (voir
+    /// `Message.Line`), pour la recherche dans toutes les discussions. D'une
+    /// discussion pas chargée, seuls ces textes sont décodés, une fois ; ni
+    /// ses messages ni ses photos ne restent en mémoire.
+    func lines(of chat: String) -> [Message.Line] {
+        lock.lock(); defer { lock.unlock() }
+        if let kept = linesIn[chat] { return kept.list }
+        var lines = Lines()
+        if messages[chat] != nil {
+            for m in inOrder(chat) { lines.put(Message.Line(m)) }
+        } else {
+            var rows = 0
+            let read = readRows("SELECT key, json FROM rows WHERE store = 'messages' AND chat = ?",
+                                [chat], rows: &rows, as: Message.Line.self)
+            for line in read { lines.put(line) }
+        }
+        linesIn[chat] = lines
+        return lines.list
+    }
+
+    /// Rend la mémoire de ces textes (l'application passe à l'arrière-plan).
+    public func forgetLines() {
+        lock.lock(); defer { lock.unlock() }
+        linesIn = [:]
+    }
+
     /// Une longue discussion ne reste chargée en entier que tant qu'elle
     /// sert : au-delà de tant de messages, `release` n'en garde que la fin.
     static let releaseOver = 600
@@ -811,6 +870,7 @@ public final class Store: @unchecked Sendable {
         expNext[chat] = nil
         starredIn[chat] = nil
         piecesIn[chat] = nil
+        linesIn[chat] = nil
         messages[chat] = [:]
         ordered[chat] = nil
         dropWindow(chat)
@@ -891,6 +951,7 @@ public final class Store: @unchecked Sendable {
         busy = []
         starredIn = [:]
         piecesIn = [:]
+        linesIn = [:]
     }
 
     public func wipe() {
@@ -906,6 +967,7 @@ public final class Store: @unchecked Sendable {
         busy = []
         starredIn = [:]
         piecesIn = [:]
+        linesIn = [:]
         singleReads = [:]
         generation += 1
         exec("DELETE FROM rows")

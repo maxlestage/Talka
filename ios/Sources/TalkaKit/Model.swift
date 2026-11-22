@@ -655,7 +655,18 @@ public struct ChatLink: Identifiable, Sendable {
     public var id: String { url }
 }
 
-public struct Message: Codable, Equatable, Identifiable, Sendable {
+/// Ce dont la recherche a besoin d'un message (voir `Message.matching`) :
+/// le message entier, ou sa seule ligne de texte (`Message.Line`).
+protocol SearchLine: Sendable {
+    var from: String { get }
+    var kind: String { get }
+    var deleted: Bool { get }
+    var text: String { get }
+    var name: String { get }
+    var openAt: Double? { get }
+}
+
+public struct Message: Codable, Equatable, Identifiable, Sendable, SearchLine {
     public var chat = ""
     public var id = ""
     /// Le code de l'auteur, ou `system`.
@@ -770,12 +781,12 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     /// ni capsule encore scellée pour `me`. `nextOpen` : l'heure où la
     /// prochaine capsule scellée s'ouvrira (le résultat peut alors changer).
     /// Les listes sont fouillées par tranches, sur plusieurs cœurs.
-    static func matching(_ lists: [[Message]], _ q: String, me: String, now: Double) -> (found: [Message], nextOpen: Double) {
-        func scan(_ slice: ArraySlice<Message>) -> ([Message], Double) {
-            var found: [Message] = []
+    static func matching<T: SearchLine>(_ lists: [[T]], _ q: String, me: String, now: Double) -> (found: [T], nextOpen: Double) {
+        func scan(_ slice: ArraySlice<T>) -> ([T], Double) {
+            var found: [T] = []
             var next = Double.infinity
             for m in slice where m.kind != "system" && !m.deleted {
-                if m.sealed(for: me, now: now) {
+                if (m.openAt ?? 0) > now && m.from != me {
                     next = min(next, m.openAt ?? .infinity)
                 } else if "\(m.text) \(m.name)".range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
                     found.append(m)
@@ -784,7 +795,7 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
             return (found, next)
         }
         // Des tranches de 1 000 messages au plus, dans l'ordre.
-        var slices: [ArraySlice<Message>] = []
+        var slices: [ArraySlice<T>] = []
         for list in lists {
             var start = 0
             while start < list.count {
@@ -793,7 +804,7 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
                 start = end
             }
         }
-        var parts = [([Message], Double)](repeating: ([], .infinity), count: slices.count)
+        var parts = [([T], Double)](repeating: ([], .infinity), count: slices.count)
         if slices.count > 2, ProcessInfo.processInfo.activeProcessorCount > 1 {
             parts.withUnsafeMutableBufferPointer { buffer in
                 let slots = buffer
@@ -838,6 +849,32 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = c.v(.id, ""); at = c.v(.at, 0); exp = c.v(.exp, nil)
+        }
+    }
+
+    /// Ce que la recherche lit d'un message : son texte et de quoi dire s'il
+    /// compte, sans le reste (ses photos surtout). La recherche dans toutes
+    /// les discussions garde ces lignes, pas les messages.
+    struct Line: Decodable, SearchLine, Equatable {
+        var chat: String
+        var id: String
+        var at: Double
+        var from: String
+        var kind: String
+        var deleted: Bool
+        var text: String
+        var name: String
+        var openAt: Double?
+
+        init(_ m: Message) {
+            chat = m.chat; id = m.id; at = m.at; from = m.from; kind = m.kind
+            deleted = m.deleted; text = m.text; name = m.name; openAt = m.openAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            chat = c.v(.chat, ""); id = c.v(.id, ""); at = c.v(.at, 0); from = c.v(.from, ""); kind = c.v(.kind, "text")
+            deleted = c.v(.deleted, false); text = c.v(.text, ""); name = c.v(.name, ""); openAt = c.v(.openAt, nil)
         }
     }
 
