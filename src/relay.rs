@@ -335,18 +335,56 @@ type Sender<'a> = Option<(&'a str, &'a str)>;
 
 /// Un message livré : avec son expéditeur (et son appareil, `fd`), ou scellé
 /// (`"sealed":true`, l'expéditeur est dans le corps, que seul le
-/// destinataire ouvre).
-fn envelope(from: Sender, mut msg: Value) -> String {
+/// destinataire ouvre). Écrit sans son numéro ni l'accolade finale, et avec
+/// la place de les ajouter (`numbered`) : le corps (jusqu'à 8 Mio) est ainsi
+/// écrit une fois, hors du verrou du relais, et jamais recopié pour grandir.
+fn envelope(
+    from: Sender,
+    id: &str,
+    body: &str,
+    ts: u64,
+    live: bool,
+    boite: Option<&str>,
+) -> String {
+    fn put(out: &mut Vec<u8>, text: &str) {
+        serde_json::to_writer(&mut *out, text).expect("une chaîne s'écrit toujours");
+    }
+    let mut out = Vec::with_capacity(body.len() + id.len() + 192);
+    out.extend_from_slice(b"{\"t\":\"msg\",\"id\":");
+    put(&mut out, id);
+    out.extend_from_slice(b",\"body\":");
+    put(&mut out, body);
+    out.extend_from_slice(format!(",\"ts\":{ts}").as_bytes());
+    if live {
+        out.extend_from_slice(b",\"live\":true");
+    }
+    if let Some(addr) = boite {
+        out.extend_from_slice(b",\"boite\":");
+        put(&mut out, addr);
+    }
     match from {
         Some((from, fd)) => {
-            msg["from"] = json!(from);
+            out.extend_from_slice(b",\"from\":");
+            put(&mut out, from);
             if !fd.is_empty() {
-                msg["fd"] = json!(fd);
+                out.extend_from_slice(b",\"fd\":");
+                put(&mut out, fd);
             }
         }
-        None => msg["sealed"] = json!(true),
+        None => out.extend_from_slice(b",\"sealed\":true"),
     }
-    msg.to_string()
+    String::from_utf8(out).expect("du JSON écrit par serde_json")
+}
+
+/// Termine un message d'`envelope` : avec son numéro dans la boîte, ou sans
+/// (un message en direct). Rien n'est recopié : la place est déjà là.
+fn numbered(mut json: String, n: Option<u64>) -> String {
+    if let Some(n) = n {
+        json.push_str(",\"n\":");
+        json.push_str(&n.to_string());
+    }
+    json.push('}');
+    json
 }
 
 /// La boîte d'un appareil (v4), ou celle du code.
@@ -1156,29 +1194,18 @@ impl Relay {
         ttl: Duration,
     ) -> Result<Stored3, &'static str> {
         let ts = now_ms();
-        let mut st = self.lock();
-        let keys = st.boxes(dest);
-        let online = keys.iter().any(|k| !st.readers(k).is_empty());
         let boite = match dest {
             Dest::Boite(addr) => Some(addr),
             _ => None,
         };
-        let message = |n: Option<u64>, live: bool| {
-            let mut m = json!({ "t": "msg", "id": id, "body": body, "ts": ts });
-            if let Some(n) = n {
-                m["n"] = json!(n);
-            }
-            if live {
-                m["live"] = json!(true);
-            }
-            if let Some(addr) = boite {
-                m["boite"] = json!(addr);
-            }
-            envelope(from, m)
-        };
+        // Écrit avant de prendre le verrou : seul le numéro s'y ajoute.
+        let base = envelope(from, id, body, ts, live, boite);
+        let mut st = self.lock();
+        let keys = st.boxes(dest);
+        let online = keys.iter().any(|k| !st.readers(k).is_empty());
         if live {
             // Pas de boîte : seulement les connexions ouvertes.
-            let json = message(None, true);
+            let json = numbered(base, None);
             for key in &keys {
                 for conn in st.readers(key) {
                     conn.send(json.clone());
@@ -1204,10 +1231,21 @@ impl Relay {
             }
         }
         let mut subs = Vec::new();
-        for key in &keys {
+        // Une copie de plus par boîte au-delà de la première (un ancien
+        // client à plusieurs appareils), avec la même place pour finir.
+        let mut base = Some(base);
+        for (i, key) in keys.iter().enumerate() {
             st.next_n += 1;
             let n = st.next_n;
-            let json = message(Some(n), false);
+            let start = if i + 1 == keys.len() {
+                base.take().unwrap_or_default()
+            } else {
+                let base = base.as_deref().unwrap_or_default();
+                let mut copy = String::with_capacity(base.len() + 32);
+                copy.push_str(base);
+                copy
+            };
+            let json = numbered(start, Some(n));
             let readers: Vec<&Conn> = st.readers(key);
             let read_now = !readers.is_empty();
             for conn in readers {
@@ -3009,6 +3047,52 @@ mod tests {
             st.total_bytes,
             st.mailboxes.values().map(|mb| mb.bytes).sum::<usize>()
         );
+    }
+
+    /// Un message écrit hors du verrou dit exactement ce que disait l'ancien,
+    /// écrit par `serde_json` (seul l'ordre des clés change).
+    #[test]
+    fn a_message_says_what_it_always_said() {
+        let body = "un \"corps\" avec\\ des \u{1} échappements é 🎉";
+        for (from, live, boite, n) in [
+            (Some(("AAAAAAAAAA", "")), false, None, Some(7)),
+            (
+                Some(("AAAAAAAAAA", "0123456789abcdef")),
+                false,
+                None,
+                Some(u64::MAX),
+            ),
+            (Some(("AAAAAAAAAA", "")), true, None, None),
+            (None, false, Some("abcdefghijklmnopqrstuv"), Some(1)),
+            (None, true, Some("abcdefghijklmnopqrstuv"), None),
+        ] {
+            let mut old =
+                json!({ "t": "msg", "id": "id\"1", "body": body, "ts": 1_700_000_000_000u64 });
+            if let Some(n) = n {
+                old["n"] = json!(n);
+            }
+            if live {
+                old["live"] = json!(true);
+            }
+            if let Some(addr) = boite {
+                old["boite"] = json!(addr);
+            }
+            match from {
+                Some((code, fd)) => {
+                    old["from"] = json!(code);
+                    if !fd.is_empty() {
+                        old["fd"] = json!(fd);
+                    }
+                }
+                None => old["sealed"] = json!(true),
+            }
+            let base = envelope(from, "id\"1", body, 1_700_000_000_000, live, boite);
+            let capacity = base.capacity();
+            let new = numbered(base, n);
+            // La place pour finir était déjà là : rien n'a été recopié.
+            assert_eq!(new.capacity(), capacity);
+            assert_eq!(serde_json::from_str::<Value>(&new).unwrap(), old);
+        }
     }
 
     /// Au plus `MAX_PER_IP` connexions depuis une même adresse.
