@@ -735,6 +735,56 @@ final class ClearChatTests: XCTestCase {
         XCTAssertTrue(Store(directory: e.store.dir).messagesOf("AAAAAAAAAA").filter { $0.from == "AAAAAAAAAA" }.allSatisfy(\.readByMe))
     }
 
+    /// Vider ou supprimer une longue discussion pas chargée : les messages
+    /// récents sont enterrés (ils ne reviendront pas), les anciens non, les
+    /// importants restent si on le demande, et rien n'est chargé pour ça.
+    func testClearingALongChatWithoutLoadingIt() async throws {
+        let e = phone()
+        let codes = ["K7Q2MX9PRT", "WGSEAJNSZJ", "AAAAAAAAAA"]
+        let now = nowMs()
+        e.store.transaction {
+            for code in codes {
+                var chat = e.ensureDirectChat(code)
+                for i in 0..<700 {
+                    // Les cent premiers ont plus de 31 jours.
+                    let at = i < 100 ? now - Engine.tombWindow - Double(1000 - i) * 1000 : now - Double(1000 - i) * 1000
+                    var m = Message(chat: code, id: "m\(i)", from: code, at: at, content: Content(text: "Message \(i)"))
+                    m.starred = i == 50 || i == 600
+                    if i == 650 { m.starred = true; m.deleted = true }
+                    e.store.writeMessage(m)
+                    if i == 699 { chat.last = e.lastOf(m); chat.lastAt = m.at }
+                }
+                chat.unread = 4
+                e.saveChat(chat)
+            }
+        }
+        let cold = Engine(store: Store(directory: e.store.dir), server: URL(string: "http://localhost:1")!)
+        // Tout vider.
+        cold.clearChat(codes[0])
+        XCTAssertTrue(cold.messages(codes[0]).isEmpty)
+        XCTAssertTrue(cold.buried(codes[0], "m699"))
+        XCTAssertTrue(cold.buried(codes[0], "m100"))
+        XCTAssertFalse(cold.buried(codes[0], "m99"), "trop vieux pour revenir : pas enterré")
+        XCTAssertNil(cold.chat(codes[0])?.last)
+        XCTAssertEqual(cold.chat(codes[0])?.unread, 0)
+        // Vider sauf les importants (une étoile sur un message supprimé ne le garde pas).
+        cold.clearChat(codes[1], keepStarred: true)
+        XCTAssertNil(cold.store.messages[codes[1]], "pas chargée pour être vidée")
+        XCTAssertEqual(cold.messages(codes[1]).map(\.id), ["m50", "m600"])
+        XCTAssertFalse(cold.buried(codes[1], "m600"))
+        XCTAssertTrue(cold.buried(codes[1], "m650"))
+        XCTAssertTrue(cold.buried(codes[1], "m699"))
+        XCTAssertFalse(cold.buried(codes[1], "m99"))
+        XCTAssertEqual(cold.chat(codes[1])?.last?.text, "Message 600")
+        XCTAssertEqual(cold.starredCount(in: codes[1]), 2)
+        // Supprimer.
+        cold.deleteChat(codes[2])
+        XCTAssertNil(cold.chat(codes[2]))
+        XCTAssertTrue(cold.buried(codes[2], "m300"))
+        XCTAssertTrue(Store(directory: e.store.dir).messagesOf(codes[2]).isEmpty)
+        XCTAssertEqual(Store(directory: e.store.dir).messagesOf(codes[1]).count, 2)
+    }
+
     // ----- Le journal d'appels -----
 
     /// Le journal d'appels n'est pas redécodé à chaque affichage, et suit

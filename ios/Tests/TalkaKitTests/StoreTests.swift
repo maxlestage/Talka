@@ -912,6 +912,61 @@ final class StoreTests: XCTestCase {
         }
     }
 
+    /// Les dates des messages se lisent dans l'index, sans ouvrir de ligne,
+    /// et une discussion se vide d'un coup en gardant certains messages.
+    func testDatesAndBulkDeleteWithoutLoading() {
+        for key in [nil, SymmetricKey(size: .bits256)] {
+            let dir = tempDir()
+            do {
+                let s = Store(directory: dir, key: key)
+                s.transaction {
+                    for i in 0..<900 { s.writeMessage(message("AMI|x", String(format: "m%03d", i), at: Double(i), "texte \(i)")) }
+                    s.writeMessage(message("AUTRE", "x", at: 1, "ailleurs"))
+                }
+                // Une ligne illisible a quand même sa date.
+                s.run("UPDATE rows SET json = ? WHERE store = 'messages' AND key = ?", ["{abîmé", "AMI|x|m010"])
+            }
+            let s = Store(directory: dir, key: key)
+            XCTAssertEqual(s.datesOf("AMI|x").count, 900)
+            XCTAssertEqual(s.datesOf("AMI|x").prefix(2).map(\.0), ["m000", "m001"])
+            XCTAssertEqual(s.datesOf("AMI|x", after: 896).map(\.0), ["m897", "m898", "m899"])
+            XCTAssertEqual(s.datesOf("AMI|x", after: 896).map(\.1), [897, 898, 899])
+            XCTAssertTrue(s.datesOf("AMI|x", after: 5_000).isEmpty)
+            XCTAssertTrue(s.datesOf("INCONNUE").isEmpty)
+            XCTAssertNil(s.messages["AMI|x"])
+            // Chargée : les mêmes (sauf la ligne illisible, qui n'est pas en mémoire).
+            let loaded = Store(directory: dir, key: key)
+            XCTAssertEqual(loaded.messagesOf("AMI|x").count, 899)
+            XCTAssertEqual(loaded.datesOf("AMI|x", after: 896).map(\.0), ["m897", "m898", "m899"])
+            XCTAssertEqual(loaded.datesOf("AMI|x").count, 899)
+
+            // Tout part sauf trois messages ; l'autre discussion n'est pas touchée.
+            _ = s.recentMessages("AMI|x", limit: 50)
+            _ = s.starredIds("AMI|x")
+            _ = s.lines(of: "AMI|x")
+            s.deleteMessages(of: "AMI|x", keeping: ["m005", "m500", "m899", "pas là"])
+            XCTAssertEqual(s.messagesOf("AMI|x").map(\.id), ["m005", "m500", "m899"])
+            XCTAssertEqual(s.lines(of: "AMI|x").count, 3)
+            XCTAssertEqual(s.datesOf("AMI|x").count, 3)
+            XCTAssertNil(s.message("AMI|x", "m006"))
+            XCTAssertEqual(s.messagesOf("AUTRE").count, 1)
+            XCTAssertEqual(Store(directory: dir, key: key).messagesOf("AMI|x").map(\.id), ["m005", "m500", "m899"])
+            // Rien à garder : tout part.
+            s.deleteMessages(of: "AMI|x", keeping: [])
+            XCTAssertTrue(s.messagesOf("AMI|x").isEmpty)
+            XCTAssertTrue(Store(directory: dir, key: key).messagesOf("AMI|x").isEmpty)
+            // Beaucoup à garder (plus que n'en prend une requête).
+            s.transaction {
+                for i in 0..<700 { s.writeMessage(message("GROS", String(format: "m%03d", i), at: Double(i), "texte \(i)")) }
+            }
+            let cold = Store(directory: dir, key: key)
+            let keep = Set((0..<600).map { String(format: "m%03d", $0) })
+            cold.deleteMessages(of: "GROS", keeping: keep)
+            XCTAssertEqual(Set(cold.messagesOf("GROS").map(\.id)), keep)
+            XCTAssertEqual(Store(directory: dir, key: key).messagesOf("GROS").count, 600)
+        }
+    }
+
     /// La sauvegarde garde chaque ligne, dans l'ordre, et se restaure.
     func testDumpKeepsEveryRow() {
         let s = Store(directory: tempDir(), key: SymmetricKey(size: .bits256))
