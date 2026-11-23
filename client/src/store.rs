@@ -769,6 +769,16 @@ pub async fn messages_of(chat: &str, limit: usize) -> Vec<crate::model::Message>
         .collect()
 }
 
+/// Les messages d'une discussion écrits avant `at`, dans n'importe quel ordre.
+pub async fn messages_before(chat: &str, at: f64) -> Vec<crate::model::Message> {
+    let Some(db) = rows() else { return Vec::new() };
+    db.messages_before(chat, at)
+        .await
+        .iter()
+        .filter_map(|j| serde_json::from_str(j).ok())
+        .collect()
+}
+
 pub async fn delete_messages_of(chat: &str) {
     if let Some(db) = rows() {
         db.delete_messages_of(chat).await;

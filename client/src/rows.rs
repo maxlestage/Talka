@@ -128,6 +128,20 @@ impl Rows {
         found.into_iter().map(|r| r.json).collect()
     }
 
+    /// Les messages d'une discussion écrits avant `at` (la colonne `at` : leur
+    /// heure), dans n'importe quel ordre : le ménage des vieux messages ne
+    /// décode qu'eux, pas toute la discussion.
+    pub async fn messages_before(&self, chat: &str, at: f64) -> Vec<String> {
+        Row::query()
+            .filter(Row::CHAT.eq(chat) & Row::STORE.eq("messages") & Row::AT.lt(at))
+            .all(&self.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.json)
+            .collect()
+    }
+
     pub async fn delete_messages_of(&self, chat: &str) {
         let _ = Row::delete_many()
             .filter(Row::CHAT.eq(chat) & Row::STORE.eq("messages"))
@@ -225,6 +239,11 @@ mod tests {
             db.put("outbox", "o1", "o1".into(), "g:x", 40.0).await;
             assert_eq!(db.messages_of("g:x", 10).await, ["m2", "m3", "m1"]);
             assert_eq!(db.messages_of("g:x", 2).await, ["m3", "m1"]);
+            let mut before = db.messages_before("g:x", 30.0).await;
+            before.sort();
+            assert_eq!(before, ["m2", "m3"]);
+            assert!(db.messages_before("g:x", 10.0).await.is_empty());
+            assert_eq!(db.messages_before("AUTRE", 100.0).await, ["m9"]);
             db.delete_messages_of("g:x").await;
             assert!(db.messages_of("g:x", 10).await.is_empty());
             assert_eq!(db.get("outbox", "o1").await.as_deref(), Some("o1"));

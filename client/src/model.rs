@@ -517,7 +517,7 @@ impl Message {
     /// partir de son ouverture (sinon elle partirait avant de s'ouvrir).
     pub fn too_old(&self, keep_days: u32, now: f64) -> bool {
         let since = self.at.max(self.open_at);
-        keep_days > 0 && !self.is_starred() && since < now - f64::from(keep_days) * DAY_MS
+        keep_days > 0 && !self.is_starred() && since < too_old_before(keep_days, now)
     }
 
     /// Une capsule temporelle (scellée ou déjà ouverte).
@@ -1236,6 +1236,13 @@ pub fn fold(text: &str) -> String {
         .collect()
 }
 
+/// Un message écrit avant cette heure peut être trop vieux pour être gardé
+/// (`Message::too_old`) ; un message écrit après ne l'est jamais : le ménage
+/// ne lit que les premiers.
+pub fn too_old_before(keep_days: u32, now: f64) -> f64 {
+    now - f64::from(keep_days) * DAY_MS
+}
+
 /// La prochaine échéance connue des messages éphémères de chaque
 /// discussion : le ménage de chaque minute ne relit une discussion que
 /// quand l'un d'eux arrive à terme, au lieu de décoder tous ses messages à
@@ -1275,6 +1282,34 @@ impl Expiries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le ménage des vieux messages ne lit que ceux écrits avant la limite :
+    /// aucun message écrit après ne peut être trop vieux, capsule comprise.
+    #[test]
+    fn only_messages_written_before_the_limit_can_be_too_old() {
+        let now = 1_000.0 * DAY_MS;
+        let limit = too_old_before(90, now);
+        for at in [limit - DAY_MS, limit - 1.0, limit, limit + 1.0, now] {
+            for open_at in [0.0, at + DAY_MS] {
+                for starred in [false, true] {
+                    let m = Message {
+                        at,
+                        open_at,
+                        starred,
+                        ..Default::default()
+                    };
+                    if m.too_old(90, now) {
+                        assert!(m.at < limit, "{at} {open_at}");
+                    }
+                }
+            }
+        }
+        let old = Message {
+            at: limit - 1.0,
+            ..Default::default()
+        };
+        assert!(old.too_old(90, now));
+    }
 
     /// Le ménage ne relit une discussion qu'à l'échéance de l'un de ses
     /// messages, et n'en manque aucune.

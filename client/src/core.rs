@@ -457,10 +457,14 @@ async fn sweep() {
     let due = LAST_PRUNE.with(|l| t - l.get() >= 3_600_000.0);
     if keep > 0 && due {
         LAST_PRUNE.with(|l| l.set(t));
+        // Seuls les messages écrits avant la limite peuvent être trop vieux
+        // (`Message::too_old`) : eux seuls sont lus (5 ms au lieu de 60 pour
+        // 30 000 messages, hors navigateur).
+        let limit = crate::model::too_old_before(keep, t);
         for chat in chats() {
             let mut changed = false;
             let mut gone = Vec::new();
-            for m in store::messages_of(&chat.id, usize::MAX).await {
+            for m in store::messages_before(&chat.id, limit).await {
                 if m.too_old(keep, t) {
                     store::remove("messages", &m.key()).await;
                     gone.push((m.id.clone(), m.at));
