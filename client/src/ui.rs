@@ -673,6 +673,7 @@ fn switch_tab(key: &str) {
         u.tab = key.to_owned();
         u.query.clear();
     });
+    core::forget_search();
     if let Some(tabs) = with(|u| u.tabs.clone()) {
         for b in query_all_in(&tabs, "button") {
             toggle_class(
@@ -777,6 +778,10 @@ fn search_box(placeholder: &str) -> El {
             u.query = value(&i);
             u.found = None;
         });
+        // La recherche refermée rend la mémoire de son texte gardé.
+        if with(|u| u.query.trim().chars().count() < 2) {
+            core::forget_search();
+        }
         spawn(render_side_body());
     });
     h("div.search-wrap").child(icon("search")).child(input)

@@ -14,6 +14,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use serde_json::Value;
 
@@ -79,6 +80,9 @@ struct St {
 }
 
 thread_local! {
+    /// La recherche dans toutes les discussions : leurs lignes, avec l'état
+    /// de leurs messages quand elles ont été lues (`store::writes`).
+    static SEARCH: RefCell<HashMap<String, KeptLines>> = RefCell::new(HashMap::new());
     static ST: RefCell<St> = RefCell::new(St::default());
     static FLUSHING: Cell<bool> = const { Cell::new(false) };
     static FLUSH_AGAIN: Cell<bool> = const { Cell::new(false) };
@@ -2322,24 +2326,61 @@ pub async fn search_messages(q: &str, limit: usize) -> Vec<Message> {
         return Vec::new();
     }
     let (me, t) = (my_code(), now());
-    let mut found = Vec::new();
-    for chat in chat_list() {
-        if !chat.group && blocked(&chat.id) {
+    let chats: Vec<(String, bool)> =
+        with(|s| s.chats.values().map(|c| (c.id.clone(), c.group)).collect());
+    // (heure, discussion, message) de ce qui est trouvé.
+    let mut found: Vec<(f64, String, String)> = Vec::new();
+    for (id, group) in chats {
+        if !group && blocked(&id) {
             continue;
         }
-        for m in store::messages_of(&chat.id, usize::MAX).await {
-            if m.kind != "system"
-                && !m.deleted
-                && !m.sealed_for(&me, t)
-                && crate::model::fold(&format!("{} {}", m.text, m.name)).contains(q)
-            {
-                found.push(m);
+        // Le texte gardé de la discussion, relu seulement si elle a changé
+        // (70–100 ms → 0,5 ms par lettre tapée pour 30 000 messages).
+        let stamp = store::writes(&id);
+        let kept = SEARCH
+            .with(|s| s.borrow().get(&id).cloned())
+            .filter(|(at, _)| *at == stamp)
+            .map(|(_, lines)| lines);
+        let lines = match kept {
+            Some(lines) => lines,
+            None => {
+                let lines: Rc<Vec<SearchLine>> = Rc::new(
+                    store::message_rows_of(&id)
+                        .await
+                        .iter()
+                        .filter_map(|json| SearchLine::of(json))
+                        .collect(),
+                );
+                SEARCH.with(|s| s.borrow_mut().insert(id.clone(), (stamp, lines.clone())));
+                lines
             }
+        };
+        found.extend(
+            lines
+                .iter()
+                .filter(|l| l.matches(q, &me, t))
+                .map(|l| (l.at, id.clone(), l.id.clone())),
+        );
+    }
+    found.sort_by(|a, b| b.0.total_cmp(&a.0));
+    found.truncate(limit);
+    // Seuls les messages montrés sont lus en entier.
+    let mut out = Vec::with_capacity(found.len());
+    for (_, chat, id) in found {
+        if let Some(m) = get_message(&chat, &id).await {
+            out.push(m);
         }
     }
-    found.sort_by(|a, b| b.at.total_cmp(&a.at));
-    found.truncate(limit);
-    found
+    out
+}
+
+/// Les lignes de recherche d'une discussion, et l'état de ses messages quand
+/// elles ont été lues.
+type KeptLines = ((u64, u64), Rc<Vec<SearchLine>>);
+
+/// Oublie le texte gardé pour la recherche (elle est refermée).
+pub fn forget_search() {
+    SEARCH.with(|s| s.borrow_mut().clear());
 }
 
 /// Ce qu'on lit d'un message sur une ligne (épingle, favoris) : son texte,

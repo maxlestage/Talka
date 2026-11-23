@@ -761,6 +761,57 @@ impl Marks {
     }
 }
 
+/// Ce que la recherche dans toutes les discussions garde d'un message : son
+/// texte replié (`fold`), et de quoi savoir si c'est une capsule encore
+/// scellée au moment de chercher. Gardé tant que la discussion ne change
+/// pas : chercher ne décode plus tous les messages de l'appareil à chaque
+/// lettre tapée.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchLine {
+    pub id: String,
+    pub at: f64,
+    pub from: String,
+    pub open_at: f64,
+    pub folded: String,
+}
+
+/// Les champs d'un message que lit la recherche (pas sa photo).
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct SearchFields {
+    id: String,
+    from: String,
+    at: f64,
+    kind: String,
+    text: String,
+    name: String,
+    deleted: bool,
+    open_at: f64,
+}
+
+impl SearchLine {
+    /// La ligne d'un message (son JSON) ; `None` pour ce que la recherche ne
+    /// montre jamais (messages système, supprimés).
+    pub fn of(json: &str) -> Option<SearchLine> {
+        let m: SearchFields = serde_json::from_str(json).ok()?;
+        if m.kind == "system" || m.deleted {
+            return None;
+        }
+        Some(SearchLine {
+            folded: fold(&format!("{} {}", m.text, m.name)),
+            id: m.id,
+            at: m.at,
+            from: m.from,
+            open_at: m.open_at,
+        })
+    }
+
+    /// Trouvée par `q` (déjà replié), sauf capsule encore scellée pour `me`.
+    pub fn matches(&self, q: &str, me: &str, now: f64) -> bool {
+        !(self.open_at > now && self.from != me) && self.folded.contains(q)
+    }
+}
+
 /// Ce que la boîte d'envoi lit d'un message pour savoir s'il attend encore
 /// un accusé de réception : pas sa photo.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -1494,6 +1545,52 @@ mod tests {
         assert_ne!(w.stamp("b"), b);
         // Une discussion jamais écrite depuis la restauration garde son état.
         assert_eq!(w.stamp("b"), w.stamp("b"));
+    }
+
+    /// Une ligne de recherche trouve exactement ce que trouvait le message
+    /// entier.
+    #[test]
+    fn a_search_line_finds_what_the_message_did() {
+        let me = "AAAAAAAAAA";
+        let now = 1_000.0;
+        let q = fold("Été");
+        let mut cases = Vec::new();
+        for kind in ["text", "system", "image", "file"] {
+            for deleted in [false, true] {
+                for (text, name) in [
+                    ("Un été chaud", ""),
+                    ("rien", "photo-ete.jpg"),
+                    ("rien", ""),
+                ] {
+                    for (from, open_at) in [
+                        (me, 0.0),
+                        (me, 2_000.0),
+                        ("BBBBBBBBBB", 2_000.0),
+                        ("BBBBBBBBBB", 10.0),
+                    ] {
+                        cases.push(Message {
+                            kind: kind.into(),
+                            deleted,
+                            text: text.into(),
+                            name: name.into(),
+                            from: from.into(),
+                            open_at,
+                            data: "data:image/jpeg;base64,AAAA".into(),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
+        for m in &cases {
+            let old = m.kind != "system"
+                && !m.deleted
+                && !m.sealed_for(me, now)
+                && fold(&format!("{} {}", m.text, m.name)).contains(&q);
+            let json = serde_json::to_string(m).unwrap();
+            let new = SearchLine::of(&json).is_some_and(|l| l.matches(&q, me, now));
+            assert_eq!(new, old, "{m:?}");
+        }
     }
 
     /// Une marque gardée tombe dès que son message est écrit ou retiré, ou

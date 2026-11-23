@@ -824,6 +824,13 @@ pub async fn messages_of(chat: &str, limit: usize) -> Vec<crate::model::Message>
         .collect()
 }
 
+/// Le JSON de tous les messages d'une discussion (pour la recherche, qui
+/// n'en décode que quelques champs).
+pub async fn message_rows_of(chat: &str) -> Vec<String> {
+    let Some(db) = rows() else { return Vec::new() };
+    db.messages_of(chat, usize::MAX).await
+}
+
 /// Les messages d'une discussion écrits avant `at`, dans n'importe quel ordre.
 pub async fn messages_before(chat: &str, at: f64) -> Vec<crate::model::Message> {
     let Some(db) = rows() else { return Vec::new() };
