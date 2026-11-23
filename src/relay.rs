@@ -1871,16 +1871,15 @@ impl Relay {
     /// Une connexion anonyme s'abonne à des boîtes tournantes : ce qui y
     /// attend part tout de suite.
     fn subscribe(&self, conn_id: u64, msg: &Value) {
-        let mut st = self.lock();
-        let already = st.boites_of.get(&conn_id).map_or(0, HashSet::len);
-        let room = MAX_BOITES.saturating_sub(already);
-        let list: Vec<String> = msg["list"]
+        // La liste lue et vérifiée avant de prendre le verrou commun : un
+        // navigateur en donne jusqu'à `MAX_BOITES_ASKED` à chaque connexion.
+        let mut list: Vec<String> = msg["list"]
             .as_array()
             .map(|a| {
                 a.iter()
                     .filter_map(Value::as_str)
                     .filter(|a| code::valid_boite(a))
-                    .take(MAX_BOITES_ASKED.min(room))
+                    .take(MAX_BOITES_ASKED)
                     .map(str::to_owned)
                     .collect()
             })
@@ -1902,29 +1901,32 @@ impl Relay {
             (crate::push::vapid().is_some() && crate::push::audience(endpoint).is_some())
                 .then(|| Arc::new(sub))
         });
+        let mut st = self.lock();
+        let already = st.boites_of.get(&conn_id).map_or(0, HashSet::len);
+        list.truncate(MAX_BOITES.saturating_sub(already));
         st.sweep();
         let mut pending: Vec<Text> = Vec::new();
         // Les boîtes que cet abonnement Web Push réveille désormais.
         let mut woken: Vec<&str> = Vec::new();
+        let now = Instant::now();
+        let mut key = String::with_capacity(32);
         for addr in &list {
             st.boite_subs
                 .entry(addr.clone())
                 .or_default()
                 .insert(conn_id);
-            st.boites_of
-                .entry(conn_id)
-                .or_default()
-                .insert(addr.clone());
             if let Some(sub) = &push
                 && (st.boite_push.len() < MAX_BOITE_PUSH || st.boite_push.contains_key(addr))
             {
-                st.boite_push
-                    .insert(addr.clone(), (sub.clone(), Instant::now()));
+                st.boite_push.insert(addr.clone(), (sub.clone(), now));
                 if woken.len() < KEPT_BOITES {
                     woken.push(addr);
                 }
             }
-            if let Some(mb) = st.mailboxes.get(&boite_key(addr)) {
+            key.clear();
+            key.push('@');
+            key.push_str(addr);
+            if let Some(mb) = st.mailboxes.get(&key) {
                 pending.extend(
                     mb.queue
                         .iter()
@@ -1942,6 +1944,9 @@ impl Relay {
                 BOITE_PUSH_TTL,
             );
         }
+        drop(woken);
+        // Ses boîtes, d'un coup (sans recopier les adresses une fois de plus).
+        st.boites_of.entry(conn_id).or_default().extend(list);
         if let Some(conn) = st.anon_conns.get(&conn_id) {
             for json in pending {
                 conn.send(json);
@@ -3392,6 +3397,43 @@ mod tests {
         assert_eq!(presence["t"], "presence");
         assert_eq!(presence["code"], "AAAAAAAAAA");
         assert_eq!(presence["online"], true);
+    }
+
+    /// Une connexion anonyme suit au plus `MAX_BOITES` boîtes : au-delà, les
+    /// premières adresses valides de la demande, jusqu'à la limite.
+    #[test]
+    fn a_subscription_keeps_within_its_room() {
+        let relay = Relay::default();
+        let (tx, _rx) = mpsc::channel(OUT_QUEUE);
+        let addr = |i: usize| format!("b{i:021}");
+        {
+            let mut st = relay.lock();
+            st.anon_conns.insert(
+                9,
+                Conn {
+                    id: 9,
+                    tx,
+                    hidden: true,
+                    dev: String::new(),
+                    overflow: Default::default(),
+                },
+            );
+            st.boites_of
+                .insert(9, (0..MAX_BOITES - 3).map(addr).collect());
+        }
+        let asked: Vec<String> = ["pas-une-boite".to_owned()]
+            .into_iter()
+            .chain((MAX_BOITES..MAX_BOITES + 10).map(addr))
+            .collect();
+        relay.subscribe(9, &json!({ "t": "boites", "list": asked }));
+        let st = relay.lock();
+        assert_eq!(st.boites_of[&9].len(), MAX_BOITES);
+        for i in MAX_BOITES..MAX_BOITES + 3 {
+            assert!(st.boites_of[&9].contains(&addr(i)));
+            assert!(st.boite_subs[&addr(i)].contains(&9));
+        }
+        assert!(!st.boite_subs.contains_key(&addr(MAX_BOITES + 3)));
+        assert!(!st.boite_subs.contains_key("pas-une-boite"));
     }
 
     /// Au plus `MAX_PER_IP` connexions depuis une même adresse.
