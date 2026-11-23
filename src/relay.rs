@@ -980,7 +980,9 @@ impl State {
     }
 
     fn notify_watchers(&mut self, code: &str) {
-        let msg = self.presence(code);
+        // Le même texte pour tous ceux qui suivent ce code : partagé, pas
+        // recopié pour chacun.
+        let msg: Text = Arc::new(self.presence(code));
         let Some(watchers) = self.watchers.get(code) else {
             return;
         };
@@ -3369,6 +3371,27 @@ mod tests {
         let msg = as_send(text).unwrap();
         let body = msg.text.iter().find(|(n, _)| *n == "body").unwrap();
         assert!(matches!(body.1, std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// Une présence qui change part vers tous ceux qui suivent le code, en
+    /// un seul texte partagé (pas une copie par connexion, verrou tenu).
+    #[test]
+    fn a_presence_is_shared_by_its_watchers() {
+        let relay = Relay::default();
+        let mut rxs = Vec::new();
+        for i in 0..3 {
+            let code = format!("W{i:09}");
+            let (id, rx, _) = relay.register(&code, String::new(), String::new(), false, "");
+            relay.watch(&code, id, &["AAAAAAAAAA".to_owned()]);
+            rxs.push(rx);
+        }
+        let _ = relay.register("AAAAAAAAAA", String::new(), String::new(), false, "");
+        let got: Vec<Text> = rxs.iter_mut().map(|rx| rx.try_recv().unwrap()).collect();
+        assert!(got.iter().all(|t| Arc::ptr_eq(t, &got[0])));
+        let presence: Value = serde_json::from_str(&got[0]).unwrap();
+        assert_eq!(presence["t"], "presence");
+        assert_eq!(presence["code"], "AAAAAAAAAA");
+        assert_eq!(presence["online"], true);
     }
 
     /// Au plus `MAX_PER_IP` connexions depuis une même adresse.
