@@ -169,6 +169,12 @@ pub fn contact(code: &str) -> Option<Contact> {
     with(|s| s.contacts.get(code).cloned())
 }
 
+/// Lit un contact sans le recopier (sa photo de profil, jusqu'à 60 Ko) :
+/// les listes et les bulles n'en veulent qu'un nom ou un drapeau.
+fn read_contact<T>(code: &str, f: impl FnOnce(&Contact) -> T) -> Option<T> {
+    with(|s| s.contacts.get(code).map(f))
+}
+
 pub fn contacts() -> Vec<Contact> {
     with(|s| s.contacts.values().cloned().collect())
 }
@@ -238,18 +244,24 @@ pub fn is_group(id: &str) -> bool {
 }
 
 pub fn blocked(code: &str) -> bool {
-    contact(code).is_some_and(|c| c.blocked)
+    read_contact(code, |c| c.blocked).unwrap_or(false)
 }
 
 pub fn display_name(code: &str) -> String {
     if code == my_code() {
         return "Vous".into();
     }
-    match contact(code) {
-        Some(c) if !c.name.is_empty() => c.name,
-        Some(c) if !c.profile_name.is_empty() => format!("~{}", c.profile_name),
-        _ => crypto::pretty(code),
-    }
+    read_contact(code, |c| {
+        if !c.name.is_empty() {
+            Some(c.name.clone())
+        } else if !c.profile_name.is_empty() {
+            Some(format!("~{}", c.profile_name))
+        } else {
+            None
+        }
+    })
+    .flatten()
+    .unwrap_or_else(|| crypto::pretty(code))
 }
 
 /// Le libellé d'une mention (« @Léa ») : le nom que chacun s'est choisi, le
@@ -258,18 +270,24 @@ pub fn mention_label(code: &str) -> String {
     if code == my_code() {
         return profile().name;
     }
-    match contact(code) {
-        Some(c) if !c.profile_name.is_empty() => c.profile_name,
-        Some(c) if !c.name.is_empty() => c.name,
-        _ => crypto::pretty(code),
-    }
+    read_contact(code, |c| {
+        if !c.profile_name.is_empty() {
+            Some(c.profile_name.clone())
+        } else if !c.name.is_empty() {
+            Some(c.name.clone())
+        } else {
+            None
+        }
+    })
+    .flatten()
+    .unwrap_or_else(|| crypto::pretty(code))
 }
 
 pub fn avatar_of(code: &str) -> String {
     if code == my_code() {
         return profile().avatar;
     }
-    contact(code).map(|c| c.avatar).unwrap_or_default()
+    read_contact(code, |c| c.avatar.clone()).unwrap_or_default()
 }
 
 pub fn chat_title(chat: &Chat) -> String {
