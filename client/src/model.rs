@@ -1278,6 +1278,16 @@ pub fn fold(text: &str) -> String {
         .collect()
 }
 
+/// Une copie de `chat` pour l'afficher : tout sauf son fond d'écran (une
+/// photo de la galerie, plusieurs centaines de Ko), que les listes
+/// n'utilisent pas et qui n'est pas recopié.
+pub fn chat_for_list(chat: &mut Chat) -> Chat {
+    let wallpaper = std::mem::take(&mut chat.wallpaper);
+    let copy = chat.clone();
+    chat.wallpaper = wallpaper;
+    copy
+}
+
 /// Un message écrit avant cette heure peut être trop vieux pour être gardé
 /// (`Message::too_old`) ; un message écrit après ne l'est jamais : le ménage
 /// ne lit que les premiers.
@@ -1352,6 +1362,28 @@ impl Expiries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La copie d'une discussion pour une liste : tout, sauf son fond
+    /// d'écran, qui reste à l'original.
+    #[test]
+    fn a_chat_for_a_list_is_the_chat_without_its_wallpaper() {
+        let mut chat = Chat {
+            id: "g:1".into(),
+            name: "Famille".into(),
+            avatar: "data:image/jpeg;base64,AAAA".into(),
+            wallpaper: "data:image/jpeg;base64,WWWW".into(),
+            draft: "à demain".into(),
+            unread: 3,
+            ..Default::default()
+        };
+        let before = serde_json::to_value(&chat).unwrap();
+        let copy = chat_for_list(&mut chat);
+        assert_eq!(serde_json::to_value(&chat).unwrap(), before);
+        assert!(copy.wallpaper.is_empty());
+        let mut expected = before;
+        expected["wallpaper"] = "".into();
+        assert_eq!(serde_json::to_value(&copy).unwrap(), expected);
+    }
 
     /// Le compte d'une discussion bouge à chaque écriture de l'un de ses
     /// messages, et seulement alors ; tous bougent après une restauration.

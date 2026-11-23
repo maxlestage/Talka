@@ -181,6 +181,30 @@ pub fn chats() -> Vec<Chat> {
     with(|s| s.chats.values().cloned().collect())
 }
 
+/// Les discussions, pour les afficher en liste : sans leur fond d'écran
+/// (`model::chat_for_list`). Recopier 200 discussions avec leurs fonds
+/// d'écran coûtait 3,9 ms à chaque message reçu.
+pub fn chat_list() -> Vec<Chat> {
+    with(|s| s.chats.values_mut().map(chat_for_list).collect())
+}
+
+/// Les non-lus de toutes les discussions (hors sourdine et archives), sans
+/// rien recopier.
+pub fn unread_total() -> u32 {
+    with(|s| {
+        s.chats
+            .values()
+            .filter(|c| !c.muted && !c.archived)
+            .map(|c| c.unread)
+            .sum()
+    })
+}
+
+/// Une discussion a-t-elle du non-lu ?
+pub fn any_unread() -> bool {
+    with(|s| s.chats.values().any(|c| c.unread > 0 || c.marked_unread))
+}
+
 pub fn presence(code: &str) -> Option<(bool, Option<f64>)> {
     with(|s| s.presence.get(code).copied())
 }

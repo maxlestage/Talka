@@ -513,11 +513,7 @@ fn tab_count(n: u32) -> String {
 }
 
 fn update_badge() {
-    let n: u32 = core::chats()
-        .iter()
-        .filter(|c| !c.muted && !c.archived)
-        .map(|c| c.unread)
-        .sum();
+    let n = core::unread_total();
     document().set_title(&if n > 0 {
         format!("({n}) Talka")
     } else {
@@ -587,10 +583,7 @@ fn render_side() {
                     item("group", "Nouveau groupe", || spawn(open_new_group())),
                     item("person", "Ajouter un contact", || open_add_contact("", "")),
                     item("star", "Messages importants", || spawn(open_starred())),
-                    if core::chats()
-                        .iter()
-                        .any(|c| c.unread > 0 || c.marked_unread)
-                    {
+                    if core::any_unread() {
                         item("check", "Tout marquer comme lu", || {
                             spawn(async {
                                 let n = core::mark_all_read().await;
@@ -834,7 +827,7 @@ fn render_chat_list() {
     };
     let (q, filter, archived) = with(|u| (fold(u.query.trim()), u.filter.clone(), u.archived));
     let q_code = q.replace('-', "");
-    let all: Vec<Chat> = core::chats()
+    let all: Vec<Chat> = core::chat_list()
         .into_iter()
         .filter(|c| !core::blocked(&c.id) || c.last.is_some())
         .collect();
@@ -2097,7 +2090,7 @@ async fn pick_contacts(title: &str, exclude: &[String], ok: &str) -> Option<Vec<
 pub async fn pick_chats(title: &str) -> Option<Vec<String>> {
     // Seulement là où l'on peut écrire (pas un groupe réservé aux admins).
     let me = core::my_code();
-    let mut chats: Vec<Chat> = core::chats()
+    let mut chats: Vec<Chat> = core::chat_list()
         .into_iter()
         .filter(|c| c.can_write(&me) && !core::blocked(&c.id))
         .collect();
@@ -2225,7 +2218,7 @@ async fn open_new_group() {
 /// la plus légère ; toucher en ouvre la fiche (où les voir et les enregistrer).
 async fn storage_screen() {
     let mut rows = Vec::new();
-    for c in core::chats() {
+    for c in core::chat_list() {
         let st = crate::model::Storage::of(&core::messages(&c.id, usize::MAX).await);
         if st.bytes > 0.0 {
             rows.push((c.id.clone(), core::chat_title(&c), st));
@@ -2418,7 +2411,7 @@ async fn contact_info(code: &str) {
     };
     let starred = core::starred_in(code).await.len();
     let me = core::me();
-    let all_chats = core::chats();
+    let all_chats = core::chat_list();
     let common: Vec<(String, String)> = crate::model::groups_in_common(&all_chats, &me.code, code)
         .into_iter()
         .map(|g| (g.id.clone(), core::chat_title(g)))
