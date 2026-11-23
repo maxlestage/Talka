@@ -218,6 +218,20 @@ async fn pages_and_api() {
     let sw = client.get("/talka-sw.js").await;
     assert_eq!(sw.status(), 200);
     assert!(sw.text().contains("showNotification"));
+    // Revérifié sans être retéléchargé tant qu'il n'a pas changé.
+    let etag = sw.header("etag").expect("ETag").to_owned();
+    let again = client
+        .get("/talka-sw.js")
+        .header("if-none-match", &etag)
+        .await;
+    assert_eq!(again.status(), 304);
+    assert!(again.bytes().is_empty());
+    let other = client
+        .get("/talka-sw.js")
+        .header("if-none-match", "\"autre\"")
+        .await;
+    assert_eq!(other.status(), 200);
+    assert_eq!(other.text(), sw.text());
     assert_eq!(client.get("/api/ice").await.status(), 200);
     assert_eq!(client.get("/api/qr/K7Q2MX9PRT").await.status(), 200);
     assert_eq!(client.get("/api/qr/pas-un-code").await.status(), 404);

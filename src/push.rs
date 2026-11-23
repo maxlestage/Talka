@@ -268,6 +268,17 @@ pub async fn wake(vapid: &'static Vapid, sub: Subscription, payload: Option<Stri
 /// du site, et enregistré pour la portée `talka-push/`, où il n'y a aucune
 /// page : il ne contrôle rien (le service worker hors ligne reste seul à la
 /// racine).
+/// L'empreinte du service worker (son `ETag`) : `"<16 hexadécimaux>"`.
+pub fn service_worker_etag() -> &'static str {
+    static ETAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ETAG.get_or_init(|| {
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(SERVICE_WORKER.as_bytes());
+        let hex: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
+        format!("\"{hex}\"")
+    })
+}
+
 pub const SERVICE_WORKER: &str = r#"// Talka : les notifications quand l'application est fermée.
 // Le relais n'apporte qu'un réveil, et parfois un aperçu que l'expéditeur a
 // chiffré pour la clé de notification de cet appareil : le relais ne peut pas

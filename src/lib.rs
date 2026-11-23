@@ -322,11 +322,23 @@ pub fn pages(app: &mut App, site: &Site) {
 pub fn files(app: &mut App) {
     app.get("/s/*path", assets::serve);
     app.get("/logo.svg", assets::fixed);
-    app.get("/talka-sw.js", |_| async {
-        Response::new()
-            .header("content-type", "text/javascript; charset=utf-8")
+    // Revérifié à chaque ouverture de l'application (`no-cache`) : avec son
+    // empreinte, le navigateur reçoit un 304 vide tant qu'il n'a pas changé,
+    // au lieu de ses 7 Ko.
+    app.get("/talka-sw.js", |req: Request| async move {
+        let etag = push::service_worker_etag();
+        let unchanged = req
+            .header("if-none-match")
+            .is_some_and(|tags| tags.split(',').any(|t| t.trim() == etag || t.trim() == "*"));
+        let res = Response::new()
             .header("cache-control", "no-cache")
-            .send(push::SERVICE_WORKER)
+            .header("etag", etag);
+        if unchanged {
+            res.status(304)
+        } else {
+            res.header("content-type", "text/javascript; charset=utf-8")
+                .send(push::SERVICE_WORKER)
+        }
     });
     app.get("/icons/*path", assets::fixed);
 }
