@@ -2196,7 +2196,9 @@ name = "vitesse"
 version = "0.2.0"
 source = "git+https://github.com/maxlestage/Vitesse#ab73db3ed20eefa1f03d0922fa1a871e6f48d0ed"
 dependencies = [
+ "brotli",
  "bytes",
+ "flate2",
  "form_urlencoded",
  "futures-core",
  "futures-util",

@@ -186,6 +186,10 @@ pub fn app() -> App {
         app.trust_proxy(1);
     }
     app.security(shield());
+    // Les pages (l'accueil : 23 Ko), le JSON et les QR codes, compressés
+    // selon `Accept-Encoding` ; ce qui l'est déjà (les fichiers du
+    // navigateur, compressés à la compilation) passe tel quel.
+    app.middleware(paquets::vitesse::middleware::compress());
     // Avec son double dans le magasin clé-valeur de Nuage DB, s'il est
     // branché (`TALKA_KV_URL`, voir `kv`).
     let relay = Relay::from_env();

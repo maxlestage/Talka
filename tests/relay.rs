@@ -211,6 +211,13 @@ async fn pages_and_api() {
     let client = talka::app().test().await;
     assert_eq!(client.get("/").await.status(), 200);
     assert!(client.get("/").await.text().contains("Talka"));
+    // Les pages partent compressées si le navigateur le veut.
+    let home = client
+        .get("/")
+        .header("accept-encoding", "gzip, deflate, br")
+        .await;
+    assert_eq!(home.header("content-encoding"), Some("br"));
+    assert!(home.bytes().len() * 2 < client.get("/").await.bytes().len());
     assert_eq!(client.get("/app").await.status(), 200);
     assert_eq!(client.get("/confidentialite").await.status(), 200);
     assert_eq!(client.get("/nulle-part").await.status(), 404);
