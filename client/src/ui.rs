@@ -2414,7 +2414,7 @@ async fn contact_info(code: &str) {
     } else {
         None
     };
-    let starred = core::starred_in(code).await.len();
+    let starred = core::starred_count(code).await;
     let me = core::me();
     let all_chats = core::chat_list();
     let common: Vec<(String, String)> = crate::model::groups_in_common(&all_chats, &me.code, code)
@@ -2631,7 +2631,7 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>, starred: usize) -> Ch
             let (id, md) = (id.clone(), md.clone());
             spawn(async move {
                 let grid = media_grid(&id).await;
-                let starred = core::starred_in(&id).await.len();
+                let starred = core::starred_count(&id).await;
                 md.scoped(|| replace(&md.body(), group_body(&id, &md, grid, starred)));
             })
         })
@@ -2926,7 +2926,7 @@ fn group_body(id: &str, md: &Modal, grid: Option<Element>, starred: usize) -> Ch
 
 async fn group_info(chat: Chat) {
     let grid = media_grid(&chat.id).await;
-    let starred = core::starred_in(&chat.id).await.len();
+    let starred = core::starred_count(&chat.id).await;
     let id = chat.id.clone();
     modal(
         "Infos du groupe",

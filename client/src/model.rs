@@ -812,6 +812,21 @@ impl SearchLine {
     }
 }
 
+/// Un message important d'une discussion : son heure et son identifiant,
+/// lus sans décoder le reste du message (sa photo).
+pub fn starred_of(json: &str) -> Option<(f64, String)> {
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    struct Star {
+        id: String,
+        at: f64,
+        starred: bool,
+        deleted: bool,
+    }
+    let m: Star = serde_json::from_str(json).ok()?;
+    (m.starred && !m.deleted).then_some((m.at, m.id))
+}
+
 /// Ce que la boîte d'envoi lit d'un message pour savoir s'il attend encore
 /// un accusé de réception : pas sa photo.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -1545,6 +1560,29 @@ mod tests {
         assert_ne!(w.stamp("b"), b);
         // Une discussion jamais écrite depuis la restauration garde son état.
         assert_eq!(w.stamp("b"), w.stamp("b"));
+    }
+
+    /// Un message est compté important exactement quand `is_starred` le dit.
+    #[test]
+    fn starred_of_agrees_with_is_starred() {
+        for starred in [false, true] {
+            for deleted in [false, true] {
+                let m = Message {
+                    id: "m1".into(),
+                    at: 7.0,
+                    starred,
+                    deleted,
+                    data: "data:image/jpeg;base64,AAAA".into(),
+                    ..Default::default()
+                };
+                let json = serde_json::to_string(&m).unwrap();
+                assert_eq!(
+                    starred_of(&json),
+                    m.is_starred().then(|| (7.0, "m1".to_owned()))
+                );
+            }
+        }
+        assert_eq!(starred_of("pas du JSON"), None);
     }
 
     /// Une ligne de recherche trouve exactement ce que trouvait le message

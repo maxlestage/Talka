@@ -83,6 +83,9 @@ thread_local! {
     /// La recherche dans toutes les discussions : leurs lignes, avec l'état
     /// de leurs messages quand elles ont été lues (`store::writes`).
     static SEARCH: RefCell<HashMap<String, KeptLines>> = RefCell::new(HashMap::new());
+    /// Les messages importants de chaque discussion, et l'état de ses
+    /// messages quand ils ont été lus.
+    static STARS: RefCell<HashMap<String, KeptStars>> = RefCell::new(HashMap::new());
     static ST: RefCell<St> = RefCell::new(St::default());
     static FLUSHING: Cell<bool> = const { Cell::new(false) };
     static FLUSH_AGAIN: Cell<bool> = const { Cell::new(false) };
@@ -2278,10 +2281,36 @@ pub async fn clear_chat(id: &str, keep_starred: bool) {
 
 /// La discussion a-t-elle des messages favoris ?
 pub async fn has_starred(id: &str) -> bool {
-    store::messages_of(id, usize::MAX)
-        .await
-        .iter()
-        .any(Message::is_starred)
+    !starred_ids(id).await.is_empty()
+}
+
+/// Les messages importants d'une discussion (heure, identifiant) : lus sans
+/// décoder les messages, et gardés tant qu'aucun d'eux n'a été écrit
+/// (`store::writes`). La fiche d'une discussion les comptait en décodant
+/// toute la discussion à chaque ouverture.
+async fn starred_ids(chat: &str) -> Rc<Vec<(f64, String)>> {
+    let stamp = store::writes(chat);
+    if let Some(ids) = STARS
+        .with(|s| s.borrow().get(chat).cloned())
+        .filter(|(at, _)| *at == stamp)
+        .map(|(_, ids)| ids)
+    {
+        return ids;
+    }
+    let ids: Rc<Vec<(f64, String)>> = Rc::new(
+        store::message_rows_of(chat)
+            .await
+            .iter()
+            .filter_map(|json| crate::model::starred_of(json))
+            .collect(),
+    );
+    STARS.with(|s| s.borrow_mut().insert(chat.to_owned(), (stamp, ids.clone())));
+    ids
+}
+
+/// Le nombre de messages importants d'une discussion.
+pub async fn starred_count(chat: &str) -> usize {
+    starred_ids(chat).await.len()
 }
 
 /// Efface tout sauf les messages favoris.
@@ -2377,6 +2406,9 @@ pub async fn search_messages(q: &str, limit: usize) -> Vec<Message> {
 /// Les lignes de recherche d'une discussion, et l'état de ses messages quand
 /// elles ont été lues.
 type KeptLines = ((u64, u64), Rc<Vec<SearchLine>>);
+
+/// Les messages importants d'une discussion, et quand ils ont été lus.
+type KeptStars = ((u64, u64), Rc<Vec<(f64, String)>>);
 
 /// Oublie le texte gardé pour la recherche (elle est refermée).
 pub fn forget_search() {
@@ -3154,12 +3186,15 @@ pub async fn pinned_message(chat_id: &str) -> Option<Message> {
 
 /// Les messages favoris d'une discussion, les plus récents d'abord.
 pub async fn starred_in(chat_id: &str) -> Vec<Message> {
-    let mut list: Vec<Message> = store::messages_of(chat_id, usize::MAX)
-        .await
-        .into_iter()
-        .filter(Message::is_starred)
-        .collect();
-    list.sort_by(|a, b| b.at.total_cmp(&a.at));
+    let mut ids: Vec<(f64, String)> = starred_ids(chat_id).await.to_vec();
+    ids.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // Seuls les importants sont lus en entier.
+    let mut list = Vec::with_capacity(ids.len());
+    for (_, id) in ids {
+        if let Some(m) = get_message(chat_id, &id).await.filter(Message::is_starred) {
+            list.push(m);
+        }
+    }
     list
 }
 
