@@ -2822,7 +2822,7 @@ pub async fn flush() {
 async fn still_unconfirmed(item: &OutHead) -> bool {
     // Ce qu'il faut du message, sans sa photo.
     let key = format!("{}|{}", item.chat, item.msg_id);
-    let mark = || store::read::<MessageMark>("messages", &key);
+    let mark = || store::message_mark(&key);
     // Pour nos autres appareils : chacun dit l'avoir reçu (`sync`/`got`).
     if item.to == my_code() {
         let pending = siblings().iter().any(|d| !item.got.contains(d));

@@ -75,6 +75,20 @@ thread_local! {
     static WRITES: RefCell<crate::model::Writes> = RefCell::new(Default::default());
     /// Les têtes de la boîte d'envoi, tenues à jour par ses écritures.
     static OUT_HEADS: RefCell<crate::model::OutHeads> = RefCell::new(Default::default());
+    /// Les marques des messages qu'attend la boîte d'envoi.
+    static MARKS: RefCell<crate::model::Marks> = RefCell::new(Default::default());
+}
+
+/// Ce que la boîte d'envoi lit d'un message (`chat|id`), gardé jusqu'à ce
+/// qu'il soit écrit ou retiré : 6,6–7 ms → presque rien par passage avec
+/// 40 photos qui attendent leur accusé (hors navigateur).
+pub async fn message_mark(key: &str) -> Option<crate::model::MessageMark> {
+    if let Some(mark) = MARKS.with(|m| m.borrow().get(key)) {
+        return mark;
+    }
+    let mark = read::<crate::model::MessageMark>("messages", key).await;
+    MARKS.with(|m| m.borrow_mut().put(key, mark.clone()));
+    mark
 }
 
 /// Les têtes de la boîte d'envoi (sans leur contenu) : gardées en mémoire,
@@ -760,6 +774,7 @@ pub async fn write_message(m: &crate::model::Message) {
     };
     EXPIRIES.with(|e| e.borrow_mut().noted(&m.chat, m.exp));
     WRITES.with(|w| w.borrow_mut().note(&m.chat));
+    MARKS.with(|k| k.borrow_mut().changed(&m.key()));
     db.put("messages", &m.key(), json, &m.chat, m.at).await;
 }
 
@@ -770,6 +785,7 @@ pub async fn remove(store: &str, key: &str) {
     if store == "messages" {
         let chat = key.split_once('|').map_or(key, |(chat, _)| chat);
         WRITES.with(|w| w.borrow_mut().note(chat));
+        MARKS.with(|k| k.borrow_mut().changed(key));
     }
     if let Some(db) = rows() {
         db.remove(store, key).await;
@@ -788,6 +804,9 @@ pub async fn all<T: DeserializeOwned>(store: &str) -> Vec<T> {
 pub async fn clear(store: &str) {
     if store == "outbox" {
         OUT_HEADS.with(|h| h.borrow_mut().forget());
+    }
+    if store == "messages" {
+        MARKS.with(|k| k.borrow_mut().forget());
     }
     if let Some(db) = rows() {
         db.clear(store).await;
@@ -817,6 +836,7 @@ pub async fn messages_before(chat: &str, at: f64) -> Vec<crate::model::Message> 
 
 pub async fn delete_messages_of(chat: &str) {
     WRITES.with(|w| w.borrow_mut().note(chat));
+    MARKS.with(|k| k.borrow_mut().changed_chat(chat));
     if let Some(db) = rows() {
         db.delete_messages_of(chat).await;
     }
@@ -832,6 +852,7 @@ pub async fn dump() -> Value {
 
 pub async fn restore(data: &Value) {
     EXPIRIES.with(|e| e.borrow_mut().forget());
+    MARKS.with(|k| k.borrow_mut().forget());
     OUT_HEADS.with(|h| h.borrow_mut().forget());
     WRITES.with(|w| w.borrow_mut().all());
     if let Some(db) = rows() {
@@ -842,6 +863,7 @@ pub async fn restore(data: &Value) {
 
 pub async fn wipe() {
     EXPIRIES.with(|e| e.borrow_mut().forget());
+    MARKS.with(|k| k.borrow_mut().forget());
     OUT_HEADS.with(|h| h.borrow_mut().forget());
     WRITES.with(|w| w.borrow_mut().all());
     if let Some(db) = rows() {

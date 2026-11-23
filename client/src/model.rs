@@ -720,6 +720,47 @@ impl OutHeads {
     }
 }
 
+/// Les marques des messages qu'attend la boîte d'envoi (`MessageMark`),
+/// gardées jusqu'à ce que le message soit écrit ou retiré : la base
+/// recopiait à chaque passage chaque message entier, photo comprise.
+#[derive(Default)]
+pub struct Marks {
+    marks: HashMap<String, Option<MessageMark>>,
+}
+
+impl Marks {
+    /// Au-delà, tout est oublié (la boîte d'envoi n'en attend pas autant).
+    const MAX: usize = 4096;
+
+    /// La marque gardée de `key` (`chat|id`) : `Some(None)` si le message
+    /// n'existe pas, `None` si elle n'est pas connue.
+    pub fn get(&self, key: &str) -> Option<Option<MessageMark>> {
+        self.marks.get(key).cloned()
+    }
+
+    pub fn put(&mut self, key: &str, mark: Option<MessageMark>) {
+        if self.marks.len() >= Self::MAX {
+            self.marks.clear();
+        }
+        self.marks.insert(key.to_owned(), mark);
+    }
+
+    /// Le message `key` a été écrit ou retiré.
+    pub fn changed(&mut self, key: &str) {
+        self.marks.remove(key);
+    }
+
+    /// Tous les messages de `chat` ont pu changer.
+    pub fn changed_chat(&mut self, chat: &str) {
+        self.marks
+            .retain(|key, _| key.split_once('|').is_none_or(|(c, _)| c != chat));
+    }
+
+    pub fn forget(&mut self) {
+        self.marks.clear();
+    }
+}
+
 /// Ce que la boîte d'envoi lit d'un message pour savoir s'il attend encore
 /// un accusé de réception : pas sa photo.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -1453,6 +1494,34 @@ mod tests {
         assert_ne!(w.stamp("b"), b);
         // Une discussion jamais écrite depuis la restauration garde son état.
         assert_eq!(w.stamp("b"), w.stamp("b"));
+    }
+
+    /// Une marque gardée tombe dès que son message est écrit ou retiré, ou
+    /// que sa discussion est vidée.
+    #[test]
+    fn marks_drop_when_their_message_changes() {
+        let mark = |at: f64| MessageMark {
+            at,
+            ..Default::default()
+        };
+        let mut m = Marks::default();
+        assert_eq!(m.get("a|1"), None);
+        m.put("a|1", Some(mark(1.0)));
+        m.put("a|2", None);
+        m.put("b|1", Some(mark(3.0)));
+        assert_eq!(m.get("a|1"), Some(Some(mark(1.0))));
+        assert_eq!(m.get("a|2"), Some(None));
+        m.changed("a|1");
+        assert_eq!(m.get("a|1"), None);
+        m.changed_chat("a");
+        assert_eq!(m.get("a|2"), None);
+        assert_eq!(m.get("b|1"), Some(Some(mark(3.0))));
+        // « ab » n'est pas « a ».
+        m.put("ab|1", None);
+        m.changed_chat("a");
+        assert_eq!(m.get("ab|1"), Some(None));
+        m.forget();
+        assert_eq!(m.get("b|1"), None);
     }
 
     /// Les têtes gardées disent toujours ce que dirait une relecture de la
