@@ -69,6 +69,18 @@ thread_local! {
     static HOLD: Cell<u32> = const { Cell::new(0) };
     /// La clé de l'appareil, déchiffrée pour la session.
     static DEVICE_KEY: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    /// La prochaine échéance des messages éphémères de chaque discussion.
+    static EXPIRIES: RefCell<crate::model::Expiries> = RefCell::new(Default::default());
+}
+
+/// Faut-il relire `chat` pour ses messages éphémères échus à l'heure `t` ?
+pub fn expiry_due(chat: &str, t: f64) -> bool {
+    EXPIRIES.with(|e| e.borrow().due(chat, t))
+}
+
+/// `chat` vient d'être relu : l'échéance la plus proche de ce qui reste.
+pub fn expiry_scanned(chat: &str, next: Option<f64>) {
+    EXPIRIES.with(|e| e.borrow_mut().scanned(chat, next));
 }
 
 /// Les écritures pas encore parties vers IndexedDB, dans l'ordre.
@@ -721,6 +733,7 @@ pub async fn write_message(m: &crate::model::Message) {
     let (Some(db), Ok(json)) = (rows(), serde_json::to_string(m)) else {
         return;
     };
+    EXPIRIES.with(|e| e.borrow_mut().noted(&m.chat, m.exp));
     db.put("messages", &m.key(), json, &m.chat, m.at).await;
 }
 
@@ -771,6 +784,7 @@ pub async fn dump() -> Value {
 }
 
 pub async fn restore(data: &Value) {
+    EXPIRIES.with(|e| e.borrow_mut().forget());
     if let Some(db) = rows() {
         db.restore(data).await;
         flush_now().await;
@@ -778,6 +792,7 @@ pub async fn restore(data: &Value) {
 }
 
 pub async fn wipe() {
+    EXPIRIES.with(|e| e.borrow_mut().forget());
     if let Some(db) = rows() {
         db.wipe().await;
         flush_now().await;

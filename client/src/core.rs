@@ -427,18 +427,25 @@ async fn sweep() {
         }
     }
     for chat in chats() {
-        if chat.timer == 0 && !chat.has_exp {
+        // Relue seulement quand l'un de ses messages arrive à terme.
+        if (chat.timer == 0 && !chat.has_exp) || !store::expiry_due(&chat.id, t) {
             continue;
         }
         let mut changed = false;
         let mut gone = Vec::new();
+        let mut next: Option<f64> = None;
         for m in store::messages_of(&chat.id, usize::MAX).await {
-            if m.exp.is_some_and(|e| e < t) {
-                store::remove("messages", &m.key()).await;
-                gone.push((m.id.clone(), m.at));
-                changed = true;
+            match m.exp {
+                Some(e) if e < t => {
+                    store::remove("messages", &m.key()).await;
+                    gone.push((m.id.clone(), m.at));
+                    changed = true;
+                }
+                Some(e) => next = Some(next.map_or(e, |n| n.min(e))),
+                None => {}
             }
         }
+        store::expiry_scanned(&chat.id, next);
         bury(&chat.id, gone).await;
         if changed {
             refresh_last(&chat.id).await;

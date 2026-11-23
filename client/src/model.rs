@@ -1236,9 +1236,75 @@ pub fn fold(text: &str) -> String {
         .collect()
 }
 
+/// La prochaine échéance connue des messages éphémères de chaque
+/// discussion : le ménage de chaque minute ne relit une discussion que
+/// quand l'un d'eux arrive à terme, au lieu de décoder tous ses messages à
+/// chaque fois. Une discussion inconnue est relue (et apprise).
+#[derive(Default)]
+pub struct Expiries {
+    next: HashMap<String, f64>,
+}
+
+impl Expiries {
+    /// Faut-il relire `chat` à l'heure `t` (un message échu, `exp < t`) ?
+    pub fn due(&self, chat: &str, t: f64) -> bool {
+        self.next.get(chat).is_none_or(|next| *next < t)
+    }
+
+    /// `chat` vient d'être relu : `next` est l'échéance la plus proche de ce
+    /// qui reste (`None` : aucune).
+    pub fn scanned(&mut self, chat: &str, next: Option<f64>) {
+        self.next
+            .insert(chat.to_owned(), next.unwrap_or(f64::INFINITY));
+    }
+
+    /// Un message écrit : son échéance peut être plus proche que celle
+    /// connue (une discussion inconnue reste inconnue : elle sera relue).
+    pub fn noted(&mut self, chat: &str, exp: Option<f64>) {
+        if let (Some(exp), Some(next)) = (exp, self.next.get_mut(chat)) {
+            *next = next.min(exp);
+        }
+    }
+
+    /// Tout oublier (une sauvegarde restaurée, la mémoire effacée).
+    pub fn forget(&mut self) {
+        self.next.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le ménage ne relit une discussion qu'à l'échéance de l'un de ses
+    /// messages, et n'en manque aucune.
+    #[test]
+    fn expiries_only_wake_a_chat_when_a_message_is_due() {
+        let mut e = Expiries::default();
+        // Inconnue : relue.
+        assert!(e.due("c", 0.0));
+        e.scanned("c", Some(100.0));
+        assert!(!e.due("c", 50.0));
+        assert!(!e.due("c", 100.0));
+        assert!(e.due("c", 100.5));
+        // Un message plus pressé, écrit entre-temps.
+        e.noted("c", Some(60.0));
+        assert!(e.due("c", 61.0));
+        // Un plus lointain ne retarde rien ; un sans échéance non plus.
+        e.noted("c", Some(500.0));
+        e.noted("c", None);
+        assert!(e.due("c", 61.0));
+        // Plus rien d'éphémère : jamais relue, sauf message nouveau.
+        e.scanned("c", None);
+        assert!(!e.due("c", 1e15));
+        e.noted("c", Some(2e15));
+        assert!(e.due("c", 3e15));
+        // Une discussion inconnue le reste jusqu'à sa relecture.
+        e.noted("d", Some(10.0));
+        assert!(e.due("d", 0.0));
+        e.forget();
+        assert!(e.due("c", 0.0));
+    }
 
     #[test]
     fn groups_in_common_are_shared_and_sorted() {
