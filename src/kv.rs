@@ -51,8 +51,10 @@ const EPOCH: &str = "t1:epoch";
 /// Un lot : 256 commandes et 4 Mio au plus (Nuage DB en accepte 16).
 const BATCH_COUNT: usize = 256;
 const BATCH_BYTES: usize = 4 * 1024 * 1024;
-/// Les valeurs relues au démarrage, par requête.
+/// Les valeurs relues au démarrage, par requête, et les requêtes en même
+/// temps.
 const READ_COUNT: usize = 32;
+const READERS: usize = 8;
 /// Sans rien à écrire, le relais vérifie de temps en temps que Nuage DB n'a
 /// pas redémarré.
 const IDLE: Duration = Duration::from_secs(20);
@@ -110,6 +112,9 @@ impl Op {
 pub fn sealed_size(len: usize) -> usize {
     (len + 28).div_ceil(3) * 4 + 256
 }
+
+/// Ce qu'un fil de lecture a relu : les fiches, et les noms illisibles.
+type Read = (Vec<Value>, Vec<String>);
 
 /// Le magasin clé-valeur d'une application de Nuage DB.
 pub struct Kv {
@@ -283,29 +288,65 @@ impl Kv {
     }
 
     /// Tout ce que le relais avait confié au magasin. Ce qui ne s'ouvre pas
-    /// (écrit avec une autre clé) est effacé.
+    /// (écrit avec une autre clé) est effacé. Les lectures partent sur
+    /// `READERS` fils à la fois : le relais ne répond pas avant d'avoir tout
+    /// relu, et chaque lot est un aller-retour réseau.
     pub fn load(&self) -> Result<Vec<Value>, String> {
         let keys: Vec<String> = self.keys()?.into_iter().filter(|k| k != EPOCH).collect();
-        let mut records = Vec::with_capacity(keys.len());
-        let mut stale: Vec<&String> = Vec::new();
-        for chunk in keys.chunks(READ_COUNT) {
-            let mut command = vec![json!("MGET")];
-            command.extend(chunk.iter().map(|k| json!(k)));
-            let results = self.run(vec![Value::Array(command)])?;
-            let values = results[0].as_array().cloned().unwrap_or_default();
-            for (key, value) in chunk.iter().zip(values) {
-                // Expirée entre les deux requêtes : rien à relire.
-                let Some(sealed) = value.as_str() else {
-                    continue;
+        let chunks: Vec<&[String]> = keys.chunks(READ_COUNT).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let read = |records: &mut Vec<Value>, stale: &mut Vec<String>| -> Result<(), String> {
+            loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(chunk) = chunks.get(i) else {
+                    return Ok(());
                 };
-                match self
-                    .open(key, sealed)
-                    .and_then(|plain| serde_json::from_slice::<Value>(&plain).ok())
-                {
-                    Some(record) => records.push(record),
-                    None => stale.push(key),
+                let mut command = vec![json!("MGET")];
+                command.extend(chunk.iter().map(|k| json!(k)));
+                let mut results = self.run(vec![Value::Array(command)])?;
+                let values = match results.first_mut().map(Value::take) {
+                    Some(Value::Array(values)) => values,
+                    _ => Vec::new(),
+                };
+                for (key, value) in chunk.iter().zip(values) {
+                    // Expirée entre les deux requêtes : rien à relire.
+                    let Some(sealed) = value.as_str() else {
+                        continue;
+                    };
+                    match self
+                        .open(key, sealed)
+                        .and_then(|plain| serde_json::from_slice::<Value>(&plain).ok())
+                    {
+                        Some(record) => records.push(record),
+                        None => stale.push(key.clone()),
+                    }
                 }
             }
+        };
+        let readers = READERS.min(chunks.len()).max(1);
+        let parts: Vec<Result<Read, String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..readers)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let (mut records, mut stale) = (Vec::new(), Vec::new());
+                        read(&mut records, &mut stale).map(|()| (records, stale))
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err("lecture interrompue".into()))
+                })
+                .collect()
+        });
+        let mut records = Vec::with_capacity(keys.len());
+        let mut stale = Vec::new();
+        for part in parts {
+            let (r, s) = part?;
+            records.extend(r);
+            stale.extend(s);
         }
         for chunk in stale.chunks(BATCH_COUNT) {
             let mut command = vec![json!("DEL")];
@@ -639,8 +680,9 @@ pub(crate) mod fake {
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
                 answer.len()
             );
-            if stream.write_all(head.as_bytes()).is_err()
-                || stream.write_all(answer.as_bytes()).is_err()
+            if stream
+                .write_all(format!("{head}{answer}").as_bytes())
+                .is_err()
             {
                 return;
             }
@@ -731,6 +773,43 @@ mod tests {
             })
             .unwrap();
         assert_eq!(del, json!(["DEL", kv.key('k', "K7Q2MX9PRT")]));
+    }
+
+    /// Le démarrage relit tout, sur plusieurs fils à la fois, et efface ce
+    /// qui a été écrit avec une autre clé.
+    #[test]
+    fn everything_is_read_back_and_the_unreadable_is_dropped() {
+        let nuage = fake::Nuage::start();
+        let kv = nuage.kv();
+        let other = Kv::new(&nuage.url, "jeton", "autre secret");
+        let set = |kv: &Kv, i: usize| {
+            kv.command(&Op::Set {
+                kind: 'k',
+                name: format!("C{i:09}"),
+                value: json!({ "k": "k", "c": format!("C{i:09}") }),
+                ttl: Duration::from_secs(60),
+            })
+            .unwrap()
+        };
+        // Plus de lots que de fils, et un dernier lot incomplet.
+        let total = READ_COUNT * READERS * 3 + 7;
+        let commands: Vec<Value> = (0..total).map(|i| set(&kv, i)).collect();
+        for chunk in commands.chunks(BATCH_COUNT) {
+            kv.run(chunk.to_vec()).unwrap();
+        }
+        let stale: Vec<Value> = (0..40).map(|i| set(&other, total + i)).collect();
+        other.run(stale).unwrap();
+        assert_eq!(nuage.count('k'), total + 40);
+        let records = kv.load().unwrap();
+        let mut codes: Vec<String> = records
+            .iter()
+            .map(|r| r["c"].as_str().unwrap().to_owned())
+            .collect();
+        codes.sort();
+        let expected: Vec<String> = (0..total).map(|i| format!("C{i:09}")).collect();
+        assert_eq!(codes, expected);
+        assert_eq!(nuage.count('k'), total);
+        assert!(Kv::new(&nuage.url, "jeton", "secret").load().unwrap().len() == total);
     }
 
     #[test]
