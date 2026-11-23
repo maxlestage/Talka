@@ -71,6 +71,14 @@ thread_local! {
     static DEVICE_KEY: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
     /// La prochaine échéance des messages éphémères de chaque discussion.
     static EXPIRIES: RefCell<crate::model::Expiries> = RefCell::new(Default::default());
+    /// Les écritures de messages, par discussion.
+    static WRITES: RefCell<crate::model::Writes> = RefCell::new(Default::default());
+}
+
+/// L'état des messages de `chat` : il change dès que l'un d'eux est écrit
+/// ou effacé.
+pub fn writes(chat: &str) -> (u64, u64) {
+    WRITES.with(|w| w.borrow().stamp(chat))
 }
 
 /// Faut-il relire `chat` pour ses messages éphémères échus à l'heure `t` ?
@@ -734,10 +742,15 @@ pub async fn write_message(m: &crate::model::Message) {
         return;
     };
     EXPIRIES.with(|e| e.borrow_mut().noted(&m.chat, m.exp));
+    WRITES.with(|w| w.borrow_mut().note(&m.chat));
     db.put("messages", &m.key(), json, &m.chat, m.at).await;
 }
 
 pub async fn remove(store: &str, key: &str) {
+    if store == "messages" {
+        let chat = key.split_once('|').map_or(key, |(chat, _)| chat);
+        WRITES.with(|w| w.borrow_mut().note(chat));
+    }
     if let Some(db) = rows() {
         db.remove(store, key).await;
     }
@@ -780,6 +793,7 @@ pub async fn messages_before(chat: &str, at: f64) -> Vec<crate::model::Message> 
 }
 
 pub async fn delete_messages_of(chat: &str) {
+    WRITES.with(|w| w.borrow_mut().note(chat));
     if let Some(db) = rows() {
         db.delete_messages_of(chat).await;
     }
@@ -795,6 +809,7 @@ pub async fn dump() -> Value {
 
 pub async fn restore(data: &Value) {
     EXPIRIES.with(|e| e.borrow_mut().forget());
+    WRITES.with(|w| w.borrow_mut().all());
     if let Some(db) = rows() {
         db.restore(data).await;
         flush_now().await;
@@ -803,6 +818,7 @@ pub async fn restore(data: &Value) {
 
 pub async fn wipe() {
     EXPIRIES.with(|e| e.borrow_mut().forget());
+    WRITES.with(|w| w.borrow_mut().all());
     if let Some(db) = rows() {
         db.wipe().await;
         flush_now().await;

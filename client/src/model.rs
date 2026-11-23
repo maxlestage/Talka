@@ -1285,6 +1285,34 @@ pub fn too_old_before(keep_days: u32, now: f64) -> f64 {
     now - f64::from(keep_days) * DAY_MS
 }
 
+/// Les écritures de messages, comptées par discussion : ce qu'on a lu d'une
+/// discussion (la coche de son dernier message) reste vrai tant que son
+/// compte n'a pas bougé, sans relire la base.
+#[derive(Default)]
+pub struct Writes {
+    per_chat: HashMap<String, u64>,
+    /// Avance quand tout peut avoir changé (une sauvegarde restaurée…).
+    epoch: u64,
+}
+
+impl Writes {
+    /// Un message de `chat` écrit ou effacé.
+    pub fn note(&mut self, chat: &str) {
+        *self.per_chat.entry(chat.to_owned()).or_default() += 1;
+    }
+
+    /// Tout a pu changer.
+    pub fn all(&mut self) {
+        self.epoch += 1;
+        self.per_chat.clear();
+    }
+
+    /// L'état de `chat` : différent dès qu'un de ses messages a été écrit.
+    pub fn stamp(&self, chat: &str) -> (u64, u64) {
+        (self.epoch, self.per_chat.get(chat).copied().unwrap_or(0))
+    }
+}
+
 /// La prochaine échéance connue des messages éphémères de chaque
 /// discussion : le ménage de chaque minute ne relit une discussion que
 /// quand l'un d'eux arrive à terme, au lieu de décoder tous ses messages à
@@ -1324,6 +1352,26 @@ impl Expiries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le compte d'une discussion bouge à chaque écriture de l'un de ses
+    /// messages, et seulement alors ; tous bougent après une restauration.
+    #[test]
+    fn writes_tell_when_a_chat_may_have_changed() {
+        let mut w = Writes::default();
+        let (a, b) = (w.stamp("a"), w.stamp("b"));
+        w.note("a");
+        assert_ne!(w.stamp("a"), a);
+        assert_eq!(w.stamp("b"), b);
+        let a = w.stamp("a");
+        w.note("a");
+        assert_ne!(w.stamp("a"), a);
+        let (a, b) = (w.stamp("a"), w.stamp("b"));
+        w.all();
+        assert_ne!(w.stamp("a"), a);
+        assert_ne!(w.stamp("b"), b);
+        // Une discussion jamais écrite depuis la restauration garde son état.
+        assert_eq!(w.stamp("b"), w.stamp("b"));
+    }
 
     /// La tête d'un élément de la boîte d'envoi, et la marque d'un message,
     /// disent la même chose que l'élément et le message entiers.

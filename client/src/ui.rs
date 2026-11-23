@@ -1032,31 +1032,49 @@ fn render_chat_list() {
 
 thread_local! {
     /// La coche du dernier message de chaque discussion (s'il est de nous) :
-    /// (son identifiant, son état), lue de la base après l'affichage.
-    static TICKS: RefCell<HashMap<String, (String, &'static str)>> = RefCell::new(HashMap::new());
+    /// (son identifiant, son état, l'état des messages de la discussion
+    /// quand elle a été lue), lue de la base après l'affichage.
+    static TICKS: RefCell<HashMap<String, Tick>> = RefCell::new(HashMap::new());
 }
+
+type Tick = (String, &'static str, (u64, u64));
 
 fn cached_tick(chat: &Chat) -> Option<&'static str> {
     let last = chat.last.as_ref()?;
     TICKS.with(|t| {
         t.borrow()
             .get(&chat.id)
-            .filter(|(id, _)| *id == last.id)
-            .map(|(_, tick)| *tick)
+            .filter(|(id, _, _)| *id == last.id)
+            .map(|(_, tick, _)| *tick)
     })
 }
 
 /// Relit les coches ; si l'une a changé (un ✓ devenu ✓✓, un « lu »), la
-/// liste est redessinée.
+/// liste est redessinée. Une coche n'est relue que si un message de sa
+/// discussion a été écrit depuis : la liste se redessine à chaque message
+/// reçu, et relisait jusqu'à 60 messages (photos comprises) à chaque fois.
 async fn refresh_ticks(chats: Vec<Chat>) {
     let mut changed = false;
     for c in &chats {
-        let (Some(last), Some(tick)) = (c.last.as_ref(), core::last_tick(c).await) else {
+        let Some(last) = c.last.as_ref() else {
             continue;
         };
-        let fresh = (last.id.clone(), tick);
-        changed |=
-            TICKS.with(|t| t.borrow_mut().insert(c.id.clone(), fresh.clone())) != Some(fresh);
+        let stamp = store::writes(&c.id);
+        let known = TICKS.with(|t| {
+            t.borrow()
+                .get(&c.id)
+                .is_some_and(|(id, _, at)| *id == last.id && *at == stamp)
+        });
+        if known {
+            continue;
+        }
+        let Some(tick) = core::last_tick(c).await else {
+            continue;
+        };
+        let fresh = (last.id.clone(), tick, stamp);
+        changed |= TICKS
+            .with(|t| t.borrow_mut().insert(c.id.clone(), fresh.clone()))
+            .is_none_or(|(id, old, _)| id != fresh.0 || old != fresh.1);
     }
     if changed {
         render_chat_list();
