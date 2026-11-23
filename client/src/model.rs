@@ -638,6 +638,48 @@ pub struct OutItem {
     pub got: Vec<String>,
 }
 
+impl OutItem {
+    /// Sa tête, sans son contenu.
+    pub fn head(&self) -> OutHead {
+        OutHead {
+            id: self.id.clone(),
+            to: self.to.clone(),
+            chat: self.chat.clone(),
+            msg_id: self.msg_id.clone(),
+            seq: self.seq,
+            boot: self.boot.clone(),
+            sent: self.sent.clone(),
+            got: self.got.clone(),
+        }
+    }
+}
+
+/// Un [`OutItem`] sans son contenu (`payload`, une photo chiffrée peut
+/// peser plusieurs Mo) : la boîte d'envoi parcourt les têtes, et ne lit en
+/// entier que ce qui part.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct OutHead {
+    pub id: String,
+    pub to: String,
+    pub chat: String,
+    pub msg_id: String,
+    pub seq: f64,
+    pub boot: String,
+    pub sent: Vec<String>,
+    pub got: Vec<String>,
+}
+
+/// Ce que la boîte d'envoi lit d'un message pour savoir s'il attend encore
+/// un accusé de réception : pas sa photo.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct MessageMark {
+    pub at: f64,
+    pub deleted: bool,
+    pub delivered_to: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StatusItem {
@@ -1282,6 +1324,41 @@ impl Expiries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La tête d'un élément de la boîte d'envoi, et la marque d'un message,
+    /// disent la même chose que l'élément et le message entiers.
+    #[test]
+    fn heads_read_like_the_whole_items() {
+        let item = OutItem {
+            id: "m1:BBBBBBBBBB".into(),
+            to: "BBBBBBBBBB".into(),
+            payload: "x".repeat(10_000),
+            chat: "c".into(),
+            msg_id: "m1".into(),
+            seq: 12.5,
+            boot: "b".into(),
+            sent: vec!["d1".into()],
+            got: vec!["d2".into()],
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        assert_eq!(serde_json::from_str::<OutHead>(&json).unwrap(), item.head());
+        let m = Message {
+            at: 3.0,
+            deleted: true,
+            delivered_to: vec!["BBBBBBBBBB".into()],
+            data: "data:image/jpeg;base64,AAAA".into(),
+            ..Default::default()
+        };
+        let mark: MessageMark = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(
+            mark,
+            MessageMark {
+                at: m.at,
+                deleted: m.deleted,
+                delivered_to: m.delivered_to.clone(),
+            }
+        );
+    }
 
     /// Le ménage des vieux messages ne lit que ceux écrits avant la limite :
     /// aucun message écrit après ne peut être trop vieux, capsule comprise.

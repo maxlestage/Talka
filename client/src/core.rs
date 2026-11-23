@@ -2691,11 +2691,14 @@ pub async fn flush() {
     }
     loop {
         FLUSH_AGAIN.with(|f| f.set(false));
-        let mut items: Vec<OutItem> = store::all("outbox").await;
-        items.sort_by(|a, b| a.seq.total_cmp(&b.seq));
+        // Les têtes seulement : un élément accepté par le relais attend son
+        // accusé de réception (jusqu'à 30 jours), sans que son contenu soit
+        // décodé à chaque passage.
+        let mut heads: Vec<OutHead> = store::all("outbox").await;
+        heads.sort_by(|a, b| a.seq.total_cmp(&b.seq));
         let mut stop = false;
         let boot = net::boot();
-        for mut item in items {
+        for head in heads {
             if net::state() != State::Online {
                 stop = true;
                 break;
@@ -2703,14 +2706,20 @@ pub async fn flush() {
             // Déjà accepté par le relais : on attend l'accusé de réception,
             // sauf si le relais a redémarré depuis (sa boîte aux lettres,
             // en mémoire, est perdue) : alors on renvoie.
+            if !head.boot.is_empty() {
+                if !still_unconfirmed(&head).await {
+                    store::remove("outbox", &head.id).await;
+                    continue;
+                }
+                if head.boot == boot || boot.is_empty() {
+                    continue;
+                }
+            }
+            // Il part : lu en entier.
+            let Some(mut item) = store::read::<OutItem>("outbox", &head.id).await else {
+                continue;
+            };
             if !item.boot.is_empty() {
-                if !still_unconfirmed(&item).await {
-                    store::remove("outbox", &item.id).await;
-                    continue;
-                }
-                if item.boot == boot || boot.is_empty() {
-                    continue;
-                }
                 // Le relais a redémarré : ce qui n'a pas été reçu repart
                 // (seulement vers les appareils qui ne l'ont pas).
                 let got = item.got.clone();
@@ -2762,12 +2771,15 @@ pub async fn flush() {
 /// Un message accepté par le relais attend-il encore l'accusé de réception
 /// de ce destinataire ? Au-delà de 30 jours (la durée des boîtes aux
 /// lettres), on n'insiste plus.
-async fn still_unconfirmed(item: &OutItem) -> bool {
+async fn still_unconfirmed(item: &OutHead) -> bool {
+    // Ce qu'il faut du message, sans sa photo.
+    let key = format!("{}|{}", item.chat, item.msg_id);
+    let mark = || store::read::<MessageMark>("messages", &key);
     // Pour nos autres appareils : chacun dit l'avoir reçu (`sync`/`got`).
     if item.to == my_code() {
         let pending = siblings().iter().any(|d| !item.got.contains(d));
         return pending
-            && get_message(&item.chat, &item.msg_id)
+            && mark()
                 .await
                 .is_some_and(|m| !m.deleted && now() - m.at < 30.0 * 24.0 * 3600.0 * 1000.0);
     }
@@ -2776,16 +2788,14 @@ async fn still_unconfirmed(item: &OutItem) -> bool {
         .into_iter()
         .filter(|d| !d.is_empty())
         .collect();
-    get_message(&item.chat, &item.msg_id)
-        .await
-        .is_some_and(|m| {
-            let missing = if devs.is_empty() {
-                !m.delivered_to.iter().any(|c| c == &item.to)
-            } else {
-                devs.iter().any(|d| !item.got.contains(d))
-            };
-            !m.deleted && missing && now() - m.at < 30.0 * 24.0 * 3600.0 * 1000.0
-        })
+    mark().await.is_some_and(|m| {
+        let missing = if devs.is_empty() {
+            !m.delivered_to.iter().any(|c| c == &item.to)
+        } else {
+            devs.iter().any(|d| !item.got.contains(d))
+        };
+        !m.deleted && missing && now() - m.at < 30.0 * 24.0 * 3600.0 * 1000.0
+    })
 }
 
 async fn mark_sent(chat_id: &str, msg_id: &str, to: &str) {
@@ -3977,7 +3987,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                         if !item.got.contains(&dev) {
                             item.got.push(dev.clone());
                         }
-                        if item.boot.is_empty() || still_unconfirmed(&item).await {
+                        if item.boot.is_empty() || still_unconfirmed(&item.head()).await {
                             store::write("outbox", &key, &item).await;
                         } else {
                             store::remove("outbox", &key).await;
@@ -4121,7 +4131,7 @@ async fn handle_sync(fd: &str, op: &str, c: &str, w: Option<Wire>, d: Value) {
                     if !item.got.iter().any(|x| x == fd) {
                         item.got.push(fd.to_owned());
                     }
-                    if item.boot.is_empty() || still_unconfirmed(&item).await {
+                    if item.boot.is_empty() || still_unconfirmed(&item.head()).await {
                         store::write("outbox", &key, &item).await;
                     } else {
                         store::remove("outbox", &key).await;
