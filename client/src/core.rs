@@ -177,8 +177,15 @@ pub fn chat(id: &str) -> Option<Chat> {
     with(|s| s.chats.get(id).cloned())
 }
 
-pub fn chats() -> Vec<Chat> {
-    with(|s| s.chats.values().cloned().collect())
+/// Les identifiants des discussions qui répondent à `keep`, sans les recopier.
+pub fn chat_ids(keep: impl Fn(&Chat) -> bool) -> Vec<String> {
+    with(|s| {
+        s.chats
+            .values()
+            .filter(|c| keep(c))
+            .map(|c| c.id.clone())
+            .collect()
+    })
 }
 
 /// Les discussions, pour les afficher en liste : sans leur fond d'écran
@@ -374,7 +381,7 @@ pub fn on_net(state: State) {
 
 fn watch_contacts() {
     let mut codes: HashSet<String> = with(|s| s.contacts.keys().cloned().collect());
-    for c in chats() {
+    for c in chat_list() {
         if c.group {
             codes.extend(c.members.iter().cloned());
         } else {
@@ -440,25 +447,24 @@ async fn sweep() {
     if BOX_DAY.with(|d| d.replace(today)) != today {
         refresh_boxes().await;
     }
+    // Chaque minute : les identifiants seulement, sans recopier les
+    // discussions (fonds d'écran compris : 3,7 ms par copie de 200).
     // Les sourdines pour un temps qui arrivent à leur terme.
-    for chat in chats() {
-        if chat.muted && chat.mute_until > 0.0 && chat.mute_until <= t {
-            update_chat(&chat.id, |c| {
-                c.muted = false;
-                c.mute_until = 0.0;
-            })
-            .await;
-        }
+    let ended = chat_ids(|c| c.muted && c.mute_until > 0.0 && c.mute_until <= t);
+    for id in ended {
+        update_chat(&id, |c| {
+            c.muted = false;
+            c.mute_until = 0.0;
+        })
+        .await;
     }
-    for chat in chats() {
-        // Relue seulement quand l'un de ses messages arrive à terme.
-        if (chat.timer == 0 && !chat.has_exp) || !store::expiry_due(&chat.id, t) {
-            continue;
-        }
+    // Relue seulement quand l'un de ses messages arrive à terme.
+    let due = chat_ids(|c| (c.timer > 0 || c.has_exp) && store::expiry_due(&c.id, t));
+    for id in due {
         let mut changed = false;
         let mut gone = Vec::new();
         let mut next: Option<f64> = None;
-        for m in store::messages_of(&chat.id, usize::MAX).await {
+        for m in store::messages_of(&id, usize::MAX).await {
             match m.exp {
                 Some(e) if e < t => {
                     store::remove("messages", &m.key()).await;
@@ -469,11 +475,11 @@ async fn sweep() {
                 None => {}
             }
         }
-        store::expiry_scanned(&chat.id, next);
-        bury(&chat.id, gone).await;
+        store::expiry_scanned(&id, next);
+        bury(&id, gone).await;
         if changed {
-            refresh_last(&chat.id).await;
-            emit(Ev::Messages(chat.id.clone()));
+            refresh_last(&id).await;
+            emit(Ev::Messages(id.clone()));
         }
     }
     // Les messages trop vieux (3 mois par défaut), une fois par heure.
@@ -485,20 +491,20 @@ async fn sweep() {
         // (`Message::too_old`) : eux seuls sont lus (5 ms au lieu de 60 pour
         // 30 000 messages, hors navigateur).
         let limit = crate::model::too_old_before(keep, t);
-        for chat in chats() {
+        for id in chat_ids(|_| true) {
             let mut changed = false;
             let mut gone = Vec::new();
-            for m in store::messages_before(&chat.id, limit).await {
+            for m in store::messages_before(&id, limit).await {
                 if m.too_old(keep, t) {
                     store::remove("messages", &m.key()).await;
                     gone.push((m.id.clone(), m.at));
                     changed = true;
                 }
             }
-            bury(&chat.id, gone).await;
+            bury(&id, gone).await;
             if changed {
-                refresh_last(&chat.id).await;
-                emit(Ev::Messages(chat.id.clone()));
+                refresh_last(&id).await;
+                emit(Ev::Messages(id.clone()));
             }
         }
     }
@@ -1984,7 +1990,7 @@ pub async fn remove_brocolis_key(id: &str) {
     }
     with(|s| s.brocolis.retain(|k| k.id != id));
     save_brocolis().await;
-    for c in chats()
+    for c in chat_list()
         .into_iter()
         .filter(|c| c.brocolis.iter().any(|x| x == id))
     {
@@ -2015,7 +2021,7 @@ pub async fn renew_brocolis_key(id: &str) -> Result<usize, &'static str> {
         s.brocolis.push(fresh.clone());
     });
     save_brocolis().await;
-    let using: Vec<Chat> = chats()
+    let using: Vec<Chat> = chat_list()
         .into_iter()
         .filter(|c| c.brocolis.iter().any(|x| x == id))
         .collect();
@@ -2132,7 +2138,7 @@ pub async fn set_chat_brocolis(chat_id: &str, ids: Vec<String>) {
 
 /// Les messages gardés avec des jetons qu'une nouvelle clé peut ouvrir.
 async fn reopen_messages() {
-    for c in chats() {
+    for c in chat_list() {
         let mut any = false;
         for mut m in store::messages_of(&c.id, usize::MAX).await {
             if open_message(&mut m) {
@@ -2299,7 +2305,7 @@ pub async fn search_messages(q: &str, limit: usize) -> Vec<Message> {
     }
     let (me, t) = (my_code(), now());
     let mut found = Vec::new();
-    for chat in chats() {
+    for chat in chat_list() {
         if !chat.group && blocked(&chat.id) {
             continue;
         }
@@ -3328,7 +3334,7 @@ fn queue_receipt(to: &str, chat_id: &str, ids: &[String], st: &str) {
 /// lues ; les confirmations de lecture partent comme pour une seule.
 /// Renvoie le nombre de discussions concernées.
 pub async fn mark_all_read() -> usize {
-    let ids: Vec<String> = chats()
+    let ids: Vec<String> = chat_list()
         .into_iter()
         .filter(|c| c.unread > 0 || c.marked_unread)
         .map(|c| c.id)
