@@ -670,6 +670,56 @@ pub struct OutHead {
     pub got: Vec<String>,
 }
 
+/// Les têtes de la boîte d'envoi, gardées en mémoire et tenues à jour par
+/// chacune de ses écritures : la parcourir ne relit plus ses éléments
+/// (photos chiffrées comprises) dans la base. `None` : pas encore lues.
+#[derive(Default)]
+pub struct OutHeads {
+    heads: Option<BTreeMap<String, OutHead>>,
+}
+
+impl OutHeads {
+    /// Les têtes, si elles sont connues.
+    pub fn get(&self) -> Option<Vec<OutHead>> {
+        self.heads.as_ref().map(|h| h.values().cloned().collect())
+    }
+
+    /// Lues de la base (`(clé, json)`).
+    pub fn fill(&mut self, rows: &[(String, String)]) -> Vec<OutHead> {
+        let heads: BTreeMap<String, OutHead> = rows
+            .iter()
+            .filter_map(|(k, json)| Some((k.clone(), serde_json::from_str(json).ok()?)))
+            .collect();
+        let out = heads.values().cloned().collect();
+        self.heads = Some(heads);
+        out
+    }
+
+    /// Un élément écrit (son JSON).
+    pub fn put(&mut self, key: &str, json: &str) {
+        let Some(heads) = &mut self.heads else { return };
+        match serde_json::from_str::<OutHead>(json) {
+            Ok(head) => {
+                heads.insert(key.to_owned(), head);
+            }
+            // Illisible : tout sera relu.
+            Err(_) => self.heads = None,
+        }
+    }
+
+    /// Un élément retiré.
+    pub fn remove(&mut self, key: &str) {
+        if let Some(heads) = &mut self.heads {
+            heads.remove(key);
+        }
+    }
+
+    /// Tout relire la prochaine fois (une sauvegarde restaurée…).
+    pub fn forget(&mut self) {
+        self.heads = None;
+    }
+}
+
 /// Ce que la boîte d'envoi lit d'un message pour savoir s'il attend encore
 /// un accusé de réception : pas sa photo.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -1403,6 +1453,48 @@ mod tests {
         assert_ne!(w.stamp("b"), b);
         // Une discussion jamais écrite depuis la restauration garde son état.
         assert_eq!(w.stamp("b"), w.stamp("b"));
+    }
+
+    /// Les têtes gardées disent toujours ce que dirait une relecture de la
+    /// boîte d'envoi.
+    #[test]
+    fn kept_heads_follow_every_write() {
+        let item = |i: u32, boot: &str| OutItem {
+            id: format!("m{i}:B"),
+            to: "B".into(),
+            payload: "x".repeat(1000),
+            msg_id: format!("m{i}"),
+            seq: f64::from(i),
+            boot: boot.into(),
+            ..Default::default()
+        };
+        let row = |o: &OutItem| (o.id.clone(), serde_json::to_string(o).unwrap());
+        let mut base: BTreeMap<String, String> = (0..5).map(|i| row(&item(i, ""))).collect();
+        let mut heads = OutHeads::default();
+        assert!(heads.get().is_none());
+        // Inconnues tant qu'elles n'ont pas été lues : une écriture n'y change rien.
+        heads.put("m9:B", &row(&item(9, "")).1);
+        assert!(heads.get().is_none());
+        let rows: Vec<(String, String)> = base.clone().into_iter().collect();
+        assert_eq!(heads.fill(&rows).len(), 5);
+        let fresh = |base: &BTreeMap<String, String>| -> Vec<OutHead> {
+            base.values()
+                .map(|j| serde_json::from_str(j).unwrap())
+                .collect()
+        };
+        for (k, j) in [row(&item(2, "boot")), row(&item(7, ""))] {
+            heads.put(&k, &j);
+            base.insert(k, j);
+        }
+        heads.remove("m0:B");
+        base.remove("m0:B");
+        assert_eq!(heads.get().unwrap(), fresh(&base));
+        // Un JSON illisible : tout sera relu.
+        heads.put("m3:B", "pas du JSON");
+        assert!(heads.get().is_none());
+        heads.fill(&base.clone().into_iter().collect::<Vec<_>>());
+        heads.forget();
+        assert!(heads.get().is_none());
     }
 
     /// La tête d'un élément de la boîte d'envoi, et la marque d'un message,

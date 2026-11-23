@@ -99,6 +99,15 @@ impl Rows {
             .unwrap_or_default()
     }
 
+    /// Chaque objet d'un magasin : `(clé, json)`.
+    pub async fn all_keyed(&self, store: &str) -> Vec<(String, String)> {
+        self.rows(store)
+            .await
+            .into_iter()
+            .map(|r| (r.key, r.json))
+            .collect()
+    }
+
     /// Le JSON de chaque objet d'un magasin.
     pub async fn all(&self, store: &str) -> Vec<String> {
         self.rows(store).await.into_iter().map(|r| r.json).collect()

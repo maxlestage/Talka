@@ -2742,7 +2742,7 @@ pub async fn flush() {
         // Les têtes seulement : un élément accepté par le relais attend son
         // accusé de réception (jusqu'à 30 jours), sans que son contenu soit
         // décodé à chaque passage.
-        let mut heads: Vec<OutHead> = store::all("outbox").await;
+        let mut heads: Vec<OutHead> = store::out_heads().await;
         heads.sort_by(|a, b| a.seq.total_cmp(&b.seq));
         let mut stop = false;
         let boot = net::boot();

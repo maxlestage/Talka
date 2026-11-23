@@ -73,6 +73,20 @@ thread_local! {
     static EXPIRIES: RefCell<crate::model::Expiries> = RefCell::new(Default::default());
     /// Les écritures de messages, par discussion.
     static WRITES: RefCell<crate::model::Writes> = RefCell::new(Default::default());
+    /// Les têtes de la boîte d'envoi, tenues à jour par ses écritures.
+    static OUT_HEADS: RefCell<crate::model::OutHeads> = RefCell::new(Default::default());
+}
+
+/// Les têtes de la boîte d'envoi (sans leur contenu) : gardées en mémoire,
+/// lues de la base la première fois seulement (33–35 ms → 9 µs avec 40
+/// photos en attente, hors navigateur).
+pub async fn out_heads() -> Vec<crate::model::OutHead> {
+    if let Some(heads) = OUT_HEADS.with(|h| h.borrow().get()) {
+        return heads;
+    }
+    let Some(db) = rows() else { return Vec::new() };
+    let rows = db.all_keyed("outbox").await;
+    OUT_HEADS.with(|h| h.borrow_mut().fill(&rows))
 }
 
 /// L'état des messages de `chat` : il change dès que l'un d'eux est écrit
@@ -732,6 +746,9 @@ pub async fn write<T: Serialize>(store: &str, key: &str, value: &T) {
     let (Some(db), Ok(json)) = (rows(), serde_json::to_string(value)) else {
         return;
     };
+    if store == "outbox" {
+        OUT_HEADS.with(|h| h.borrow_mut().put(key, &json));
+    }
     db.put(store, key, json, "", 0.0).await;
 }
 
@@ -747,6 +764,9 @@ pub async fn write_message(m: &crate::model::Message) {
 }
 
 pub async fn remove(store: &str, key: &str) {
+    if store == "outbox" {
+        OUT_HEADS.with(|h| h.borrow_mut().remove(key));
+    }
     if store == "messages" {
         let chat = key.split_once('|').map_or(key, |(chat, _)| chat);
         WRITES.with(|w| w.borrow_mut().note(chat));
@@ -766,6 +786,9 @@ pub async fn all<T: DeserializeOwned>(store: &str) -> Vec<T> {
 }
 
 pub async fn clear(store: &str) {
+    if store == "outbox" {
+        OUT_HEADS.with(|h| h.borrow_mut().forget());
+    }
     if let Some(db) = rows() {
         db.clear(store).await;
     }
@@ -809,6 +832,7 @@ pub async fn dump() -> Value {
 
 pub async fn restore(data: &Value) {
     EXPIRIES.with(|e| e.borrow_mut().forget());
+    OUT_HEADS.with(|h| h.borrow_mut().forget());
     WRITES.with(|w| w.borrow_mut().all());
     if let Some(db) = rows() {
         db.restore(data).await;
@@ -818,6 +842,7 @@ pub async fn restore(data: &Value) {
 
 pub async fn wipe() {
     EXPIRIES.with(|e| e.borrow_mut().forget());
+    OUT_HEADS.with(|h| h.borrow_mut().forget());
     WRITES.with(|w| w.borrow_mut().all());
     if let Some(db) = rows() {
         db.wipe().await;
