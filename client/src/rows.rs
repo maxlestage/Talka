@@ -262,6 +262,63 @@ mod tests {
         });
     }
 
+    /// L'écran des messages importants les lit discussion par discussion
+    /// (`core::starred`) : ce sont bien ceux qu'on trouvait en lisant tous
+    /// les messages de l'appareil.
+    #[test]
+    fn the_starred_of_each_chat_are_the_starred_of_all() {
+        use crate::model::{Message, starred_of};
+        let db = rows(&MemoryStorage::new());
+        memoire_orm::block_on(async {
+            for i in 0..40 {
+                let chat = format!("g:{}", i % 3);
+                let m = Message {
+                    chat: chat.clone(),
+                    id: format!("m{i}"),
+                    at: f64::from(i),
+                    starred: i % 4 == 1,
+                    deleted: i % 8 == 5,
+                    data: if i % 5 == 0 {
+                        "data:image/png;base64,AAAA".into()
+                    } else {
+                        String::new()
+                    },
+                    ..Default::default()
+                };
+                let json = serde_json::to_string(&m).unwrap();
+                db.put("messages", &format!("{chat}|m{i}"), json, &chat, m.at)
+                    .await;
+            }
+            // Un favori rangé ailleurs que dans les messages ne compte pas.
+            db.put(
+                "outbox",
+                "o1",
+                r#"{"id":"o1","starred":true}"#.into(),
+                "g:0",
+                1.0,
+            )
+            .await;
+            let mut all: Vec<(f64, String)> = db
+                .all("messages")
+                .await
+                .iter()
+                .filter_map(|j| serde_json::from_str::<Message>(j).ok())
+                .filter(Message::is_starred)
+                .map(|m| (m.at, m.id))
+                .collect();
+            let mut each = Vec::new();
+            for chat in ["g:0", "g:1", "g:2"] {
+                for json in db.messages_of(chat, usize::MAX).await {
+                    each.extend(starred_of(&json));
+                }
+            }
+            all.sort_by(|a, b| b.0.total_cmp(&a.0));
+            each.sort_by(|a, b| b.0.total_cmp(&a.0));
+            assert_eq!(all.len(), 5);
+            assert_eq!(each, all);
+        });
+    }
+
     #[test]
     fn rows_survive_a_reopen_from_the_storage() {
         let storage = MemoryStorage::new();

@@ -3198,12 +3198,14 @@ pub async fn starred_in(chat_id: &str) -> Vec<Message> {
     list
 }
 
+/// Les messages favoris de tout l'appareil, les plus récents d'abord : ceux
+/// de chaque discussion (`starred_in`, par les identifiants gardés), au lieu
+/// de décoder tous les messages à chaque ouverture de l'écran.
 pub async fn starred() -> Vec<Message> {
-    let mut list: Vec<Message> = store::all::<Message>("messages")
-        .await
-        .into_iter()
-        .filter(Message::is_starred)
-        .collect();
+    let mut list = Vec::new();
+    for chat in chat_ids(|_| true) {
+        list.extend(starred_in(&chat).await);
+    }
     list.sort_by(|a, b| b.at.total_cmp(&a.at));
     list
 }
