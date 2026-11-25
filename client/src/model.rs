@@ -515,6 +515,23 @@ fn attachments<'a>(msgs: &'a [Message], kind: &str, me: &str, now: f64) -> Vec<&
 }
 
 impl Message {
+    /// Un accusé de `from` : reçu, ou lu (`read`). Vrai s'il apprend
+    /// quelque chose (le message est alors à réécrire).
+    pub fn note_receipt(&mut self, from: &str, read: bool) -> bool {
+        let mut changed = false;
+        let mut add = |list: &mut Vec<String>| {
+            if !list.iter().any(|x| x == from) {
+                list.push(from.to_owned());
+                changed = true;
+            }
+        };
+        add(&mut self.delivered_to);
+        if read {
+            add(&mut self.read_by);
+        }
+        changed
+    }
+
     /// En favori, et pas supprimé pour tous (un message supprimé n'a plus
     /// rien à garder, comme WhatsApp).
     pub fn is_starred(&self) -> bool {
@@ -1600,6 +1617,26 @@ mod tests {
         // Ce qu'écrit `store_message` ensuite : le compte y est.
         let back: Chat = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!((back.unread, back.mentioned), (4, true));
+    }
+
+    /// Un accusé déjà su ne réécrit pas le message ; un nouveau, si.
+    #[test]
+    fn a_receipt_already_known_changes_nothing() {
+        let mut m = Message {
+            delivered_to: vec!["AAAAAAAAAA".into()],
+            ..Default::default()
+        };
+        assert!(!m.note_receipt("AAAAAAAAAA", false));
+        assert!(m.note_receipt("AAAAAAAAAA", true));
+        assert!(!m.note_receipt("AAAAAAAAAA", true));
+        assert!(!m.note_receipt("AAAAAAAAAA", false));
+        assert!(m.note_receipt("BBBBBBBBBB", false));
+        assert_eq!(m.delivered_to, ["AAAAAAAAAA", "BBBBBBBBBB"]);
+        assert_eq!(m.read_by, ["AAAAAAAAAA"]);
+        // Lu sans avoir été dit reçu : reçu aussi, comme avant.
+        let mut n = Message::default();
+        assert!(n.note_receipt("CCCCCCCCCC", true));
+        assert_eq!((n.delivered_to.len(), n.read_by.len()), (1, 1));
     }
 
     #[test]

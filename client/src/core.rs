@@ -4094,16 +4094,11 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
                 if m.from != me {
                     continue;
                 }
-                let add = |list: &mut Vec<String>| {
-                    if !list.iter().any(|x| x == from) {
-                        list.push(from.to_owned());
-                    }
-                };
-                add(&mut m.delivered_to);
-                if st == "read" {
-                    add(&mut m.read_by);
+                // Déjà su (un autre de ses appareils, un accusé redit) : rien
+                // à réécrire (1,1 à 1,7 ms pour une photo de 400 Ko).
+                if m.note_receipt(from, st == "read") {
+                    store::write_message(&m).await;
                 }
-                store::write_message(&m).await;
                 // Bien arrivé : plus besoin de le garder pour un renvoi (v4 :
                 // quand chacun de ses appareils l'a).
                 let key = format!("{id}:{from}");
