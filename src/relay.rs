@@ -238,7 +238,7 @@ struct State {
     online: HashMap<String, Vec<Conn>>,
     keys: HashMap<String, Keys>,
     /// code → appareil (vide : le paquet d'avant la v4) → son paquet.
-    bundles: HashMap<String, HashMap<String, Bundle>>,
+    bundles: HashMap<String, HashMap<String, Arc<Bundle>>>,
     /// code → ses appareils connus depuis le démarrage (v4).
     devices: HashMap<String, HashSet<String>>,
     /// code → ses appareils retirés (`unlink`).
@@ -632,6 +632,56 @@ fn rec_message(key: &str, n: u64, json: &str, until: u64) -> Value {
     json!({ "k": "m", "b": key, "n": n, "j": json, "x": until })
 }
 
+/// Ce que le relais retient, pris sous son verrou sans en faire de JSON
+/// (ni recopier les paquets de clés et les messages, partagés) : `ops` le
+/// met en forme ensuite, verrou rendu. Une recopie complète tenait le
+/// verrou 70 à 100 ms (20 000 codes, 16 Mio de messages).
+struct Snapshot(Vec<Rec>);
+
+enum Rec {
+    Ready(Op),
+    /// Le code, ses clés de signature et d'échange.
+    Keys(String, String, String),
+    Bundle(String, String, Arc<Bundle>),
+    Seen(String, u64),
+    /// La boîte, le numéro, le texte, l'heure de la recopie, ce qui reste.
+    Message(String, u64, Text, u64, Duration),
+}
+
+impl Snapshot {
+    fn ops(self) -> Vec<Op> {
+        let set = |kind: char, name: String, value: Value| Op::Set {
+            kind,
+            name,
+            value,
+            ttl: KEPT_TTL,
+        };
+        self.0
+            .into_iter()
+            .map(|rec| match rec {
+                Rec::Ready(op) => op,
+                Rec::Keys(code, sign, dh) => {
+                    let value = rec_keys(&code, &Keys { sign, dh });
+                    set('k', code, value)
+                }
+                Rec::Bundle(code, dev, b) => {
+                    set('b', box_key(&code, &dev), rec_bundle(&code, &dev, &b))
+                }
+                Rec::Seen(code, seen) => {
+                    let value = json!({ "k": "s", "c": code, "t": seen });
+                    set('s', code, value)
+                }
+                Rec::Message(key, n, json, now, left) => Op::Set {
+                    kind: 'm',
+                    name: message_name(&key, n),
+                    value: rec_message(&key, n, &json, now + left.as_millis() as u64),
+                    ttl: left,
+                },
+            })
+            .collect()
+    }
+}
+
 fn rec_keys(code: &str, keys: &Keys) -> Value {
     json!({ "k": "k", "c": code, "s": keys.sign, "d": keys.dh })
 }
@@ -767,35 +817,32 @@ impl State {
 
     /// Tout ce qui est retenu, à recopier d'un coup (après une panne du
     /// magasin).
-    fn snapshot(&self) -> Vec<Op> {
+    fn snapshot(&self) -> Snapshot {
         let now = now_ms();
-        let set = |kind: char, name: &str, value: Value, ttl: Duration| Op::Set {
-            kind,
-            name: name.to_owned(),
-            value,
-            ttl,
-        };
-        let mut ops = Vec::new();
+        let mut recs = Vec::with_capacity(self.keys.len() + self.seen.len() + self.bundles.len());
         for (code, keys) in &self.keys {
-            ops.push(set('k', code, rec_keys(code, keys), KEPT_TTL));
+            recs.push(Rec::Keys(code.clone(), keys.sign.clone(), keys.dh.clone()));
         }
         for (code, devices) in &self.bundles {
             for (dev, b) in devices {
-                ops.push(set(
-                    'b',
-                    &box_key(code, dev),
-                    rec_bundle(code, dev, b),
-                    KEPT_TTL,
-                ));
+                recs.push(Rec::Bundle(code.clone(), dev.clone(), b.clone()));
             }
         }
+        let set = |kind: char, name: &str, value: Value, ttl: Duration| {
+            Rec::Ready(Op::Set {
+                kind,
+                name: name.to_owned(),
+                value,
+                ttl,
+            })
+        };
         for (kind, map) in [
             ('d', &self.devices),
             ('x', &self.banned),
             ('r', &self.revoked),
         ] {
             for (code, items) in map.iter().filter(|(_, items)| !items.is_empty()) {
-                ops.push(set(
+                recs.push(set(
                     kind,
                     code,
                     rec_list(&kind.to_string(), code, items),
@@ -804,15 +851,10 @@ impl State {
             }
         }
         for (code, seen) in &self.seen {
-            ops.push(set(
-                's',
-                code,
-                json!({ "k": "s", "c": code, "t": seen }),
-                KEPT_TTL,
-            ));
+            recs.push(Rec::Seen(code.clone(), *seen));
         }
         for (key, subs) in self.push.iter().filter(|(_, subs)| !subs.is_empty()) {
-            ops.push(set('p', key, rec_push(key, subs), KEPT_TTL));
+            recs.push(set('p', key, rec_push(key, subs), KEPT_TTL));
         }
         // Les boîtes tournantes, regroupées par abonnement Web Push.
         let mut by_sub: HashMap<&str, (&crate::push::Subscription, Vec<&str>, Duration)> =
@@ -831,7 +873,7 @@ impl State {
         for (endpoint, (sub, addrs, left)) in by_sub {
             if !left.is_zero() {
                 let until = now + left.as_millis() as u64;
-                ops.push(set('q', endpoint, rec_boites(sub, &addrs, until), left));
+                recs.push(set('q', endpoint, rec_boites(sub, &addrs, until), left));
             }
         }
         // Les messages en dernier : s'il manque de la place, ce sont eux
@@ -840,17 +882,11 @@ impl State {
             for s in mb.queue.iter().filter(|s| s.kept > 0) {
                 let left = s.ttl.saturating_sub(s.at.elapsed());
                 if !left.is_zero() {
-                    let until = now + left.as_millis() as u64;
-                    ops.push(set(
-                        'm',
-                        &message_name(key, s.n),
-                        rec_message(key, s.n, &s.json, until),
-                        left,
-                    ));
+                    recs.push(Rec::Message(key.clone(), s.n, s.json.clone(), now, left));
                 }
             }
         }
-        ops
+        Snapshot(recs)
     }
 
     /// Reprend ce que le magasin avait gardé (au démarrage) ; renvoie le
@@ -907,10 +943,10 @@ impl State {
                 "b" if !code.is_empty() => {
                     self.bundles.entry(code).or_default().insert(
                         text("v"),
-                        Bundle {
+                        Arc::new(Bundle {
                             bundle: text("b"),
                             sig: text("s"),
-                        },
+                        }),
                     );
                 }
                 "d" if !code.is_empty() => {
@@ -1132,8 +1168,8 @@ impl Relay {
         let state = Arc::downgrade(&relay.state);
         let mirror = kv::mirror(kv, synced, move || {
             let state = state.upgrade()?;
-            let st = state.lock().unwrap_or_else(|e| e.into_inner());
-            Some(st.snapshot())
+            let taken = state.lock().unwrap_or_else(|e| e.into_inner()).snapshot();
+            Some(taken.ops())
         });
         let mut st = relay.lock();
         st.kept_max = capacity / 2;
@@ -1627,7 +1663,7 @@ impl Relay {
         st.bundles
             .entry(code.to_owned())
             .or_default()
-            .insert(dev.to_owned(), published);
+            .insert(dev.to_owned(), Arc::new(published));
         if let Some(record) = record {
             st.keep('b', &box_key(code, dev), || record, KEPT_TTL);
         }
@@ -2813,10 +2849,10 @@ mod tests {
             .or_default()
             .insert(
                 String::new(),
-                Bundle {
+                Arc::new(Bundle {
                     bundle: "paquet".into(),
                     sig: "sig".into(),
-                },
+                }),
             );
         nuage.restart();
         assert_eq!(nuage.count('m'), 0);
@@ -3401,6 +3437,96 @@ mod tests {
 
     /// Une connexion anonyme suit au plus `MAX_BOITES` boîtes : au-delà, les
     /// premières adresses valides de la demande, jusqu'à la limite.
+    /// La recopie complète, mise en forme hors du verrou, dit ce qu'elle
+    /// disait : les mêmes fiches, et les messages en dernier.
+    #[test]
+    fn a_snapshot_says_what_it_always_said() {
+        let relay = Relay::default();
+        let mut st = relay.lock();
+        let keys = Keys {
+            sign: "S1".into(),
+            dh: "D1".into(),
+        };
+        let bundle = Bundle {
+            bundle: "paquet".into(),
+            sig: "sig".into(),
+        };
+        let (k, b) = (
+            rec_keys("AAAAAAAAAA", &keys),
+            rec_bundle("AAAAAAAAAA", "dev", &bundle),
+        );
+        st.keys.insert("AAAAAAAAAA".into(), keys);
+        st.bundles
+            .entry("AAAAAAAAAA".into())
+            .or_default()
+            .insert("dev".into(), Arc::new(bundle));
+        st.seen.insert("AAAAAAAAAA".into(), 42);
+        st.devices
+            .insert("AAAAAAAAAA".into(), HashSet::from(["dev".to_owned()]));
+        st.mailboxes
+            .entry("BOX".into())
+            .or_default()
+            .queue
+            .push_back(Stored {
+                n: 7,
+                json: Arc::new(r#"{"t":"msg"}"#.into()),
+                at: Instant::now(),
+                ttl: Duration::from_secs(60),
+                kept: 11,
+            });
+        // Pas dans le magasin : pas recopié.
+        st.mailboxes
+            .entry("BOX".into())
+            .or_default()
+            .queue
+            .push_back(Stored {
+                n: 8,
+                json: Arc::new("{}".into()),
+                at: Instant::now(),
+                ttl: Duration::from_secs(60),
+                kept: 0,
+            });
+        let ops = st.snapshot().ops();
+        drop(st);
+        let found = |kind: char| -> Vec<(String, Value)> {
+            ops.iter()
+                .filter_map(|op| match op {
+                    Op::Set {
+                        kind: k,
+                        name,
+                        value,
+                        ..
+                    } if *k == kind => Some((name.clone(), value.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(ops.len(), 5);
+        assert_eq!(found('k'), [("AAAAAAAAAA".to_owned(), k)]);
+        assert_eq!(found('b'), [(box_key("AAAAAAAAAA", "dev"), b)]);
+        assert_eq!(
+            found('s'),
+            [(
+                "AAAAAAAAAA".to_owned(),
+                json!({ "k": "s", "c": "AAAAAAAAAA", "t": 42 })
+            )]
+        );
+        assert_eq!(found('d').len(), 1);
+        let Some(Op::Set {
+            kind: 'm',
+            name,
+            value,
+            ttl,
+        }) = ops.last()
+        else {
+            panic!("les messages en dernier");
+        };
+        assert_eq!(name, &message_name("BOX", 7));
+        assert_eq!(value["j"], r#"{"t":"msg"}"#);
+        assert_eq!(value["n"], 7);
+        assert!(*ttl <= Duration::from_secs(60) && !ttl.is_zero());
+    }
+
     #[test]
     fn a_subscription_keeps_within_its_room() {
         let relay = Relay::default();
