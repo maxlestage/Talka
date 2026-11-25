@@ -1,4 +1,4 @@
-# Fusionne dans `master`, toute seule, chaque branche `claude/*` dont les
+# Fusionne dans `master`, toute seule, chaque autre branche dont les
 # vérifications passent : la CI, et l'iOS quand `ios/` a changé. C'est le
 # commit vérifié qui est fusionné (pas un plus récent de la branche, qui
 # attendra ses propres vérifications) : en avance rapide si possible, sinon
@@ -18,7 +18,7 @@ on:
   workflow_run:
     workflows: [CI, iOS]
     types: [completed]
-    branches: ["claude/**"]
+    branches-ignore: [master]
 
 permissions:
   contents: write

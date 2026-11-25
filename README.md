@@ -219,7 +219,7 @@ codes, et discutez.
 ## Déployer
 
 - **Fusion automatique** ([`.github/workflows/fusion.yml`](.github/workflows/fusion.yml)) :
-  une branche `claude/*` poussée sur ce dépôt est fusionnée toute seule dans
+  toute branche autre que `master` poussée sur ce dépôt est fusionnée seule dans
   `master` dès que ses vérifications passent (la CI, et l'iOS quand `ios/` a
   changé), puis déployée comme après un push dans `master` (Heroku, GitHub
   Pages). Un conflit arrête la fusion : `master` ne bouge pas, et le
