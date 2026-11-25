@@ -39,6 +39,9 @@ hkdf = "0.12"
 # Le QR code de chaque code Talka, en SVG.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# Les pages, compressées une fois au mieux (`lib::Built`).
+brotli = "9"
+flate2 = "1"
 
 # Les fichiers du navigateur compressés une fois, à la compilation (build.rs) :
 # Brotli, et gzip pour les navigateurs qui ne le prennent pas.
@@ -47,9 +50,6 @@ brotli = "9"
 flate2 = "1"
 
 [dev-dependencies]
-# Les tests décompressent ce que build.rs a compressé.
-brotli = "9"
-flate2 = "1"
 # Les tests chiffrent exactement comme le navigateur : avec le même code Rust.
 talka-web = { path = "client" }
 tokio-tungstenite = "0.26"

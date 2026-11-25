@@ -83,7 +83,7 @@ const COMPRESSED: &[(&str, &[u8], &[u8])] = &[
 
 /// Ce que le navigateur accepte (`Accept-Encoding`), dans l'ordre de nos
 /// préférences : Brotli, puis gzip. Un codage noté `q=0` est refusé.
-fn accepts(header: &str, coding: &str) -> bool {
+pub(crate) fn accepts(header: &str, coding: &str) -> bool {
     header.split(',').any(|part| {
         let mut it = part.split(';');
         let name = it.next().unwrap_or("").trim();

@@ -283,3 +283,56 @@ fn browser_and_server_agree() {
         &sig
     ));
 }
+
+/// Les pages sont faites et compressées une fois : ce qui part, dans
+/// chaque codage, est la page telle qu'elle était, avec ses en-têtes.
+#[tokio::test]
+async fn pages_are_the_same_in_every_coding() {
+    use std::io::Read;
+    let client = talka::app().test().await;
+    for (path, status) in [
+        ("/", 200),
+        ("/app", 200),
+        ("/confidentialite", 200),
+        ("/nulle-part", 404),
+    ] {
+        let plain = client.get(path).header("host", "talka.example").await;
+        assert_eq!(plain.status(), status, "{path}");
+        assert_eq!(plain.header("content-encoding"), None);
+        let csp = plain
+            .header("content-security-policy")
+            .expect("CSP")
+            .to_owned();
+        assert!(csp.contains("wss://talka.example"), "{path}");
+        let page = plain.bytes().to_vec();
+        for coding in ["br", "gzip"] {
+            for _ in 0..2 {
+                let res = client
+                    .get(path)
+                    .header("host", "talka.example")
+                    .header("accept-encoding", coding)
+                    .await;
+                assert_eq!(res.status(), status, "{path}");
+                assert_eq!(res.header("content-encoding"), Some(coding), "{path}");
+                assert_eq!(res.header("content-security-policy"), Some(csp.as_str()));
+                assert_eq!(res.header("content-type"), plain.header("content-type"));
+                let mut out = Vec::new();
+                match coding {
+                    "br" => brotli::Decompressor::new(&res.bytes()[..], 4096).read_to_end(&mut out),
+                    _ => flate2::read::GzDecoder::new(&res.bytes()[..]).read_to_end(&mut out),
+                }
+                .expect("décompressée");
+                assert_eq!(out, page, "{path} en {coding}");
+            }
+        }
+        // Un autre hôte : sa propre politique, la même page.
+        let other = client.get(path).header("host", "autre.example").await;
+        assert!(
+            other
+                .header("content-security-policy")
+                .unwrap()
+                .contains("wss://autre.example")
+        );
+        assert_eq!(other.bytes(), page.as_slice());
+    }
+}

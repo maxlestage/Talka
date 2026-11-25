@@ -139,6 +139,11 @@ pub fn policy(csp: &str, site: &Site, host: Option<&str>) -> String {
 
 /// Une page, avec sa politique de sécurité élargie.
 pub fn respond(page: Page, site: &Site, req: &Request) -> Response {
+    with_policy(page.into_response(), site, req)
+}
+
+/// La politique de sécurité de `res`, élargie pour l'hôte de la requête.
+fn with_policy(res: Response, site: &Site, req: &Request) -> Response {
     let host = req
         .host()
         .filter(|h| {
@@ -146,7 +151,6 @@ pub fn respond(page: Page, site: &Site, req: &Request) -> Response {
                 .all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b))
         })
         .map(str::to_owned);
-    let res = page.into_response();
     let Some(csp) = res.get_header("content-security-policy") else {
         return res;
     };
@@ -300,26 +304,120 @@ pub fn app() -> App {
 /// Les pages, servies pour `site` (le serveur, ou l'export statique).
 pub fn pages(app: &mut App, site: &Site) {
     let s = site.clone();
+    let kept = Kept::default();
     app.get("/", move |req: Request| {
-        let s = s.clone();
-        async move { respond(site::home(&s), &s, &req) }
+        let (s, kept) = (s.clone(), kept.clone());
+        async move { serve_page(&kept, || site::home(&s), &s, &req).await }
     });
     // `/app/` et `/confidentialite/` y mènent aussi (Vitesse ignore la barre finale).
     let s = site.clone();
+    let kept = Kept::default();
     app.get("/confidentialite", move |req: Request| {
-        let s = s.clone();
-        async move { respond(site::privacy(&s), &s, &req) }
+        let (s, kept) = (s.clone(), kept.clone());
+        async move { serve_page(&kept, || site::privacy(&s), &s, &req).await }
     });
     let s = site.clone();
+    let kept = Kept::default();
     app.get("/app", move |req: Request| {
-        let s = s.clone();
-        async move { respond(site::app_shell(&s), &s, &req) }
+        let (s, kept) = (s.clone(), kept.clone());
+        async move { serve_page(&kept, || site::app_shell(&s), &s, &req).await }
     });
     let s = site.clone();
+    let kept = Kept::default();
     app.fallback(move |req: Request| {
-        let s = s.clone();
-        async move { respond(site::not_found(&s), &s, &req) }
+        let (s, kept) = (s.clone(), kept.clone());
+        async move { serve_page(&kept, || site::not_found(&s), &s, &req).await }
     });
+}
+
+/// Une page faite une fois, et compressée une fois au mieux (Brotli 11,
+/// gzip 9) : elle ne dépend que du site, fixé au démarrage. Faite et
+/// compressée (Brotli 5) à chaque visite, l'accueil coûtait 1,1 ms et
+/// pesait 6,9 Ko.
+struct Built {
+    status: u16,
+    headers: Vec<(String, String)>,
+    plain: paquets::vitesse::Bytes,
+    br: paquets::vitesse::Bytes,
+    gz: paquets::vitesse::Bytes,
+}
+
+type Kept = std::sync::Arc<tokio::sync::OnceCell<Built>>;
+
+impl Built {
+    async fn of(res: Response) -> Built {
+        let status = res.status_code().as_u16();
+        let headers = res
+            .headers()
+            .iter()
+            .filter(|(name, _)| *name != paquets::vitesse::header::CONTENT_LENGTH)
+            .filter_map(|(name, value)| {
+                Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
+            })
+            .collect();
+        let plain = res.into_body().to_bytes().await.unwrap_or_default();
+        let bytes = plain.clone();
+        let (br, gz) = tokio::task::spawn_blocking(move || compressed(&bytes))
+            .await
+            .unwrap_or_default();
+        Built {
+            status,
+            headers,
+            plain,
+            br: br.into(),
+            gz: gz.into(),
+        }
+    }
+
+    /// La page, dans le codage que le navigateur accepte.
+    fn response(&self, accept_encoding: &str) -> Response {
+        let mut res = Response::new().status(self.status);
+        for (name, value) in &self.headers {
+            res = res.append_header(name.as_str(), value.as_str());
+        }
+        res = res.header("vary", "accept-encoding");
+        let coded = [(&self.br, "br"), (&self.gz, "gzip")]
+            .into_iter()
+            .find(|(bytes, coding)| !bytes.is_empty() && assets::accepts(accept_encoding, coding));
+        match coded {
+            Some((bytes, coding)) => res.header("content-encoding", coding).send(bytes.clone()),
+            None => res.send(self.plain.clone()),
+        }
+    }
+}
+
+/// Brotli 11 et gzip 9 (vides si ça ne gagne rien).
+fn compressed(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    use std::io::Write;
+    let mut br = Vec::new();
+    {
+        let mut writer = brotli::CompressorWriter::new(&mut br, 4096, 11, 22);
+        if writer.write_all(bytes).is_err() {
+            return Default::default();
+        }
+    }
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    let gz = match gz.write_all(bytes).and_then(|()| gz.finish()) {
+        Ok(gz) => gz,
+        Err(_) => return Default::default(),
+    };
+    let worth = |c: Vec<u8>| if c.len() < bytes.len() { c } else { Vec::new() };
+    (worth(br), worth(gz))
+}
+
+/// Une page du site, faite et compressée à sa première visite.
+async fn serve_page(
+    kept: &Kept,
+    page: impl FnOnce() -> Page,
+    site: &Site,
+    req: &Request,
+) -> Response {
+    let built = kept.get_or_init(|| Built::of(page().into_response())).await;
+    with_policy(
+        built.response(req.header("accept-encoding").unwrap_or("")),
+        site,
+        req,
+    )
 }
 
 /// Les fichiers du navigateur.
