@@ -4131,13 +4131,10 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             let Some(mut m) = get_message(&c.id, &id).await else {
                 return;
             };
-            if emoji.is_empty() {
-                m.reactions.remove(from);
-            } else {
-                m.reactions
-                    .insert(from.to_owned(), emoji.chars().take(8).collect());
+            // Déjà là (une réaction redite) : rien à réécrire.
+            if m.set_reaction(from, &emoji) {
+                store::write_message(&m).await;
             }
-            store::write_message(&m).await;
             emit(Ev::Messages(c.id.clone()));
             if m.from == me && !emoji.is_empty() {
                 emit(Ev::Reaction {
@@ -4513,12 +4510,9 @@ async fn apply_own_wire(chat_id: &str, wire: Wire) {
         }
         Body::React { id, emoji } => {
             if let Some(mut m) = get_message(&c.id, &id).await {
-                if emoji.is_empty() {
-                    m.reactions.remove(&me);
-                } else {
-                    m.reactions.insert(me, emoji.chars().take(8).collect());
+                if m.set_reaction(&me, &emoji) {
+                    store::write_message(&m).await;
                 }
-                store::write_message(&m).await;
                 emit(Ev::Messages(c.id.clone()));
             }
         }

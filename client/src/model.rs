@@ -515,6 +515,20 @@ fn attachments<'a>(msgs: &'a [Message], kind: &str, me: &str, now: f64) -> Vec<&
 }
 
 impl Message {
+    /// La réaction de `who` (vide : retirée ; 8 caractères au plus). Vrai
+    /// si elle change (le message est alors à réécrire).
+    pub fn set_reaction(&mut self, who: &str, emoji: &str) -> bool {
+        if emoji.is_empty() {
+            return self.reactions.remove(who).is_some();
+        }
+        let emoji: String = emoji.chars().take(8).collect();
+        if self.reactions.get(who) == Some(&emoji) {
+            return false;
+        }
+        self.reactions.insert(who.to_owned(), emoji);
+        true
+    }
+
     /// Un accusé de `from` : reçu, ou lu (`read`). Vrai s'il apprend
     /// quelque chose (le message est alors à réécrire).
     pub fn note_receipt(&mut self, from: &str, read: bool) -> bool {
@@ -1664,6 +1678,24 @@ mod tests {
         };
         assert_ne!(back.last, Some(edited));
         assert_ne!(back.last, None);
+    }
+
+    /// Une réaction redite, ou retirée alors qu'il n'y en avait pas, ne
+    /// réécrit pas le message ; le reste, comme avant.
+    #[test]
+    fn a_reaction_said_again_changes_nothing() {
+        let mut m = Message::default();
+        assert!(!m.set_reaction("AAAAAAAAAA", ""));
+        assert!(m.set_reaction("AAAAAAAAAA", "👍"));
+        assert!(!m.set_reaction("AAAAAAAAAA", "👍"));
+        assert!(m.set_reaction("AAAAAAAAAA", "❤️"));
+        // Coupée à 8 caractères, comme avant : la même une fois coupée.
+        assert!(m.set_reaction("BBBBBBBBBB", "123456789"));
+        assert_eq!(m.reactions["BBBBBBBBBB"], "12345678");
+        assert!(!m.set_reaction("BBBBBBBBBB", "12345678x"));
+        assert!(m.set_reaction("AAAAAAAAAA", ""));
+        assert!(!m.set_reaction("AAAAAAAAAA", ""));
+        assert_eq!(m.reactions.len(), 1);
     }
 
     #[test]
