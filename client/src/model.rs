@@ -260,7 +260,7 @@ fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Last {
     pub id: String,
@@ -1637,6 +1637,33 @@ mod tests {
         let mut n = Message::default();
         assert!(n.note_receipt("CCCCCCCCCC", true));
         assert_eq!((n.delivered_to.len(), n.read_by.len()), (1, 1));
+    }
+
+    /// Le dernier message d'une discussion relue depuis la base est égal à
+    /// celui qu'on recalcule (sinon elle serait réécrite pour rien), et un
+    /// dernier message changé ne l'est pas.
+    #[test]
+    fn a_last_message_read_back_is_the_same_last_message() {
+        let last = Last {
+            id: "m1".into(),
+            from: "K7Q2MX9PRT".into(),
+            text: "Bonjour 👋 « à demain »".into(),
+            at: 1_764_100_000_123.456,
+            kind: "text".into(),
+        };
+        let chat = Chat {
+            id: "g:1".into(),
+            last: Some(last.clone()),
+            ..Default::default()
+        };
+        let back: Chat = serde_json::from_str(&serde_json::to_string(&chat).unwrap()).unwrap();
+        assert_eq!(back.last, Some(last.clone()));
+        let edited = Last {
+            text: "Bonjour".into(),
+            ..last.clone()
+        };
+        assert_ne!(back.last, Some(edited));
+        assert_ne!(back.last, None);
     }
 
     #[test]

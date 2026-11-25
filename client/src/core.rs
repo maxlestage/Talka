@@ -2520,8 +2520,17 @@ pub async fn last_tick(chat: &Chat) -> Option<&'static str> {
 }
 
 async fn refresh_last(chat_id: &str) {
-    let last = store::messages_of(chat_id, 1).await.pop();
-    update_chat(chat_id, |c| c.last = last.as_ref().map(last_of)).await;
+    let last = store::messages_of(chat_id, 1)
+        .await
+        .pop()
+        .map(|m| last_of(&m));
+    // Le plus souvent inchangé (de vieux messages partis, un ancien message
+    // modifié) : la discussion n'est pas réécrite pour rien (fond d'écran
+    // compris : 0,9 ms).
+    if with(|s| s.chats.get(chat_id).is_some_and(|c| c.last == last)) {
+        return;
+    }
+    update_chat(chat_id, |c| c.last = last).await;
 }
 
 async fn store_message(m: &Message, bump: bool) {
