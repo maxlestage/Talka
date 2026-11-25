@@ -4045,12 +4045,11 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             if active {
                 m.read_by_me = true;
             } else {
-                c.unread += 1;
-                // Mentionné : « @ » dans la liste, jusqu'à la lecture.
-                if m.mentions.contains(&me) {
-                    c.mentioned = true;
-                }
-                save_chat(c.clone()).await;
+                c.count_unread(&m, &me);
+                // Écrit avec le dernier message, par `store_message` : une
+                // seule écriture de la discussion (fond d'écran compris :
+                // 0,9 ms chacune) au lieu de deux par message reçu.
+                with(|s| s.chats.insert(c.id.clone(), c.clone()));
             }
             store_message(&m, true).await;
             queue_receipt(from, &c.id, std::slice::from_ref(&id), "delivered");

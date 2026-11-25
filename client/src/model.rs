@@ -83,6 +83,15 @@ impl Chat {
     pub fn unarchives_on(&self, from: &str, me: &str, keep_archived: bool) -> bool {
         self.archived && from != me && !self.muted && !keep_archived
     }
+
+    /// Un message reçu sans être lu : un non-lu de plus, et « @ » dans la
+    /// liste s'il nous mentionne, jusqu'à la lecture.
+    pub fn count_unread(&mut self, m: &Message, me: &str) {
+        self.unread += 1;
+        if m.mentions.iter().any(|x| x == me) {
+            self.mentioned = true;
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1563,6 +1572,36 @@ mod tests {
     }
 
     /// Un message est compté important exactement quand `is_starred` le dit.
+    /// Un message reçu hors de la discussion ouverte : la discussion,
+    /// écrite une seule fois avec son dernier message, garde ses non-lus
+    /// et sa mention.
+    #[test]
+    fn an_unread_message_is_counted_in_the_chat_written_once() {
+        let me = "K7Q2MX9PRT";
+        let mut c = Chat {
+            id: "g:1".into(),
+            unread: 2,
+            ..Default::default()
+        };
+        let plain = Message {
+            chat: "g:1".into(),
+            from: "WGSEAJNSZJ".into(),
+            mentions: vec!["AUTREXXXXX".into()],
+            ..Default::default()
+        };
+        c.count_unread(&plain, me);
+        assert_eq!((c.unread, c.mentioned), (3, false));
+        let named = Message {
+            mentions: vec![me.into()],
+            ..plain.clone()
+        };
+        c.count_unread(&named, me);
+        assert_eq!((c.unread, c.mentioned), (4, true));
+        // Ce qu'écrit `store_message` ensuite : le compte y est.
+        let back: Chat = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!((back.unread, back.mentioned), (4, true));
+    }
+
     #[test]
     fn starred_of_agrees_with_is_starred() {
         for starred in [false, true] {
