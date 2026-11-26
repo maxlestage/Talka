@@ -644,8 +644,9 @@ enum Rec {
     Keys(String, String, String),
     Bundle(String, String, Arc<Bundle>),
     Seen(String, u64),
-    /// La boîte, le numéro, le texte, l'heure de la recopie, ce qui reste.
-    Message(String, u64, Text, u64, Duration),
+    /// Une boîte (son nom recopié une fois), l'heure de la recopie, et ses
+    /// messages : numéro, texte, ce qui leur reste à vivre.
+    Mailbox(String, u64, Vec<(u64, Text, Duration)>),
 }
 
 impl Snapshot {
@@ -656,9 +657,9 @@ impl Snapshot {
             value,
             ttl: KEPT_TTL,
         };
-        self.0
-            .into_iter()
-            .map(|rec| match rec {
+        let mut ops = Vec::with_capacity(self.0.len());
+        for rec in self.0 {
+            ops.push(match rec {
                 Rec::Ready(op) => op,
                 Rec::Keys(code, sign, dh) => {
                     let value = rec_keys(&code, &Keys { sign, dh });
@@ -671,14 +672,18 @@ impl Snapshot {
                     let value = json!({ "k": "s", "c": code, "t": seen });
                     set('s', code, value)
                 }
-                Rec::Message(key, n, json, now, left) => Op::Set {
-                    kind: 'm',
-                    name: message_name(&key, n),
-                    value: rec_message(&key, n, &json, now + left.as_millis() as u64),
-                    ttl: left,
-                },
-            })
-            .collect()
+                Rec::Mailbox(key, now, messages) => {
+                    ops.extend(messages.into_iter().map(|(n, json, left)| Op::Set {
+                        kind: 'm',
+                        name: message_name(&key, n),
+                        value: rec_message(&key, n, &json, now + left.as_millis() as u64),
+                        ttl: left,
+                    }));
+                    continue;
+                }
+            });
+        }
+        ops
     }
 }
 
@@ -819,6 +824,8 @@ impl State {
     /// magasin).
     fn snapshot(&self) -> Snapshot {
         let now = now_ms();
+        // L'heure lue une fois, pas pour chaque message ni chaque boîte.
+        let instant = Instant::now();
         let mut recs = Vec::with_capacity(self.keys.len() + self.seen.len() + self.bundles.len());
         for (code, keys) in &self.keys {
             recs.push(Rec::Keys(code.clone(), keys.sign.clone(), keys.dh.clone()));
@@ -860,7 +867,7 @@ impl State {
         let mut by_sub: HashMap<&str, (&crate::push::Subscription, Vec<&str>, Duration)> =
             HashMap::new();
         for (addr, (sub, at)) in &self.boite_push {
-            let left = BOITE_PUSH_TTL.saturating_sub(at.elapsed());
+            let left = BOITE_PUSH_TTL.saturating_sub(instant.saturating_duration_since(*at));
             let entry =
                 by_sub
                     .entry(sub.endpoint.as_str())
@@ -879,11 +886,19 @@ impl State {
         // Les messages en dernier : s'il manque de la place, ce sont eux
         // que le magasin laisse partir.
         for (key, mb) in &self.mailboxes {
-            for s in mb.queue.iter().filter(|s| s.kept > 0) {
-                let left = s.ttl.saturating_sub(s.at.elapsed());
-                if !left.is_zero() {
-                    recs.push(Rec::Message(key.clone(), s.n, s.json.clone(), now, left));
-                }
+            let messages: Vec<(u64, Text, Duration)> = mb
+                .queue
+                .iter()
+                .filter(|s| s.kept > 0)
+                .filter_map(|s| {
+                    let left = s
+                        .ttl
+                        .saturating_sub(instant.saturating_duration_since(s.at));
+                    (!left.is_zero()).then(|| (s.n, s.json.clone(), left))
+                })
+                .collect();
+            if !messages.is_empty() {
+                recs.push(Rec::Mailbox(key.clone(), now, messages));
             }
         }
         Snapshot(recs)
@@ -3492,6 +3507,61 @@ mod tests {
     /// premières adresses valides de la demande, jusqu'à la limite.
     /// La recopie complète, mise en forme hors du verrou, dit ce qu'elle
     /// disait : les mêmes fiches, et les messages en dernier.
+    /// Plusieurs messages par boîte : tous recopiés, en dernier, chacun
+    /// sous son nom, sauf ceux qui ont expiré ou que le magasin n'a pas.
+    #[test]
+    fn a_snapshot_copies_every_living_message_of_each_box() {
+        let relay = Relay::default();
+        let mut st = relay.lock();
+        st.seen.insert("AAAAAAAAAA".into(), 1);
+        let stored = |n: u64, ttl: u64, kept: usize| Stored {
+            n,
+            json: Arc::new(format!("m{n}")),
+            at: Instant::now() - Duration::from_secs(5),
+            ttl: Duration::from_secs(ttl),
+            kept,
+        };
+        for (key, list) in [
+            (
+                "BOX1",
+                vec![stored(1, 60, 2), stored(2, 60, 2), stored(3, 1, 2)],
+            ),
+            ("BOX2", vec![stored(4, 60, 0), stored(5, 60, 2)]),
+        ] {
+            st.mailboxes
+                .entry(key.into())
+                .or_default()
+                .queue
+                .extend(list);
+        }
+        let ops = st.snapshot().ops();
+        drop(st);
+        assert!(matches!(ops.first(), Some(Op::Set { kind: 's', .. })));
+        let mut messages: Vec<(String, String)> = ops[1..]
+            .iter()
+            .map(|op| match op {
+                Op::Set {
+                    kind: 'm',
+                    name,
+                    value,
+                    ttl,
+                } => {
+                    assert!(*ttl <= Duration::from_secs(55) && !ttl.is_zero());
+                    (name.clone(), value["j"].as_str().unwrap().to_owned())
+                }
+                _ => panic!("les messages en dernier"),
+            })
+            .collect();
+        messages.sort();
+        let mut want = vec![
+            (message_name("BOX1", 1), "m1".to_owned()),
+            (message_name("BOX1", 2), "m2".to_owned()),
+            (message_name("BOX2", 5), "m5".to_owned()),
+        ];
+        want.sort();
+        assert_eq!(messages, want);
+    }
+
     #[test]
     fn a_snapshot_says_what_it_always_said() {
         let relay = Relay::default();
