@@ -98,11 +98,11 @@ pub fn avatar(id: &str, size: u32) -> Element {
             .style("height", &px)
             .style("font-size", &font)
     };
-    if let Some(chat) = core::chat(id).filter(|c| c.group) {
-        return if chat.avatar.is_empty() {
+    if let Some(photo) = core::chat_with(id, |c| c.group.then(|| c.avatar.clone())).flatten() {
+        return if photo.is_empty() {
             sized(h("span.avatar.group").child(icon("group"))).el()
         } else {
-            sized(h("img.avatar").attr("src", &chat.avatar).attr("alt", "")).el()
+            sized(h("img.avatar").attr("src", &photo).attr("alt", "")).el()
         };
     }
     let src = core::avatar_of(id);
@@ -887,7 +887,7 @@ fn render_chat_list() {
         } else {
             core::contacts()
                 .into_iter()
-                .filter(|c| c.saved && core::chat(&c.code).is_none())
+                .filter(|c| c.saved && core::chat_with(&c.code, |_| ()).is_none())
                 .filter(|c| {
                     fold(&core::display_name(&c.code)).contains(&q)
                         || c.code.to_lowercase().contains(&q_code)

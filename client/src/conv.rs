@@ -2101,10 +2101,13 @@ pub fn refresh_composer_rights() {
     let (Some(id), Some(host)) = (current(), el(|c| c.composer.clone())) else {
         return;
     };
-    let Some(chat) = core::chat(&id) else { return };
+    // À chaque message de la discussion ouverte : lue sans être recopiée.
+    let me = core::my_code();
+    let Some((can_write, group)) = core::chat_with(&id, |c| (c.can_write(&me), c.group)) else {
+        return;
+    };
     let off = query_in(&host, ".composer-off").is_some();
-    let should_be_off =
-        !chat.can_write(&core::my_code()) || (!chat.group && core::blocked(&chat.id));
+    let should_be_off = !can_write || (!group && core::blocked(&id));
     if off != should_be_off {
         render_composer(false);
     }

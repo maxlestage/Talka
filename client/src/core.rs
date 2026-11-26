@@ -199,6 +199,14 @@ pub fn chat(id: &str) -> Option<Chat> {
     with(|s| s.chats.get(id).cloned())
 }
 
+/// Ce que `read` tire d'une discussion, lue sans être recopiée (son fond
+/// d'écran, sa photo : chaque avatar de la liste en recopiait une, 0,6 à
+/// 0,9 ms par redessin de 200 discussions). `read` ne doit pas rappeler
+/// l'état (`my_code`, `contact`…) : il est emprunté pendant ce temps.
+pub fn chat_with<T>(id: &str, read: impl FnOnce(&Chat) -> T) -> Option<T> {
+    with(|s| s.chats.get(id).map(read))
+}
+
 /// Les codes des contacts qui répondent à `keep`, sans les recopier (une
 /// photo chacun : 300 contacts recopiés, 8 à 10 ms).
 pub fn contact_codes(keep: impl Fn(&Contact) -> bool) -> Vec<String> {
