@@ -340,6 +340,9 @@ struct Built {
     plain: paquets::vitesse::Bytes,
     br: paquets::vitesse::Bytes,
     gz: paquets::vitesse::Bytes,
+    /// Son empreinte (faible : la même dans tous les codages), pour un 304
+    /// vide quand le navigateur l'a déjà ; `None` pour une page d'erreur.
+    etag: Option<String>,
 }
 
 type Kept = std::sync::Arc<tokio::sync::OnceCell<Built>>;
@@ -360,22 +363,48 @@ impl Built {
         let (br, gz) = tokio::task::spawn_blocking(move || compressed(&bytes))
             .await
             .unwrap_or_default();
+        let etag = (status == 200).then(|| {
+            use sha2::{Digest, Sha256};
+            let hash = Sha256::digest(&plain);
+            let hex: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
+            format!("W/\"{hex}\"")
+        });
         Built {
             status,
             headers,
             plain,
             br: br.into(),
             gz: gz.into(),
+            etag,
         }
     }
 
-    /// La page, dans le codage que le navigateur accepte.
-    fn response(&self, accept_encoding: &str) -> Response {
-        let mut res = Response::new().status(self.status);
+    /// La page, dans le codage que le navigateur accepte ; un 304 vide
+    /// s'il l'a déjà (`If-None-Match`) : l'application, rouverte, ne
+    /// retélécharge plus sa page (780 octets), ni l'accueil (6,3 Ko).
+    fn response(&self, accept_encoding: &str, if_none_match: Option<&str>) -> Response {
+        let fresh = self.etag.as_deref().is_some_and(|etag| {
+            if_none_match.is_some_and(|tags| {
+                // Comparaison faible (RFC 9110) : `W/` ne compte pas.
+                let bare = |t: &str| t.trim().trim_start_matches("W/").to_owned();
+                tags.split(',')
+                    .any(|t| t.trim() == "*" || bare(t) == bare(etag))
+            })
+        });
+        let mut res = Response::new().status(if fresh { 304 } else { self.status });
         for (name, value) in &self.headers {
+            if fresh && name == "content-type" {
+                continue;
+            }
             res = res.append_header(name.as_str(), value.as_str());
         }
         res = res.header("vary", "accept-encoding");
+        if let Some(etag) = &self.etag {
+            res = res.header("etag", etag.as_str());
+        }
+        if fresh {
+            return res;
+        }
         let coded = [(&self.br, "br"), (&self.gz, "gzip")]
             .into_iter()
             .find(|(bytes, coding)| !bytes.is_empty() && assets::accepts(accept_encoding, coding));
@@ -413,11 +442,11 @@ async fn serve_page(
     req: &Request,
 ) -> Response {
     let built = kept.get_or_init(|| Built::of(page().into_response())).await;
-    with_policy(
-        built.response(req.header("accept-encoding").unwrap_or("")),
-        site,
-        req,
-    )
+    let res = built.response(
+        req.header("accept-encoding").unwrap_or(""),
+        req.header("if-none-match"),
+    );
+    with_policy(res, site, req)
 }
 
 /// Les fichiers du navigateur.

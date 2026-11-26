@@ -284,6 +284,55 @@ fn browser_and_server_agree() {
     ));
 }
 
+/// Une page déjà reçue ne repart pas : un 304 vide, avec sa politique de
+/// sécurité ; une autre empreinte, ou aucune, et la page repart entière.
+#[tokio::test]
+async fn a_page_already_received_is_not_sent_again() {
+    let client = talka::app().test().await;
+    for path in ["/", "/app", "/confidentialite"] {
+        let first = client
+            .get(path)
+            .header("accept-encoding", "br")
+            .header("host", "talka.example")
+            .await;
+        let etag = first.header("etag").expect("ETag").to_owned();
+        assert!(etag.starts_with("W/\""), "{path} : {etag}");
+        let again = client
+            .get(path)
+            .header("accept-encoding", "br")
+            .header("host", "talka.example")
+            .header("if-none-match", &etag)
+            .await;
+        assert_eq!(again.status(), 304, "{path}");
+        assert!(again.bytes().is_empty());
+        assert_eq!(again.header("etag"), Some(etag.as_str()));
+        assert!(
+            again
+                .header("content-security-policy")
+                .is_some_and(|c| c.contains("wss://talka.example"))
+        );
+        // La même empreinte dans un autre codage (faible), ou dans une liste.
+        let plain = client
+            .get(path)
+            .header(
+                "if-none-match",
+                &format!("\"autre\", {}", etag.trim_start_matches("W/")),
+            )
+            .await;
+        assert_eq!(plain.status(), 304, "{path}");
+        let changed = client
+            .get(path)
+            .header("if-none-match", "W/\"autre\"")
+            .await;
+        assert_eq!(changed.status(), 200);
+        assert!(!changed.bytes().is_empty());
+    }
+    // Une page d'erreur n'a pas d'empreinte.
+    let missing = client.get("/nulle-part").header("if-none-match", "*").await;
+    assert_eq!(missing.status(), 404);
+    assert_eq!(missing.header("etag"), None);
+}
+
 /// Les pages sont faites et compressées une fois : ce qui part, dans
 /// chaque codage, est la page telle qu'elle était, avec ses en-têtes.
 #[tokio::test]
