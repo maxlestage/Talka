@@ -77,6 +77,32 @@ thread_local! {
     static OUT_HEADS: RefCell<crate::model::OutHeads> = RefCell::new(Default::default());
     /// Les marques des messages qu'attend la boîte d'envoi.
     static MARKS: RefCell<crate::model::Marks> = RefCell::new(Default::default());
+    /// Les pierres tombales de chaque discussion, décodées.
+    static TOMBS: RefCell<crate::model::Tombs> = RefCell::new(Default::default());
+}
+
+/// La clé des pierres tombales d'une discussion.
+pub fn tomb_key(chat: &str) -> String {
+    format!("tombes:{chat}")
+}
+
+/// La discussion dont `key` (de `store`) garde les pierres tombales.
+fn tomb_chat<'a>(store: &str, key: &'a str) -> Option<&'a str> {
+    (store == KV).then(|| key.strip_prefix("tombes:")).flatten()
+}
+
+/// `id` a-t-il été effacé de `chat` (une pierre tombale) ? La liste est
+/// lue une fois, puis gardée décodée jusqu'à sa prochaine écriture.
+pub async fn buried(chat: &str, id: &str) -> bool {
+    if let Some(ids) = TOMBS.with(|t| t.borrow().get(chat)) {
+        return ids.contains(id);
+    }
+    let epoch = TOMBS.with(|t| t.borrow().epoch());
+    let list: Vec<(String, f64)> = read(KV, &tomb_key(chat)).await.unwrap_or_default();
+    let ids = list.into_iter().map(|(id, _)| id).collect();
+    TOMBS
+        .with(|t| t.borrow_mut().keep(chat, epoch, ids))
+        .contains(id)
 }
 
 /// Ce que la boîte d'envoi lit d'un message (`chat|id`), gardé jusqu'à ce
@@ -763,6 +789,9 @@ pub async fn write<T: Serialize>(store: &str, key: &str, value: &T) {
     if store == "outbox" {
         OUT_HEADS.with(|h| h.borrow_mut().put(key, &json));
     }
+    if let Some(chat) = tomb_chat(store, key) {
+        TOMBS.with(|t| t.borrow_mut().changed(chat));
+    }
     db.put(store, key, json, "", 0.0).await;
 }
 
@@ -781,6 +810,9 @@ pub async fn write_message(m: &crate::model::Message) {
 pub async fn remove(store: &str, key: &str) {
     if store == "outbox" {
         OUT_HEADS.with(|h| h.borrow_mut().remove(key));
+    }
+    if let Some(chat) = tomb_chat(store, key) {
+        TOMBS.with(|t| t.borrow_mut().changed(chat));
     }
     if store == "messages" {
         let chat = key.split_once('|').map_or(key, |(chat, _)| chat);
@@ -807,6 +839,9 @@ pub async fn clear(store: &str) {
     }
     if store == "messages" {
         MARKS.with(|k| k.borrow_mut().forget());
+    }
+    if store == KV {
+        TOMBS.with(|t| t.borrow_mut().forget());
     }
     if let Some(db) = rows() {
         db.clear(store).await;
@@ -862,6 +897,7 @@ pub async fn restore(data: &Value) {
     MARKS.with(|k| k.borrow_mut().forget());
     OUT_HEADS.with(|h| h.borrow_mut().forget());
     WRITES.with(|w| w.borrow_mut().all());
+    TOMBS.with(|t| t.borrow_mut().forget());
     if let Some(db) = rows() {
         db.restore(data).await;
         flush_now().await;
@@ -873,6 +909,7 @@ pub async fn wipe() {
     MARKS.with(|k| k.borrow_mut().forget());
     OUT_HEADS.with(|h| h.borrow_mut().forget());
     WRITES.with(|w| w.borrow_mut().all());
+    TOMBS.with(|t| t.borrow_mut().forget());
     if let Some(db) = rows() {
         db.wipe().await;
         flush_now().await;

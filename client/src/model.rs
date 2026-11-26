@@ -1,7 +1,8 @@
 //! Ce que garde l'appareil (IndexedDB) et ce qui voyage, chiffré, entre
 //! appareils (`Wire`). Tout est (dé)sérialisé avec serde.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 
@@ -1520,6 +1521,50 @@ impl Writes {
     }
 }
 
+/// Les messages effacés de chaque discussion (ses pierres tombales),
+/// gardés décodés : chaque message reçu y est cherché, et relire la liste
+/// (jusqu'à 20 000) coûtait 0,1 à 2,6 ms. Oubliés dès qu'une liste est
+/// écrite ; une liste lue pendant une écriture n'est pas gardée.
+#[derive(Default)]
+pub struct Tombs {
+    per_chat: HashMap<String, Rc<HashSet<String>>>,
+    /// Avance à chaque écriture.
+    epoch: u64,
+}
+
+impl Tombs {
+    pub fn get(&self, chat: &str) -> Option<Rc<HashSet<String>>> {
+        self.per_chat.get(chat).cloned()
+    }
+
+    /// À prendre avant de lire une liste, pour [`Tombs::keep`].
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// La liste de `chat`, lue quand l'époque était `epoch` : gardée si
+    /// rien n'a été écrit depuis.
+    pub fn keep(&mut self, chat: &str, epoch: u64, ids: HashSet<String>) -> Rc<HashSet<String>> {
+        let ids = Rc::new(ids);
+        if epoch == self.epoch {
+            self.per_chat.insert(chat.to_owned(), ids.clone());
+        }
+        ids
+    }
+
+    /// La liste de `chat` a été écrite.
+    pub fn changed(&mut self, chat: &str) {
+        self.epoch += 1;
+        self.per_chat.remove(chat);
+    }
+
+    /// Tout a pu changer.
+    pub fn forget(&mut self) {
+        self.epoch += 1;
+        self.per_chat.clear();
+    }
+}
+
 /// La prochaine échéance connue des messages éphémères de chaque
 /// discussion : le ménage de chaque minute ne relit une discussion que
 /// quand l'un d'eux arrive à terme, au lieu de décoder tous ses messages à
@@ -1696,6 +1741,29 @@ mod tests {
         assert!(m.set_reaction("AAAAAAAAAA", ""));
         assert!(!m.set_reaction("AAAAAAAAAA", ""));
         assert_eq!(m.reactions.len(), 1);
+    }
+
+    /// Les pierres tombales gardées suivent ce qui est écrit, et une liste
+    /// lue pendant une écriture n'est pas gardée.
+    #[test]
+    fn tombs_are_forgotten_when_written() {
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
+        let mut t = Tombs::default();
+        assert!(t.get("g:1").is_none());
+        let e = t.epoch();
+        assert!(t.keep("g:1", e, ids(&["m1"])).contains("m1"));
+        assert!(t.get("g:1").unwrap().contains("m1"));
+        t.keep("g:2", t.epoch(), ids(&["m2"]));
+        t.changed("g:1");
+        assert!(t.get("g:1").is_none());
+        assert!(t.get("g:2").is_some());
+        // Lue avant une écriture, rendue après : pas gardée.
+        let e = t.epoch();
+        t.changed("g:1");
+        assert!(t.keep("g:1", e, ids(&["vieux"])).contains("vieux"));
+        assert!(t.get("g:1").is_none());
+        t.forget();
+        assert!(t.get("g:2").is_none());
     }
 
     #[test]

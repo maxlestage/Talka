@@ -2192,7 +2192,7 @@ pub const TOMB_WINDOW: f64 = 31.0 * DAY;
 
 async fn bury(chat: &str, msgs: impl IntoIterator<Item = (String, f64)>) {
     let t = now();
-    let key = format!("tombes:{chat}");
+    let key = store::tomb_key(chat);
     let mut list: Vec<(String, f64)> = store::read("kv", &key).await.unwrap_or_default();
     let before = list.len();
     list.retain(|(_, at)| t - at < TOMB_WINDOW);
@@ -2218,9 +2218,7 @@ async fn bury(chat: &str, msgs: impl IntoIterator<Item = (String, f64)>) {
 
 /// Ce message a-t-il été effacé ici (dans les 31 derniers jours) ?
 async fn buried(chat: &str, id: &str) -> bool {
-    store::read::<Vec<(String, f64)>>("kv", &format!("tombes:{chat}"))
-        .await
-        .is_some_and(|l| l.iter().any(|(i, _)| i == id))
+    store::buried(chat, id).await
 }
 
 /// Une offre d'appel jamais vue (les 200 dernières sont gardées) ?
