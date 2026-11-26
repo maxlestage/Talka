@@ -158,6 +158,9 @@ en clair dans la sauvegarde, elle-même chiffrée par son mot de passe.
   sourdine, « @ » dans la liste des discussions)
 - 📹 appels audio et vidéo en WebRTC (d'appareil à appareil), micro, caméra,
   changement de caméra, historique ; serveurs TURN avec `TALKA_ICE_SERVERS`
+- 👥 appels à plusieurs (huit personnes au plus) : tout un groupe, des contacts
+  choisis, ou quelqu'un ajouté en cours d'appel ; chacun relié à chacun, de
+  pair à pair, sans que le serveur voie le son ni l'image (`client/src/mesh.rs`)
 - 🎙️ vocaux avec forme d'onde et vitesse 1×/1,5×/2× ; 📷 photos réduites
   avant l'envoi ; 📄 fichiers (3 Mo) ; 👤 cartes de contact
 - ⭕ statuts (texte coloré ou photo) pendant 24 heures, avec « vu par » ;

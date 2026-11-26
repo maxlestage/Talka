@@ -3908,8 +3908,10 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             return;
         }
         Body::Call { op, call_id, .. } => {
-            // Une offre d'appel déjà vue (un rejeu) ne fait pas sonner.
-            if op == "offer" && !first_offer(call_id).await {
+            // Une offre d'appel déjà vue (un rejeu) ne fait pas sonner. À
+            // plusieurs, chacun invite avec le même identifiant d'appel :
+            // une offre par appel et par expéditeur.
+            if op == "offer" && !first_offer(&format!("{call_id}:{from}")).await {
                 return;
             }
             emit(Ev::CallSignal {
@@ -4429,6 +4431,8 @@ async fn handle_sync(fd: &str, op: &str, c: &str, w: Option<Wire>, d: Value) {
                 video: false,
                 sdp: String::new(),
                 cand: None,
+                members: Vec::new(),
+                chat: String::new(),
             },
             live: true,
         }),

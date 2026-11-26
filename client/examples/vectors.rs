@@ -119,6 +119,22 @@ fn main() {
             cand: Some(
                 json!({ "candidate": "candidate:1 1 udp 1 10.0.0.1 9 typ host", "sdpMid": "0", "sdpMLineIndex": 0 }),
             ),
+            members: Vec::new(),
+            chat: String::new(),
+        }),
+        // Un appel à plusieurs : la liste de ses participants et son groupe.
+        Wire::new(Body::Call {
+            op: "join".into(),
+            call_id: "c2".into(),
+            video: false,
+            sdp: String::new(),
+            cand: None,
+            members: vec![
+                "AAAAAAAAAA".into(),
+                "BBBBBBBBBB".into(),
+                "CCCCCCCCCC".into(),
+            ],
+            chat: "g:famille".into(),
         }),
         // Une capsule temporelle : un message scellé jusqu'à `open_at`.
         Wire::new(Body::Msg {
@@ -248,6 +264,8 @@ fn main() {
         at: 1.0,
         dur: 42.0,
         missed: false,
+        members: Vec::new(),
+        chat: String::new(),
     };
     let out_item = OutItem {
         id: "m1:X".into(),

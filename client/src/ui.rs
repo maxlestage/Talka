@@ -618,14 +618,7 @@ fn render_side() {
             e.stop_propagation();
             match with(|u| u.tab.clone()).as_str() {
                 "status" => new_text_status(),
-                "calls" => spawn(async {
-                    if let Some(code) = pick_contacts("Appeler…", &[], "Appeler")
-                        .await
-                        .and_then(|l| l.into_iter().next())
-                    {
-                        calls::start_call(&code, false).await;
-                    }
-                }),
+                "calls" => spawn(new_call()),
                 _ => open_new_chat(),
             }
         });
@@ -2036,7 +2029,23 @@ fn open_new_chat() {
 }
 
 /// Choisir des contacts : renvoie leurs codes (`None` : annulé).
-async fn pick_contacts(title: &str, exclude: &[String], ok: &str) -> Option<Vec<String>> {
+/// « Nouvel appel » : un contact, ou plusieurs (un appel de groupe).
+async fn new_call() {
+    let Some(list) = pick_contacts("Appeler…", &[], "Appeler").await else {
+        return;
+    };
+    match list.as_slice() {
+        [] => {}
+        [one] => calls::start_call(one, false).await,
+        _ => calls::start_group_call(list, false, "").await,
+    }
+}
+
+pub(crate) async fn pick_contacts(
+    title: &str,
+    exclude: &[String],
+    ok: &str,
+) -> Option<Vec<String>> {
     let people: Vec<_> = core::contacts()
         .into_iter()
         .filter(|c| c.saved && !c.blocked && !exclude.contains(&c.code))
@@ -3624,28 +3633,24 @@ async fn render_calls() {
                         .attr("type", "button")
                         .child(h("span.avatar.action").child(icon("phone")))
                         .child(h("div.grow.strong").text("Nouvel appel"))
-                        .click(|| {
-                            spawn(async {
-                                if let Some(code) = pick_contacts("Appeler…", &[], "Appeler")
-                                    .await
-                                    .and_then(|l| l.into_iter().next())
-                                {
-                                    calls::start_call(&code, false).await;
-                                }
-                            })
-                        }),
+                        .click(|| spawn(new_call())),
                 )
                 .child(header)
                 .children(list.iter().map(|c| {
-                    let (peer, video) = (c.peer.clone(), c.video);
+                    let entry = c.clone();
+                    let face = if c.members.len() > 1 && !c.chat.is_empty() {
+                        &c.chat
+                    } else {
+                        &c.peer
+                    };
                     h("div.list-item")
-                        .child(avatar(&c.peer, 44))
+                        .child(avatar(face, 44))
                         .child(
                             h("div.grow")
                                 .child(
                                     h("div.strong")
                                         .class_if("missed", c.missed)
-                                        .text(core::display_name(&c.peer)),
+                                        .text(calls::entry_title(c)),
                                 )
                                 .child(
                                     h("small.muted.call-line")
@@ -3670,8 +3675,8 @@ async fn render_calls() {
                             if c.video { "video" } else { "phone" },
                             "Rappeler",
                             move || {
-                                let p = peer.clone();
-                                spawn(async move { calls::start_call(&p, video).await })
+                                let e = entry.clone();
+                                spawn(async move { calls::call_again(&e).await })
                             },
                         ))
                 })),

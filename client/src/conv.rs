@@ -118,7 +118,8 @@ fn subtitle(chat: &Chat) -> String {
 
 fn header(chat: &Chat) -> Element {
     let id = chat.id.clone();
-    let direct = !chat.group;
+    // Un contact, ou un groupe dont on est encore membre : on peut l'appeler.
+    let callable = !chat.group || (!chat.left && chat.members.len() > 1);
     let (v, a) = (chat.id.clone(), chat.id.clone());
     let menu_chat = chat.id.clone();
     h("header.conv-head")
@@ -139,16 +140,16 @@ fn header(chat: &Chat) -> Element {
         )
         .child(
             h("div.conv-actions")
-                .child(direct.then(|| {
+                .child(callable.then(|| {
                     icon_button("video", "Appel vidéo", move || {
                         let v = v.clone();
-                        spawn(async move { crate::calls::start_call(&v, true).await })
+                        spawn(async move { crate::calls::call_chat(&v, true).await })
                     })
                 }))
-                .child(direct.then(|| {
+                .child(callable.then(|| {
                     icon_button("phone", "Appel audio", move || {
                         let a = a.clone();
-                        spawn(async move { crate::calls::start_call(&a, false).await })
+                        spawn(async move { crate::calls::call_chat(&a, false).await })
                     })
                 }))
                 .child(icon_button("search", "Rechercher", toggle_search))

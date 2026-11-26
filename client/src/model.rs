@@ -909,6 +909,12 @@ pub struct CallEntry {
     pub at: f64,
     pub dur: f64,
     pub missed: bool,
+    /// Un appel à plusieurs : les autres participants (`peer` compris).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+    /// Le groupe d'où il a été lancé, s'il y en a un.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub chat: String,
 }
 
 /// Ce qui décrit un groupe, joint à chaque envoi dans ce groupe.
@@ -1267,6 +1273,13 @@ pub enum Body {
         sdp: String,
         #[serde(default)]
         cand: Option<serde_json::Value>,
+        /// Un appel à plusieurs (`mesh`) : tous ceux de l'appel, l'expéditeur
+        /// compris. Absent pour un appel à deux, comme avant.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        members: Vec<String>,
+        /// Le groupe d'où l'appel a été lancé (son titre), s'il y en a un.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        chat: String,
     },
     /// Entre les appareils d'un même compte (v4, `docs/SECURITE.md` §7.11) :
     /// ce que l'un a fait, que les autres refont. Accepté seulement de nos
