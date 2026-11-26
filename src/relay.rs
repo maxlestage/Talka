@@ -138,6 +138,9 @@ const BOITE_PUSH_TTL: Duration = Duration::from_secs(3 * 24 * 3600);
 /// Le grand ménage des boîtes (les messages périmés) : une fois par minute au
 /// plus, et quand la place manque.
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
+/// Plein, le ménage refait pour faire de la place : une fois par seconde au
+/// plus.
+const EVICT_WHEN_FULL: Duration = Duration::from_secs(1);
 /// Dans le magasin clé-valeur (voir `crate::kv`) : ce qu'on sait d'un code y
 /// reste 30 jours après sa dernière connexion, comme ses messages.
 const KEPT_TTL: Duration = MAILBOX_TTL;
@@ -1461,7 +1464,12 @@ impl Relay {
                 })
         };
         if !room(&st) {
-            st.evict_expired();
+            // Au plus une fois par seconde : plein, chaque envoi refusé
+            // relisait toutes les boîtes, verrou tenu (2,5 à 3 ms pour
+            // 200 000 messages), sans rien libérer de plus.
+            if st.swept.is_none_or(|at| at.elapsed() >= EVICT_WHEN_FULL) {
+                st.evict_expired();
+            }
             if !room(&st) {
                 return Err("full");
             }
@@ -3212,6 +3220,53 @@ mod tests {
             st.evict_expired();
             assert!(!st.mailboxes.contains_key(&boite_key(addr)));
         }
+    }
+
+    /// Plein, un envoi refait le ménage pour faire de la place, mais pas à
+    /// chaque envoi refusé : une fois par seconde au plus.
+    #[test]
+    fn a_full_relay_sweeps_at_most_once_a_second() {
+        let relay = Relay::default();
+        let send = || {
+            relay.store(
+                None,
+                Dest::Code("BBBBBBBBBB"),
+                "m",
+                "x",
+                false,
+                &Wake::No,
+                MAILBOX_TTL,
+            )
+        };
+        let expired = |n: u64| Stored {
+            n,
+            json: Arc::new("y".repeat(1000)),
+            at: Instant::now() - Duration::from_secs(10),
+            ttl: Duration::from_secs(1),
+            kept: 0,
+        };
+        {
+            let mut st = relay.lock();
+            st.total_bytes = TOTAL_MAX_BYTES;
+        }
+        assert_eq!(send().err(), Some("full"));
+        let first = relay.lock().swept.expect("un ménage");
+        // Un message périmé de 1 000 octets : de quoi faire de la place.
+        {
+            let mut st = relay.lock();
+            let mb = st.mailboxes.entry("VIEILLE".into()).or_default();
+            mb.queue.push_back(expired(1));
+            mb.bytes = 1000;
+        }
+        // Moins d'une seconde après : pas de nouveau ménage, toujours plein.
+        assert_eq!(send().err(), Some("full"));
+        assert_eq!(relay.lock().swept, Some(first));
+        assert!(relay.lock().mailboxes.contains_key("VIEILLE"));
+        // Une seconde plus tard : le ménage fait la place, l'envoi passe.
+        // (Les 1 000 octets comptent déjà dans `total_bytes`, plein.)
+        relay.lock().swept = Some(first - EVICT_WHEN_FULL);
+        assert!(send().is_ok());
+        assert!(!relay.lock().mailboxes.contains_key("VIEILLE"));
     }
 
     /// Le ménage (l'heure lue une fois) garde ce qui vit, oublie ce qui a
