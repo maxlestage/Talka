@@ -199,6 +199,23 @@ pub fn chat(id: &str) -> Option<Chat> {
     with(|s| s.chats.get(id).cloned())
 }
 
+/// Les codes des contacts qui répondent à `keep`, sans les recopier (une
+/// photo chacun : 300 contacts recopiés, 8 à 10 ms).
+pub fn contact_codes(keep: impl Fn(&Contact) -> bool) -> Vec<String> {
+    with(|s| {
+        s.contacts
+            .values()
+            .filter(|c| keep(c))
+            .map(|c| c.code.clone())
+            .collect()
+    })
+}
+
+/// Ce que `read` tire des contacts, lus sans être recopiés.
+pub fn contacts_with<T>(read: impl FnOnce(&mut dyn Iterator<Item = &Contact>) -> T) -> T {
+    with(|s| read(&mut s.contacts.values()))
+}
+
 /// Les identifiants des discussions qui répondent à `keep`, sans les recopier.
 pub fn chat_ids(keep: impl Fn(&Chat) -> bool) -> Vec<String> {
     with(|s| {
@@ -899,10 +916,8 @@ async fn announce_devices() {
 
 /// Notre profil à tous nos contacts (et aux correspondants non bloqués).
 async fn announce_profile() {
-    for c in contacts() {
-        if c.saved && !c.blocked {
-            enqueue(&c.code, Wire::new(profile_body(&c.code)), None, None, false).await;
-        }
+    for code in contact_codes(|c| c.saved && !c.blocked) {
+        enqueue(&code, Wire::new(profile_body(&code)), None, None, false).await;
     }
     spawn(flush());
 }
@@ -1490,8 +1505,9 @@ async fn fetch_keys(code: &str) -> Option<Contact> {
 }
 
 async fn refresh_missing_keys() {
-    for c in contacts() {
-        if c.sign.is_empty() && keys_for(&c.code).await.is_some() {
+    // À chaque connexion : les codes seulement, pas les contacts entiers.
+    for code in contact_codes(|c| c.sign.is_empty()) {
+        if keys_for(&code).await.is_some() {
             spawn(flush());
         }
     }
@@ -4606,10 +4622,8 @@ pub async fn post_status(kind: &str, text: &str, bg: &str, data: String) {
         serde_json::to_value(&st).unwrap_or_default(),
     )
     .await;
-    for c in contacts() {
-        if c.saved && !c.blocked {
-            enqueue(&c.code, Wire::new(body.clone()), None, None, false).await;
-        }
+    for code in contact_codes(|c| c.saved && !c.blocked) {
+        enqueue(&code, Wire::new(body.clone()), None, None, false).await;
     }
 }
 
@@ -4617,17 +4631,15 @@ pub async fn delete_status(id: &str) {
     store::remove("statuses", &format!("{}|{id}", my_code())).await;
     emit(Ev::Statuses);
     sync("status", "", None, serde_json::json!({ "deleted": id })).await;
-    for c in contacts() {
-        if c.saved && !c.blocked {
-            enqueue(
-                &c.code,
-                Wire::new(Body::StatusDelete { id: id.to_owned() }),
-                None,
-                None,
-                false,
-            )
-            .await;
-        }
+    for code in contact_codes(|c| c.saved && !c.blocked) {
+        enqueue(
+            &code,
+            Wire::new(Body::StatusDelete { id: id.to_owned() }),
+            None,
+            None,
+            false,
+        )
+        .await;
     }
 }
 

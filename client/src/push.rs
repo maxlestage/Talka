@@ -158,11 +158,12 @@ fn share_contacts(reg: &JsValue) {
     if worker.is_null() || worker.is_undefined() {
         return;
     }
-    let list: Vec<serde_json::Value> = core::contacts()
-        .into_iter()
-        .filter(|c| c.saved && !c.blocked && !c.dh.is_empty())
-        .map(|c| serde_json::json!({ "code": c.code, "dh": c.dh, "name": c.name }))
-        .collect();
+    // Sans recopier les contacts (leurs photos) : à chaque contact modifié.
+    let list: Vec<serde_json::Value> = core::contacts_with(|all| {
+        all.filter(|c| c.saved && !c.blocked && !c.dh.is_empty())
+            .map(|c| serde_json::json!({ "code": c.code, "dh": c.dh, "name": c.name }))
+            .collect()
+    });
     // Et ce que la notification a le droit de montrer (Réglages → Aperçu).
     let msg = serde_json::json!({ "t": "carnet", "list": list, "apercu": core::setting(|s| s.notify_preview.clone()) });
     if let Ok(v) = js_sys::JSON::parse(&msg.to_string()) {
