@@ -86,6 +86,8 @@ thread_local! {
     /// Les messages importants de chaque discussion, et l'état de ses
     /// messages quand ils ont été lus.
     static STARS: RefCell<HashMap<String, KeptStars>> = RefCell::new(HashMap::new());
+    /// Les clés des boîtes tournantes de chaque contact (`refresh_boxes`).
+    static BOX_KEYS: RefCell<crypto::BoxKeys> = RefCell::new(Default::default());
     static ST: RefCell<St> = RefCell::new(St::default());
     static FLUSHING: Cell<bool> = const { Cell::new(false) };
     static FLUSH_AGAIN: Cell<bool> = const { Cell::new(false) };
@@ -961,15 +963,23 @@ pub async fn refresh_boxes() {
     let last: u64 = store::read("kv", "boites_jour").await.unwrap_or(today);
     let from = last.saturating_sub(1).max(today.saturating_sub(30));
     let mut map = HashMap::new();
-    for c in contacts() {
-        if c.blocked || c.dh.is_empty() {
-            continue;
-        }
-        let Some(key) = crypto::boites_key(&me, &c.code, &c.dh) else {
+    // Les codes et les clés seulement, sans recopier les contacts (photos
+    // comprises) ; les clés des boîtes, gardées d'une connexion à l'autre.
+    let peers: Vec<(String, String)> = with(|s| {
+        s.contacts
+            .values()
+            .filter(|c| !c.blocked && !c.dh.is_empty())
+            .map(|c| (c.code.clone(), c.dh.clone()))
+            .collect()
+    });
+    let known: std::collections::HashSet<String> = peers.iter().map(|(c, _)| c.clone()).collect();
+    BOX_KEYS.with(|k| k.borrow_mut().keep_only(&known));
+    for (code, dh) in peers {
+        let Some(key) = BOX_KEYS.with(|k| k.borrow_mut().key(&me, &code, &dh)) else {
             continue;
         };
         for day in from..=today + 1 {
-            map.insert(crypto::boite(&key, &me.code, &dev, day), c.code.clone());
+            map.insert(crypto::boite(&key, &me.code, &dev, day), code.clone());
         }
     }
     // Des boîtes de couverture (v6, §7.15) : à aujourd'hui et demain, et

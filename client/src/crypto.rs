@@ -573,6 +573,42 @@ pub fn boites_key(me: &Identity, peer_code: &str, peer_dh: &str) -> Option<[u8; 
     Some(key)
 }
 
+/// Les clés des boîtes tournantes de chaque contact, gardées tant que ni
+/// ses clés ni les nôtres ne changent : elles sont recalculées à chaque
+/// connexion, et chacune est un échange de clés P-256 (300 contacts :
+/// 65 ms ici, davantage dans un navigateur). Seulement en mémoire.
+#[derive(Default)]
+pub struct BoxKeys {
+    /// Notre code et notre clé d'échange, quand elles ont été calculées.
+    owner: (String, String),
+    /// Le code d'un contact → sa clé d'échange, et la clé qui en sort.
+    keys: HashMap<String, (String, [u8; 32])>,
+}
+
+impl BoxKeys {
+    /// Comme [`boites_key`], calculée une fois par contact.
+    pub fn key(&mut self, me: &Identity, peer_code: &str, peer_dh: &str) -> Option<[u8; 32]> {
+        if self.owner.0 != me.code || self.owner.1 != me.dh {
+            self.keys.clear();
+            self.owner = (me.code.clone(), me.dh.clone());
+        }
+        if let Some((dh, key)) = self.keys.get(peer_code)
+            && dh == peer_dh
+        {
+            return Some(*key);
+        }
+        let key = boites_key(me, peer_code, peer_dh)?;
+        self.keys
+            .insert(peer_code.to_owned(), (peer_dh.to_owned(), key));
+        Some(key)
+    }
+
+    /// Oublie les contacts qui n'en sont plus.
+    pub fn keep_only(&mut self, codes: &std::collections::HashSet<String>) {
+        self.keys.retain(|code, _| codes.contains(code));
+    }
+}
+
 /// La boîte de `jour` où l'on écrit à l'appareil `dev` de `to` :
 /// base64url(HMAC-SHA256(clé, "talka-boite:<to>/<dev>:<jour>")[0..16]).
 pub fn boite(key: &[u8; 32], to: &str, dev: &str, day: u64) -> String {
@@ -1397,6 +1433,35 @@ mod tests {
         let locked = lock_device_key(&pk, &device).unwrap();
         assert_eq!(unlock_device_key(&pk, &locked), Some(device));
         assert!(unlock_device_key(&passkey_key(&[8; 32]).unwrap(), &locked).is_none());
+    }
+
+    /// Les clés des boîtes gardées sont celles qu'on calculait, et changent
+    /// avec les clés d'un contact ou les nôtres.
+    #[test]
+    fn kept_box_keys_are_the_box_keys() {
+        let me = Identity::create(0.0);
+        let (a, b) = (Identity::create(0.0), Identity::create(0.0));
+        let mut kept = BoxKeys::default();
+        let ka = kept.key(&me, &a.code, &a.dh).unwrap();
+        assert_eq!(Some(ka), boites_key(&me, &a.code, &a.dh));
+        assert_eq!(kept.key(&me, &a.code, &a.dh), Some(ka));
+        // Ses clés changent (un nouveau `dh` sous le même code) : recalculée.
+        assert_eq!(
+            kept.key(&me, &a.code, &b.dh),
+            boites_key(&me, &a.code, &b.dh)
+        );
+        assert_ne!(kept.key(&me, &a.code, &b.dh), Some(ka));
+        // Les nôtres changent : tout est recalculé.
+        let other = Identity::create(0.0);
+        assert_eq!(
+            kept.key(&other, &a.code, &a.dh),
+            boites_key(&other, &a.code, &a.dh)
+        );
+        assert!(kept.key(&me, &a.code, "pas une clé").is_none());
+        kept.key(&me, &b.code, &b.dh).unwrap();
+        kept.keep_only(&[b.code.clone()].into_iter().collect());
+        assert_eq!(kept.keys.len(), 1);
+        assert!(kept.keys.contains_key(&b.code));
     }
 
     #[test]
