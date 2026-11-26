@@ -2019,9 +2019,11 @@ public final class Engine {
                 typing[chat]?.remove(from)
             }
             return
-        case let .call(op, callId, _, _, _):
-            // Une offre d'appel déjà vue (un rejeu) ne fait pas sonner.
-            if op == "offer", !firstOffer(callId) { return }
+        case let .call(op, callId, _, _, _, _, _):
+            // Une offre d'appel déjà vue (un rejeu) ne fait pas sonner. À
+            // plusieurs, chacun invite avec le même identifiant d'appel :
+            // une offre par appel et par expéditeur.
+            if op == "offer", !firstOffer("\(callId):\(from)") { return }
             onCallSignal?(from, wire.body, live)
             return
         case let .status(id, kind, text, bg, data, at):

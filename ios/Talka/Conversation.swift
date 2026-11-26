@@ -250,7 +250,8 @@ struct ConversationView: View {
             .toolbarBackground(Color.talkaHead, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
-                let calls = !chat.group && !e.blocked(chatId)
+                // Un contact, ou un groupe dont on est encore membre.
+                let calls = chat.group ? (!chat.left && chat.members.count > 1) : !e.blocked(chatId)
                 ToolbarItem(placement: .principal) {
                     Button { showInfo = true } label: {
                         HStack(spacing: 8) {
@@ -271,11 +272,11 @@ struct ConversationView: View {
                 // Appel vidéo, appel audio et le menu, comme le navigateur.
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if calls {
-                        Button { Task { await model.startCall(chatId, video: true) } } label: {
+                        Button { Task { await model.callChat(chatId, video: true) } } label: {
                             Image(systemName: "video.fill")
                         }
                         .accessibilityLabel("Appel vidéo")
-                        Button { Task { await model.startCall(chatId, video: false) } } label: {
+                        Button { Task { await model.callChat(chatId, video: false) } } label: {
                             Image(systemName: "phone.fill")
                         }
                         .accessibilityLabel("Appel audio")

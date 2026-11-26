@@ -480,38 +480,70 @@ final class AppModel {
     // ----- Appels -----
 
     func startCall(_ peer: String, video: Bool) async {
+        await startGroupCall([peer], video: video, chat: "")
+    }
+
+    /// Appeler plusieurs personnes à la fois (les membres d'un groupe, ou des
+    /// contacts choisis) : huit personnes au plus, nous compris.
+    func startGroupCall(_ peers: [String], video: Bool, chat: String) async {
         guard call == nil else { return show("Un appel est déjà en cours.") }
         guard let e = engine, e.netState == .online else { return show("Pas de connexion au réseau.") }
-        let c = CallEngine(engine: e, model: self, peer: peer, video: video, incoming: false, id: randomId(10))
+        var seen: Set<String> = []
+        let list = peers.filter { $0 != e.me.code && !e.blocked($0) && seen.insert($0).inserted }
+        guard let first = list.first else { return show("Personne à appeler.") }
+        guard list.count < Mesh.maxPeople else { return show("Un appel réunit huit personnes au plus.") }
+        let (mesh, todo) = Mesh.outgoing(me: e.me.code, invitees: list)
+        let c = CallEngine(engine: e, model: self, first: first, chat: chat, mesh: mesh, video: video, incoming: false, id: randomId(10))
         call = c
-        await c.startOutgoing()
+        await c.startOutgoing(todo)
+    }
+
+    /// Appeler depuis une discussion : le contact, ou tous les membres du
+    /// groupe (huit personnes au plus).
+    func callChat(_ chatId: String, video: Bool) async {
+        guard let e = engine, let chat = e.chat(chatId), chat.group else { return await startCall(chatId, video: video) }
+        let others = chat.members.filter { $0 != e.me.code }
+        guard others.count < Mesh.maxPeople else {
+            return show("Ce groupe compte plus de huit personnes : un appel en réunit huit au plus. Appelez depuis l'onglet Appels, en choisissant qui.")
+        }
+        await startGroupCall(others, video: video, chat: chatId)
+    }
+
+    /// Rappeler depuis le journal : la même personne, ou les mêmes personnes.
+    func callAgain(_ entry: CallEntry) async {
+        guard let e = engine, entry.members.count > 1 else { return await startCall(entry.peer, video: entry.video) }
+        await startGroupCall(entry.members.filter { $0 != e.me.code }, video: entry.video, chat: entry.chat)
     }
 
     func callSignal(_ from: String, _ body: Body, _ live: Bool) {
-        guard case let .call(op, callId, video, sdp, _) = body, let e = engine else { return }
-        if op == "offer" {
-            guard live else { return } // une vieille offre : l'appel est passé
-            if call != nil || e.blocked(from) {
-                e.sendCallSignal(from, .call(op: "busy", callId: callId, video: false, sdp: "", cand: nil))
-                e.logCall(CallEntry(id: callId, peer: from, video: video, incoming: true, at: nowMs(), dur: 0, missed: true))
-                return
-            }
-            let c = CallEngine(engine: e, model: self, peer: from, video: video, incoming: true, id: callId)
-            c.remoteOffer = sdp
-            call = c
-            c.ring()
-            if UIApplication.shared.applicationState != .active, e.settings.notify {
-                Notifier.message(title: e.displayName(from), body: video ? "📹 Appel vidéo entrant" : "📞 Appel entrant", thread: "call", sound: true)
-            }
-            return
-        }
+        guard case let .call(op, callId, video, sdp, _, members, chat) = body, let e = engine else { return }
         // Pris ou refusé sur un autre de nos appareils (v4) : on cesse de sonner.
         if op == "elsewhere" {
-            if from == e.me.code, let c = call, c.id == callId, c.incoming, c.pc == nil { c.takenElsewhere() }
+            if from == e.me.code, let c = call, c.id == callId, c.incoming, !c.mesh.joined { c.takenElsewhere() }
             return
         }
-        guard let c = call, c.id == callId, c.peer == from else { return }
-        c.signal(body)
+        // Un signal de l'appel en cours, de l'un de ses participants.
+        if let c = call, c.id == callId, c.phase != .ended {
+            Task { await c.signal(from: from, body, live: live) }
+            return
+        }
+        guard op == "offer" else { return }
+        guard live else { return } // une vieille offre : l'appel est passé
+        if call != nil || e.blocked(from) {
+            e.sendCallSignal(from, .call(op: "busy", callId: callId, video: false, sdp: "", cand: nil))
+            e.logCall(CallEntry(id: callId, peer: from, video: video, incoming: true, at: nowMs(), dur: 0, missed: true,
+                                members: members.filter { $0 != e.me.code }, chat: chat))
+            return
+        }
+        let mesh = Mesh.incoming(me: e.me.code, from: from, sdp: sdp, members: members)
+        let c = CallEngine(engine: e, model: self, first: from, chat: chat, mesh: mesh, video: video, incoming: true, id: callId)
+        call = c
+        c.ring()
+        if UIApplication.shared.applicationState != .active, e.settings.notify {
+            let what = mesh.isGroup ? (video ? "📹 Appel vidéo de groupe entrant" : "📞 Appel de groupe entrant")
+                : (video ? "📹 Appel vidéo entrant" : "📞 Appel entrant")
+            Notifier.message(title: e.displayName(from), body: what, thread: "call", sound: true)
+        }
     }
 
     // ----- Sauvegarde -----

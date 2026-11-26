@@ -8,23 +8,40 @@ import WebRTC
 struct CallScreen: View {
     @Environment(AppModel.self) private var model
     let call: CallEngine
+    @State private var adding = false
 
     var body: some View {
         let engine = call.engine
         ZStack {
             Color(red: 0.0431, green: 0.0784, blue: 0.102).ignoresSafeArea()
-            if let remote = call.remoteVideo, call.video {
-                VideoView(track: remote, mirror: false).ignoresSafeArea()
+            if call.video, call.phase == .live, !call.remoteVideos.isEmpty {
+                remoteGrid.ignoresSafeArea()
             }
             VStack(spacing: 14) {
                 if !(call.video && call.phase == .live) {
                     Spacer().frame(height: 40)
-                    engine.avatar(call.peer, size: 120)
+                    if call.isGroup {
+                        if !call.chat.isEmpty, engine.chat(call.chat) != nil {
+                            engine.avatar(call.chat, size: 120)
+                        } else {
+                            Avatar(id: call.id, name: "", image: "", group: true, size: 120)
+                        }
+                    } else {
+                        engine.avatar(call.first, size: 120)
+                    }
                 }
-                Text(engine.displayName(call.peer))
+                Text(call.title)
                     .font(.title.weight(.semibold))
                     .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
                     .shadow(radius: 4)
+                if !call.people.isEmpty {
+                    Text(call.people)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.75))
+                        .multilineTextAlignment(.center)
+                        .shadow(radius: 4)
+                }
                 Group {
                     if let start = call.connectedAt, call.phase == .live {
                         TimelineView(.periodic(from: .now, by: 1)) { ctx in
@@ -42,24 +59,74 @@ struct CallScreen: View {
                 Spacer()
                 controls
             }
+            .padding(.horizontal)
             .padding(.bottom, 30)
-            if let local = call.localVideo {
-                VStack {
-                    HStack {
-                        Spacer()
+            VStack {
+                HStack(alignment: .top) {
+                    // Faire sonner quelqu'un de plus (huit personnes au plus).
+                    if call.phase != .ringing, call.phase != .ended, call.mesh.joined {
+                        Button { adding = true } label: {
+                            Image(systemName: "person.badge.plus")
+                                .font(.title3)
+                                .foregroundStyle(.white)
+                                .frame(width: 48, height: 48)
+                                .background(.white.opacity(0.2), in: .circle)
+                        }
+                        .accessibilityLabel("Ajouter quelqu'un")
+                        .padding()
+                    }
+                    Spacer()
+                    if let local = call.localVideo {
                         VideoView(track: local, mirror: call.frontCamera)
                             .frame(width: 110, height: 160)
                             .clipShape(.rect(cornerRadius: 12))
                             .shadow(radius: 6)
                             .padding()
                     }
-                    Spacer()
                 }
+                Spacer()
             }
         }
         .statusBarHidden(call.video)
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
         .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+        .sheet(isPresented: $adding) {
+            MultiContactPicker(title: "Ajouter à l'appel", action: "Appeler",
+                               exclude: Set(call.participants + [engine.me.code])) { codes in
+                adding = false
+                Task { await call.add(codes) }
+            }
+        }
+    }
+
+    /// L'image de chacun : plein écran à deux, une grille à plusieurs.
+    var remoteGrid: some View {
+        let engine = call.engine
+        let peers = call.participants.filter { call.remoteVideos[$0] != nil }
+        let columns = peers.count <= 1 ? 1 : (peers.count <= 4 ? 2 : 3)
+        let rows = max(1, (peers.count + columns - 1) / columns)
+        return GeometryReader { geo in
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: columns), spacing: 2) {
+                ForEach(peers, id: \.self) { p in
+                    if let track = call.remoteVideos[p] {
+                        ZStack(alignment: .bottomLeading) {
+                            VideoView(track: track, mirror: false)
+                            if call.isGroup {
+                                Text(engine.displayName(p))
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(.black.opacity(0.45), in: .capsule)
+                                    .padding(8)
+                            }
+                        }
+                        .frame(height: (geo.size.height - CGFloat(rows - 1) * 2) / CGFloat(rows))
+                        .clipped()
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder var controls: some View {
@@ -159,9 +226,9 @@ struct CallsTab: View {
                     }
                     ForEach(log) { entry in
                         HStack(spacing: 12) {
-                            e.avatar(entry.peer, size: 44)
+                            e.avatar(entry.members.count > 1 && e.chat(entry.chat) != nil ? entry.chat : entry.peer, size: 44)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(e.displayName(entry.peer))
+                                Text(title(e, entry))
                                     .font(.body.weight(.medium))
                                     .foregroundStyle(entry.missed ? .red : .primary)
                                 Label(describe(entry), systemImage: entry.incoming ? "arrow.down.left" : "arrow.up.right")
@@ -172,7 +239,7 @@ struct CallsTab: View {
                             Spacer()
                             Text(Dates.list(entry.at)).font(.caption).foregroundStyle(.secondary)
                             Button {
-                                Task { await model.startCall(entry.peer, video: entry.video) }
+                                Task { await model.callAgain(entry) }
                             } label: {
                                 Image(systemName: entry.video ? "video.fill" : "phone.fill").foregroundStyle(Color.talkaGreen)
                             }
@@ -195,17 +262,32 @@ struct CallsTab: View {
                     }
                 }
                 .sheet(isPresented: $picking) {
-                    ContactPicker(title: "Nouvel appel") { code in
+                    // Un contact, ou plusieurs : un appel de groupe.
+                    MultiContactPicker(title: "Nouvel appel", action: "Appeler", exclude: []) { codes in
                         picking = false
-                        Task { await model.startCall(code, video: false) }
+                        Task {
+                            if codes.count == 1 {
+                                await model.startCall(codes[0], video: false)
+                            } else {
+                                await model.startGroupCall(codes, video: false, chat: "")
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
+    /// Le nom d'une ligne : l'autre, le groupe, ou les participants.
+    func title(_ e: Engine, _ entry: CallEntry) -> String {
+        guard entry.members.count > 1 else { return e.displayName(entry.peer) }
+        if let chat = e.chat(entry.chat) { return e.title(chat) }
+        return CallEngine.names(entry.members.filter { $0 != e.me.code }.map { e.displayName($0) })
+    }
+
     func describe(_ e: CallEntry) -> String {
-        let kind = e.video ? "Vidéo" : "Audio"
+        let group = e.members.count > 1
+        let kind = group ? (e.video ? "Vidéo de groupe" : "Groupe") : (e.video ? "Vidéo" : "Audio")
         if e.missed { return "\(kind) · manqué" }
         if e.dur > 0 { return "\(kind) · \(formatDuration(e.dur))" }
         return "\(kind) · \(e.incoming ? "entrant" : "sans réponse")"
@@ -263,5 +345,57 @@ struct ContactPicker<Header: View>: View {
 extension ContactPicker where Header == EmptyView {
     init(title: String, pick: @escaping (String) -> Void) {
         self.init(title: title, header: { EmptyView() }, pick: pick)
+    }
+}
+
+/// Choisir un ou plusieurs contacts (un appel, un appel de groupe).
+struct MultiContactPicker: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    let action: String
+    let exclude: Set<String>
+    let pick: ([String]) -> Void
+    @State private var query = ""
+    @State private var chosen: [String] = []
+
+    var body: some View {
+        NavigationStack {
+            if let e = model.engine {
+                let list = e.contacts.values
+                    .filter { $0.saved && !$0.blocked && !exclude.contains($0.code) }
+                    .filter { query.isEmpty || e.displayName($0.code).localizedCaseInsensitiveContains(query) || $0.code.contains(query.uppercased()) }
+                    .sorted { e.displayName($0.code).localizedCompare(e.displayName($1.code)) == .orderedAscending }
+                List {
+                    if list.isEmpty { Text("Aucun contact").foregroundStyle(.secondary) }
+                    ForEach(list) { c in
+                        Button {
+                            if let i = chosen.firstIndex(of: c.code) { chosen.remove(at: i) } else { chosen.append(c.code) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                e.avatar(c.code, size: 40)
+                                VStack(alignment: .leading) {
+                                    Text(e.displayName(c.code)).foregroundStyle(.primary)
+                                    Text(TalkaCode.pretty(c.code)).font(.caption.monospaced()).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: chosen.contains(c.code) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(chosen.contains(c.code) ? Color.talkaAccent : .secondary)
+                            }
+                        }
+                        .accessibilityAddTraits(chosen.contains(c.code) ? .isSelected : [])
+                    }
+                }
+                .searchable(text: $query)
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(action) { pick(chosen) }.disabled(chosen.isEmpty)
+                    }
+                }
+            }
+        }
     }
 }

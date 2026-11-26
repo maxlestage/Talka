@@ -1,10 +1,14 @@
-// Les appels audio et vidéo, de pair à pair (WebRTC). Le même protocole que
-// le navigateur (`client/src/calls.rs`), par les enveloppes chiffrées :
+// Les appels audio et vidéo, de pair à pair (WebRTC), à deux ou à plusieurs
+// (huit au plus, chacun relié à chacun). Le même protocole que le navigateur
+// (`client/src/calls.rs`), par les enveloppes chiffrées ; `Mesh` (TalkaKit)
+// décide qui appelle qui :
 //
-// - l'appelant envoie `offer` (avec son SDP), l'appelé répond `answer`,
-//   `reject` ou `busy` ;
+// - l'appelant envoie `offer` (avec son SDP, et la liste des participants à
+//   plusieurs), l'appelé répond `answer`, `reject` ou `busy` ;
+// - à plusieurs, qui répond dit `join` aux autres, et deux personnes déjà
+//   dans l'appel se relient par `link` ;
 // - les candidats ICE passent par `ice` ;
-// - `end` raccroche ; sans réponse en 45 secondes, l'appel s'arrête.
+// - `end` raccroche ; sans réponse en 45 secondes, l'invitation s'arrête.
 //
 // Le son et l'image vont directement d'un appareil à l'autre (DTLS-SRTP) :
 // le serveur n'en voit rien.
@@ -22,27 +26,34 @@ final class CallEngine: Identifiable {
     enum Phase { case ringing, calling, connecting, live, ended }
 
     /// Les rappels de WebRTC arrivent sur son propre fil : on revient au fil
-    /// principal.
+    /// principal. Un délégué par participant.
     final class Delegate: NSObject, RTCPeerConnectionDelegate {
         weak var call: CallEngine?
+        let peer: String
 
-        init(_ call: CallEngine) { self.call = call }
+        init(_ call: CallEngine, peer: String) {
+            self.call = call
+            self.peer = peer
+        }
 
         func peerConnection(_ pc: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
             let cand = JSONValue.object([
                 "candidate": .string(candidate.sdp), "sdpMid": .string(candidate.sdpMid ?? "0"),
                 "sdpMLineIndex": .number(Double(candidate.sdpMLineIndex)),
             ])
-            Task { @MainActor [weak call] in call?.send("ice", cand: cand) }
+            let peer = peer
+            Task { @MainActor [weak call] in call?.send(peer, "ice", cand: cand) }
         }
 
         func peerConnection(_ pc: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams: [RTCMediaStream]) {
             guard let video = rtpReceiver.track as? RTCVideoTrack else { return }
-            Task { @MainActor [weak call] in call?.remoteVideo = video }
+            let peer = peer
+            Task { @MainActor [weak call] in call?.remoteVideos[peer] = video }
         }
 
         func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
-            Task { @MainActor [weak call] in call?.stateChanged(newState) }
+            let peer = peer
+            Task { @MainActor [weak call] in call?.stateChanged(peer, newState) }
         }
 
         func peerConnection(_ pc: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
@@ -55,6 +66,20 @@ final class CallEngine: Identifiable {
         func peerConnection(_ pc: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
     }
 
+    /// La liaison avec un participant.
+    final class Peer {
+        let pc: RTCPeerConnection
+        let delegate: Delegate
+        /// Ses candidats ICE arrivés avant sa description.
+        var pending: [RTCIceCandidate] = []
+
+        init(pc: RTCPeerConnection, delegate: Delegate, pending: [RTCIceCandidate]) {
+            self.pc = pc
+            self.delegate = delegate
+            self.pending = pending
+        }
+    }
+
     static let factory: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
         return RTCPeerConnectionFactory(
@@ -62,16 +87,22 @@ final class CallEngine: Identifiable {
     }()
 
     let id: String
-    let peer: String
+    /// Qui nous a appelés, ou le premier appelé.
+    let first: String
+    /// Le groupe d'où l'appel est lancé, s'il y en a un.
+    let chat: String
     let video: Bool
     let incoming: Bool
     let at = nowMs()
     @ObservationIgnored let engine: Engine
     @ObservationIgnored weak var model: AppModel?
-    @ObservationIgnored var remoteOffer = ""
-    @ObservationIgnored var pc: RTCPeerConnection?
-    @ObservationIgnored var delegate: Delegate?
-    @ObservationIgnored var pending: [RTCIceCandidate] = []
+    @ObservationIgnored var mesh: Mesh
+    @ObservationIgnored var peers: [String: Peer] = [:]
+    /// Des candidats arrivés avant la liaison (un appel qui sonne).
+    @ObservationIgnored var early: [String: [RTCIceCandidate]] = [:]
+    /// Tous ceux qui ont été de l'appel (pour le journal).
+    @ObservationIgnored var ever: Set<String> = []
+    @ObservationIgnored var iceServers: [RTCIceServer]?
     @ObservationIgnored var audioTrack: RTCAudioTrack?
     @ObservationIgnored var capturer: RTCCameraVideoCapturer?
     @ObservationIgnored var timeout: Task<Void, Never>?
@@ -81,84 +112,178 @@ final class CallEngine: Identifiable {
     var status: String
     var connectedAt: Date?
     var localVideo: RTCVideoTrack?
-    var remoteVideo: RTCVideoTrack?
+    /// L'image de chacun, à mesure qu'elle arrive.
+    var remoteVideos: [String: RTCVideoTrack] = [:]
+    /// Les autres participants (invités ou reliés), pour l'écran.
+    var participants: [String] = []
+    /// Ceux avec qui la liaison est faite.
+    var connected: Set<String> = []
     var muted = false
     var speaker: Bool
     var frontCamera = true
 
-    init(engine: Engine, model: AppModel, peer: String, video: Bool, incoming: Bool, id: String) {
+    init(engine: Engine, model: AppModel, first: String, chat: String, mesh: Mesh, video: Bool, incoming: Bool, id: String) {
         self.engine = engine
         self.model = model
-        self.peer = peer
+        self.first = first
+        self.chat = chat
+        self.mesh = mesh
         self.video = video
         self.incoming = incoming
         self.id = id
         speaker = video
         phase = incoming ? .ringing : .calling
-        status = incoming ? (video ? "Appel vidéo entrant…" : "Appel audio entrant…") : "Appel…"
+        let group = mesh.isGroup
+        status = incoming
+            ? (group ? (video ? "Appel vidéo de groupe entrant…" : "Appel de groupe entrant…")
+                : (video ? "Appel vidéo entrant…" : "Appel audio entrant…"))
+            : "Appel…"
+        participants = mesh.others
     }
 
     var camera: Bool { localVideo != nil }
+    var isGroup: Bool { participants.count > 1 }
+
+    /// Le titre de l'appel : l'autre, le groupe, ou les participants.
+    var title: String {
+        if participants.count <= 1 { return engine.displayName(participants.first ?? first) }
+        if let c = engine.chat(chat) { return engine.title(c) }
+        return Self.names(participants.map { engine.displayName($0) })
+    }
+
+    /// Qui en est, sous le nom du groupe (rien s'il redirait le titre).
+    var people: String {
+        guard isGroup else { return "" }
+        let list = Self.names(participants.map { engine.displayName($0) })
+        return list == title ? "" : list
+    }
+
+    /// « Léa, Max et 3 autres ».
+    static func names(_ list: [String]) -> String {
+        switch list.count {
+        case 0: return ""
+        case 1: return list[0]
+        case 2, 3: return list.dropLast().joined(separator: ", ") + " et " + list.last!
+        default: return "\(list[0]), \(list[1]) et \(list.count - 2) autres"
+        }
+    }
 
     // MARK: Les signaux
 
-    func send(_ op: String, sdp: String = "", cand: JSONValue? = nil) {
-        engine.sendCallSignal(peer, .call(op: op, callId: id, video: op == "offer" ? video : false, sdp: sdp, cand: cand))
+    /// Un signal à `peer`. Les invitations, liaisons et `join` d'un appel à
+    /// plusieurs portent la liste de ses participants ; un appel à deux part
+    /// exactement comme avant.
+    func send(_ peer: String, _ op: String, sdp: String = "", cand: JSONValue? = nil) {
+        let rich = mesh.isGroup && ["offer", "link", "join"].contains(op)
+        engine.sendCallSignal(peer, .call(op: op, callId: id, video: ["offer", "link"].contains(op) ? video : false,
+                                          sdp: sdp, cand: cand, members: rich ? mesh.members : [], chat: rich ? chat : ""))
     }
 
-    /// Un signal de l'autre (après l'offre).
-    func signal(_ body: Body) {
-        guard case let .call(op, _, _, sdp, cand) = body else { return }
+    /// Un signal de cet appel, de l'un des participants.
+    func signal(from: String, _ body: Body, live: Bool) async {
+        guard case let .call(op, _, _, sdp, cand, members, _) = body, phase != .ended else { return }
         switch op {
+        case "offer", "link":
+            guard live else { return }
+            let todo = mesh.onOffer(from: from, sdp: sdp, members: members, ring: op == "offer")
+            await run(todo, bye: "end", reason: "Appel terminé")
+        case "join":
+            guard live else { return }
+            await run(mesh.onJoin(from: from, members: members), bye: "end", reason: "Appel terminé")
         case "answer":
-            timeout?.cancel()
-            status = "Connexion…"
-            phase = .connecting
-            pc?.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: sdp)) { [weak self] _ in
-                Task { @MainActor in self?.flush() }
+            guard mesh.onAnswer(from: from), let p = peers[from] else { return }
+            if connectedAt == nil {
+                status = "Connexion…"
+                phase = .connecting
             }
+            await Self.setRemote(p.pc, RTCSessionDescription(type: .answer, sdp: sdp))
+            flush(p)
+            refresh()
         case "ice":
             guard let cand, let text = cand["candidate"]?.string else { return }
             let c = RTCIceCandidate(
                 sdp: text, sdpMLineIndex: Int32(cand["sdpMLineIndex"]?.number ?? 0), sdpMid: cand["sdpMid"]?.string)
-            if let pc, pc.remoteDescription != nil {
-                pc.add(c) { _ in }
+            if let p = peers[from] {
+                if p.pc.remoteDescription != nil { p.pc.add(c) { _ in } } else { p.pending.append(c) }
             } else {
-                pending.append(c)
+                early[from, default: []].append(c)
             }
-        case "reject": end("Appel refusé")
-        case "busy": end("Occupé")
-        case "end":
+        case "reject", "busy", "end":
+            let group = mesh.isGroup
             let missed = incoming && connectedAt == nil
-            end(missed ? "Appel manqué" : "Appel terminé", missed: missed)
+            let reason = group ? "Appel terminé"
+                : op == "reject" ? "Appel refusé" : op == "busy" ? "Occupé" : missed ? "Appel manqué" : "Appel terminé"
+            let todo = mesh.onGone(from)
+            let last = todo.contains(.end)
+            await run(todo, bye: "end", reason: reason)
+            if group, !last {
+                let name = engine.displayName(from)
+                model?.show(op == "end" ? "\(name) a quitté l'appel." : op == "busy" ? "\(name) est déjà en ligne." : "\(name) ne vient pas.")
+            }
         default: break
         }
     }
 
-    func flush() {
-        let list = pending
-        pending.removeAll()
-        for c in list { pc?.add(c) { _ in } }
+    func flush(_ p: Peer) {
+        let list = p.pending
+        p.pending.removeAll()
+        for c in list { p.pc.add(c) { _ in } }
+    }
+
+    /// Fait ce que `Mesh` a décidé. `bye` : ce que dit un au revoir (`end`,
+    /// ou `reject` pour un appel qui sonnait) ; `reason` : ce qu'affiche la fin.
+    func run(_ todo: [Mesh.Do], bye: String, reason: String) async {
+        for d in todo {
+            switch d {
+            case let .offer(peer, ring): await offer(peer, ring: ring)
+            case let .answer(peer, sdp): await answer(peer, sdp: sdp)
+            case let .join(peer): send(peer, "join")
+            case let .hangup(peer):
+                send(peer, bye)
+                close(peer)
+            case let .close(peer): close(peer)
+            case .end: end(reason)
+            }
+        }
+        refresh()
+    }
+
+    /// Une liaison qui n'a pas pu se faire, ou qui a échoué.
+    func lost(_ peer: String, _ reason: String) {
+        for d in mesh.onGone(peer) {
+            switch d {
+            case let .close(p): close(p)
+            case .end: end(reason)
+            default: break
+            }
+        }
+        refresh()
+    }
+
+    func refresh() {
+        participants = mesh.others
+        connected = connected.filter { peers[$0] != nil }
     }
 
     // MARK: Appeler, répondre, raccrocher
 
-    func startOutgoing() async {
+    func startOutgoing(_ todo: [Mesh.Do]) async {
+        // Personne n'a encore été appelé.
         guard await media() else { return end("Micro ou caméra refusés.") }
-        await createPeer()
-        guard let pc else { return end("Appel impossible") }
-        let constraints = RTCMediaConstraints(
-            mandatoryConstraints: ["OfferToReceiveAudio": "true", "OfferToReceiveVideo": video ? "true" : "false"],
-            optionalConstraints: nil)
-        guard let offer = await Self.offer(pc, constraints) else { return end("Appel impossible") }
-        await Self.setLocal(pc, offer)
-        send("offer", sdp: offer.sdp)
+        await run(todo, bye: "end", reason: "Appel impossible")
+        guard phase != .ended else { return }
         playRing(outgoing: true)
+        waitForAnswers()
+    }
+
+    /// Sans réponse en 45 secondes, les invitations en attente s'arrêtent (et
+    /// l'appel avec elles, s'il n'y a personne d'autre).
+    func waitForAnswers() {
+        timeout?.cancel()
         timeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(45))
-            guard !Task.isCancelled, let self, self.connectedAt == nil, self.phase != .ended else { return }
-            self.send("end")
-            self.end("Pas de réponse")
+            guard !Task.isCancelled, let self, self.phase != .ended else { return }
+            await self.run(self.mesh.noAnswer(), bye: "end", reason: "Pas de réponse")
         }
     }
 
@@ -180,25 +305,34 @@ final class CallEngine: Identifiable {
         phase = .connecting
         status = "Connexion…"
         guard await media() else {
-            send("reject")
-            return end("Micro ou caméra refusés.")
+            return await run(mesh.hangup(), bye: "reject", reason: "Micro ou caméra refusés.")
         }
-        await createPeer()
-        guard let pc else { return end("Appel impossible") }
-        await Self.setRemote(pc, RTCSessionDescription(type: .offer, sdp: remoteOffer))
-        flush()
-        guard let answer = await Self.answer(pc)
-        else { return end("Appel impossible") }
-        await Self.setLocal(pc, answer)
-        send("answer", sdp: answer.sdp)
+        await run(mesh.accept(), bye: "end", reason: "Appel terminé")
     }
 
     func hangup() {
-        let reject = incoming && pc == nil
-        send(reject ? "reject" : "end")
+        let ringing = !mesh.joined
         // Refusé ici : nos autres appareils cessent de sonner (v4).
-        if reject { engine.callTaken(id) }
-        end("Appel terminé")
+        if ringing { engine.callTaken(id) }
+        let todo = mesh.hangup()
+        Task { await run(todo, bye: ringing ? "reject" : "end", reason: "Appel terminé") }
+    }
+
+    /// Faire sonner d'autres contacts pendant l'appel.
+    func add(_ codes: [String]) async {
+        var any = false
+        for code in codes where phase != .ended {
+            switch mesh.add(code) {
+            case let .success(todo):
+                any = true
+                await run(todo, bye: "end", reason: "Appel terminé")
+            case .failure(.full):
+                model?.show("Un appel réunit huit personnes au plus.")
+                return
+            case .failure: continue
+            }
+        }
+        if any { waitForAnswers() }
     }
 
     /// Pris ou refusé sur un autre de nos appareils (v4) : on cesse de
@@ -209,7 +343,7 @@ final class CallEngine: Identifiable {
 
     func end(_ reason: String, missed: Bool = false, elsewhere: Bool = false) {
         guard phase != .ended else { return }
-        let wasConnected = pc != nil
+        let wasConnected = connectedAt != nil
         phase = .ended
         status = reason
         timeout?.cancel()
@@ -218,13 +352,16 @@ final class CallEngine: Identifiable {
         capturer?.stopCapture(completionHandler: nil)
         capturer = nil
         localVideo = nil
-        remoteVideo = nil
-        pc?.close()
-        pc = nil
+        remoteVideos = [:]
+        for p in peers.values { p.pc.close() }
+        peers = [:]
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         let dur = connectedAt.map { Date().timeIntervalSince($0).rounded() } ?? 0
-        let lost = !elsewhere && (missed || (incoming && dur == 0))
-        engine.logCall(CallEntry(id: id, peer: peer, video: video, incoming: incoming, at: at, dur: dur, missed: lost))
+        let lostCall = !elsewhere && (missed || (incoming && dur == 0))
+        var everyone = ever.union(mesh.others)
+        everyone.insert(first)
+        engine.logCall(CallEntry(id: id, peer: first, video: video, incoming: incoming, at: at, dur: dur, missed: lostCall,
+                                 members: everyone.count > 1 ? everyone.sorted() : [], chat: chat))
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(1400))
             guard let self, let model = self.model, model.call === self else { return }
@@ -256,20 +393,59 @@ final class CallEngine: Identifiable {
         return true
     }
 
-    func createPeer() async {
+    /// La connexion WebRTC avec `peer` (le même micro et la même caméra pour
+    /// chacun).
+    func createPeer(_ peer: String) async -> Peer? {
+        let servers: [RTCIceServer]
+        if let iceServers {
+            servers = iceServers
+        } else {
+            servers = await Self.iceServers(engine.relay.server)
+            iceServers = servers
+        }
+        guard phase != .ended else { return nil }
         let config = RTCConfiguration()
-        config.iceServers = await Self.iceServers(engine.relay.server)
+        config.iceServers = servers
         config.sdpSemantics = .unifiedPlan
         config.continualGatheringPolicy = .gatherContinually
-        let delegate = Delegate(self)
+        let delegate = Delegate(self, peer: peer)
         guard let pc = Self.factory.peerConnection(
             with: config, constraints: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil),
             delegate: delegate)
-        else { return }
-        self.delegate = delegate
+        else { return nil }
         if let audioTrack { _ = pc.add(audioTrack, streamIds: ["talka"]) }
         if let localVideo { _ = pc.add(localVideo, streamIds: ["talka"]) }
-        self.pc = pc
+        peers[peer]?.pc.close()
+        let p = Peer(pc: pc, delegate: delegate, pending: early.removeValue(forKey: peer) ?? [])
+        peers[peer] = p
+        ever.insert(peer)
+        return p
+    }
+
+    func offer(_ peer: String, ring: Bool) async {
+        guard let p = await createPeer(peer) else { return lost(peer, "Appel impossible") }
+        let constraints = RTCMediaConstraints(
+            mandatoryConstraints: ["OfferToReceiveAudio": "true", "OfferToReceiveVideo": video ? "true" : "false"],
+            optionalConstraints: nil)
+        guard let offer = await Self.offer(p.pc, constraints) else { return lost(peer, "Appel impossible") }
+        await Self.setLocal(p.pc, offer)
+        send(peer, ring ? "offer" : "link", sdp: offer.sdp)
+    }
+
+    func answer(_ peer: String, sdp: String) async {
+        guard let p = await createPeer(peer) else { return lost(peer, "Appel impossible") }
+        await Self.setRemote(p.pc, RTCSessionDescription(type: .offer, sdp: sdp))
+        flush(p)
+        guard let answer = await Self.answer(p.pc) else { return lost(peer, "Appel impossible") }
+        await Self.setLocal(p.pc, answer)
+        send(peer, "answer", sdp: answer.sdp)
+    }
+
+    func close(_ peer: String) {
+        peers.removeValue(forKey: peer)?.pc.close()
+        early.removeValue(forKey: peer)
+        remoteVideos.removeValue(forKey: peer)
+        connected.remove(peer)
     }
 
     /// Les serveurs STUN/TURN du serveur Talka (`/api/ice`).
@@ -288,17 +464,20 @@ final class CallEngine: Identifiable {
         }
     }
 
-    func stateChanged(_ state: RTCPeerConnectionState) {
-        guard phase != .ended else { return }
+    func stateChanged(_ peer: String, _ state: RTCPeerConnectionState) {
+        guard phase != .ended, peers[peer] != nil else { return }
         switch state {
         case .connected:
+            connected.insert(peer)
             if connectedAt == nil {
                 connectedAt = Date()
                 stopRing()
             }
             phase = .live
-        case .failed: end("La connexion a échoué")
-        case .disconnected: status = "Reconnexion…"
+        case .failed: lost(peer, "La connexion a échoué")
+        case .disconnected:
+            connected.remove(peer)
+            if !mesh.isGroup { status = "Reconnexion…" }
         default: break
         }
     }

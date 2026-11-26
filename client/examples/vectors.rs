@@ -122,20 +122,6 @@ fn main() {
             members: Vec::new(),
             chat: String::new(),
         }),
-        // Un appel à plusieurs : la liste de ses participants et son groupe.
-        Wire::new(Body::Call {
-            op: "join".into(),
-            call_id: "c2".into(),
-            video: false,
-            sdp: String::new(),
-            cand: None,
-            members: vec![
-                "AAAAAAAAAA".into(),
-                "BBBBBBBBBB".into(),
-                "CCCCCCCCCC".into(),
-            ],
-            chat: "g:famille".into(),
-        }),
         // Une capsule temporelle : un message scellé jusqu'à `open_at`.
         Wire::new(Body::Msg {
             id: "m9".into(),
@@ -181,6 +167,20 @@ fn main() {
                 },
             }))),
             d: serde_json::Value::Null,
+        }),
+        // Un appel à plusieurs : la liste de ses participants et son groupe.
+        Wire::new(Body::Call {
+            op: "join".into(),
+            call_id: "c2".into(),
+            video: false,
+            sdp: String::new(),
+            cand: None,
+            members: vec![
+                "AAAAAAAAAA".into(),
+                "BBBBBBBBBB".into(),
+                "CCCCCCCCCC".into(),
+            ],
+            chat: "g:famille".into(),
         }),
     ];
     let wire_json: Vec<String> = wires

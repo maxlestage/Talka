@@ -241,7 +241,7 @@ final class CompatTests: XCTestCase {
 
     func testWires() throws {
         let wires = try XCTUnwrap(v["wires"] as? [String])
-        XCTAssertEqual(wires.count, 16)
+        XCTAssertEqual(wires.count, 17)
         for text in wires {
             let w = try XCTUnwrap(Wire.parse(text), text)
             if case .unknown = w.body { XCTFail("sorte inconnue : \(text)") }
@@ -268,12 +268,19 @@ final class CompatTests: XCTestCase {
         XCTAssertEqual(said.mentions, [try identity("b").code])
         XCTAssertEqual(mention.groupId, "g1")
         let call = try XCTUnwrap(Wire.parse(wires[12]))
-        guard case let .call(op, callId, video, _, cand) = call.body else { return XCTFail("call") }
+        guard case let .call(op, callId, video, _, cand, _, _) = call.body else { return XCTFail("call") }
         XCTAssertEqual(op, "ice")
         XCTAssertEqual(callId, "c1")
         XCTAssertTrue(video)
         XCTAssertEqual(cand?["sdpMid"]?.string, "0")
         XCTAssertEqual(cand?["sdpMLineIndex"]?.number, 0)
+        // Un appel à plusieurs : ses participants et son groupe (le dernier).
+        let group = try XCTUnwrap(Wire.parse(try XCTUnwrap(wires.last)))
+        guard case let .call(gop, gid, _, _, _, members, chat) = group.body else { return XCTFail("appel de groupe") }
+        XCTAssertEqual(gop, "join")
+        XCTAssertEqual(gid, "c2")
+        XCTAssertEqual(members, ["AAAAAAAAAA", "BBBBBBBBBB", "CCCCCCCCCC"])
+        XCTAssertEqual(chat, "g:famille")
         // La capsule temporelle : son heure d'ouverture traverse intacte.
         let capsule = try XCTUnwrap(Wire.parse(wires[13]))
         guard case let .msg(_, _, _, sealed) = capsule.body else { return XCTFail("capsule") }

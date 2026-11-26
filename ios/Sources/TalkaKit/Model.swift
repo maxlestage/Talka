@@ -1114,15 +1114,22 @@ public struct CallEntry: Codable, Equatable, Identifiable, Sendable {
     public var at: Double = 0
     public var dur: Double = 0
     public var missed = false
+    /// Un appel à plusieurs : les autres participants (`peer` compris).
+    public var members: [String] = []
+    /// Le groupe d'où il a été lancé, s'il y en a un.
+    public var chat = ""
 
-    public init(id: String, peer: String, video: Bool, incoming: Bool, at: Double, dur: Double, missed: Bool) {
+    public init(id: String, peer: String, video: Bool, incoming: Bool, at: Double, dur: Double, missed: Bool,
+                members: [String] = [], chat: String = "") {
         self.id = id; self.peer = peer; self.video = video; self.incoming = incoming; self.at = at; self.dur = dur; self.missed = missed
+        self.members = members; self.chat = chat
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.v(.id, ""); peer = c.v(.peer, ""); video = c.v(.video, false); incoming = c.v(.incoming, false)
         at = c.v(.at, 0); dur = c.v(.dur, 0); missed = c.v(.missed, false)
+        members = c.v(.members, []); chat = c.v(.chat, "")
     }
 }
 
@@ -1279,7 +1286,10 @@ public enum Body: Equatable, Sendable {
     case status(id: String, kind: String, text: String, bg: String, data: String, at: Double)
     case statusSeen(id: String)
     case statusDelete(id: String)
-    case call(op: String, callId: String, video: Bool, sdp: String, cand: JSONValue?)
+    /// Un signal d'appel. Un appel à plusieurs (`Mesh`) : `members`, tous
+    /// ceux de l'appel (l'expéditeur compris), et `chat`, le groupe d'où il
+    /// est lancé ; vides pour un appel à deux, comme avant.
+    case call(op: String, callId: String, video: Bool, sdp: String, cand: JSONValue?, members: [String] = [], chat: String = "")
     /// Entre les appareils d'un même compte (v4, `docs/SECURITE.md` §7.11) :
     /// ce que l'un a fait, que les autres refont. Accepté seulement de nos
     /// propres appareils. `c` : la discussion ; `w` : ce que l'appareil a
@@ -1336,7 +1346,8 @@ public struct Wire: Codable, Equatable, Sendable {
         case "status-seen": body = .statusSeen(id: s("id"))
         case "status-delete": body = .statusDelete(id: s("id"))
         case "call":
-            body = .call(op: s("op"), callId: s("call_id"), video: c.v(K("video"), false), sdp: s("sdp"), cand: c.v(K("cand"), nil))
+            body = .call(op: s("op"), callId: s("call_id"), video: c.v(K("video"), false), sdp: s("sdp"), cand: c.v(K("cand"), nil),
+                         members: c.v(K("members"), []), chat: s("chat"))
         case "sync":
             body = .sync(op: s("op"), c: s("c"), w: c.v(K("w"), nil), d: c.v(K("d"), JSONValue.null))
         default: body = .unknown(kind)
@@ -1376,10 +1387,12 @@ public struct Wire: Codable, Equatable, Sendable {
             try put("bg", bg); try put("data", data); try put("at", at)
         case let .statusSeen(id): try put("k", "status-seen"); try put("id", id)
         case let .statusDelete(id): try put("k", "status-delete"); try put("id", id)
-        case let .call(op, callId, video, sdp, cand):
+        case let .call(op, callId, video, sdp, cand, members, chat):
             try put("k", "call"); try put("op", op); try put("call_id", callId); try put("video", video)
             try put("sdp", sdp)
             if let cand { try put("cand", cand) }
+            if !members.isEmpty { try put("members", members) }
+            if !chat.isEmpty { try put("chat", chat) }
         case let .sync(op, chat, w, d):
             try put("k", "sync"); try put("op", op)
             if !chat.isEmpty { try put("c", chat) }

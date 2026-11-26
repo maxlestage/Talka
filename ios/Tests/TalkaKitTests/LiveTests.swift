@@ -299,7 +299,7 @@ final class LiveTests: XCTestCase {
         // Un appel pris sur l'iPhone : l'iPad cesse de sonner.
         var elsewhere: String?
         a2.onCallSignal = { from, body, _ in
-            if from == a2.me.code, case let .call(op, callId, _, _, _) = body, op == "elsewhere" { elsewhere = callId }
+            if from == a2.me.code, case let .call(op, callId, _, _, _, _, _) = body, op == "elsewhere" { elsewhere = callId }
         }
         a1.callTaken("appel-1")
         try await wait("pris ailleurs") { elsewhere == "appel-1" }
