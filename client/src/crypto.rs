@@ -923,22 +923,38 @@ pub fn seal_row(key: &[u8], name: &str, value: &str) -> Option<Vec<u8>> {
 /// Déchiffre une valeur gardée ; `None` si elle est abîmée, d'une autre
 /// ligne ou d'une autre clé.
 pub fn open_row(key: &[u8], name: &str, sealed: &[u8]) -> Option<String> {
-    let rest = sealed.strip_prefix(ROW_MAGIC)?;
-    if rest.len() < 12 + 16 {
-        return None;
+    RowKey::new(key)?.open(name, sealed)
+}
+
+/// La clé de l'appareil, prête à déchiffrer beaucoup de lignes : la
+/// préparer pour chacune (AES-256, GHASH) coûtait, au démarrage, 74 ms au
+/// lieu de 53 pour 20 000 lignes (AES logiciel, comme dans le navigateur).
+pub struct RowKey(Aes256Gcm);
+
+impl RowKey {
+    pub fn new(key: &[u8]) -> Option<RowKey> {
+        Aes256Gcm::new_from_slice(key).ok().map(RowKey)
     }
-    let cipher = Aes256Gcm::new_from_slice(key).ok()?;
-    let aad = row_aad(name);
-    let pt = cipher
-        .decrypt(
-            Nonce::from_slice(&rest[..12]),
-            Payload {
-                msg: &rest[12..],
-                aad: &aad,
-            },
-        )
-        .ok()?;
-    String::from_utf8(pt).ok()
+
+    /// Comme [`open_row`].
+    pub fn open(&self, name: &str, sealed: &[u8]) -> Option<String> {
+        let rest = sealed.strip_prefix(ROW_MAGIC)?;
+        if rest.len() < 12 + 16 {
+            return None;
+        }
+        let aad = row_aad(name);
+        let pt = self
+            .0
+            .decrypt(
+                Nonce::from_slice(&rest[..12]),
+                Payload {
+                    msg: &rest[12..],
+                    aad: &aad,
+                },
+            )
+            .ok()?;
+        String::from_utf8(pt).ok()
+    }
 }
 
 // ----- Le code de verrouillage et la sauvegarde ------------------------------
@@ -1400,6 +1416,16 @@ mod tests {
         bad[20] ^= 1;
         assert!(open_row(&key, "messages/c|m1", &bad).is_none());
         assert!(open_row(&key, "x", b"{}").is_none());
+        // Une clé préparée une fois ouvre exactement comme `open_row`.
+        let prepared = RowKey::new(&key).unwrap();
+        assert_eq!(
+            prepared.open("messages/c|m1", &sealed).as_deref(),
+            Some(json)
+        );
+        assert!(prepared.open("messages/c|m2", &sealed).is_none());
+        assert!(prepared.open("messages/c|m1", &bad).is_none());
+        assert!(prepared.open("x", b"{}").is_none());
+        assert!(RowKey::new(&[0u8; 16]).is_none());
     }
 
     #[test]

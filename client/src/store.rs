@@ -509,6 +509,7 @@ async fn load_all(
     let (keys, values) = (Array::from(&keys), Array::from(&values));
     let mut out = BTreeMap::new();
     let mut plain = Vec::new();
+    let row_key = crypto::RowKey::new(key);
     for (k, v) in keys.iter().zip(values.iter()) {
         let Some(k) = k.as_string() else { continue };
         if let Some(v) = v.as_string() {
@@ -516,7 +517,10 @@ async fn load_all(
             out.insert(k, v);
         } else if v.is_instance_of::<Uint8Array>() {
             // Illisible (abîmée) : laissée telle quelle sur le disque.
-            if let Some(v) = crypto::open_row(key, &k, &Uint8Array::new(&v).to_vec()) {
+            if let Some(v) = row_key
+                .as_ref()
+                .and_then(|r| r.open(&k, &Uint8Array::new(&v).to_vec()))
+            {
                 out.insert(k, v);
             }
         }
