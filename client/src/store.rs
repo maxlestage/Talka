@@ -541,7 +541,7 @@ async fn flush() {
         }
         let batch: Vec<(String, Option<String>)> = {
             let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *q)
+            crate::model::last_writes(std::mem::take(&mut *q))
         };
         if batch.is_empty() {
             break;

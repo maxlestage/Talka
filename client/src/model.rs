@@ -1521,6 +1521,22 @@ impl Writes {
     }
 }
 
+/// Un lot d'écritures vers IndexedDB, réduit à la dernière de chaque clé
+/// (dans l'ordre de ces dernières) : le lot part en une transaction, où
+/// seule la dernière écriture d'une clé compte. Une discussion réécrite à
+/// chaque message d'une rafale n'est plus chiffrée (4 ms pour 400 Ko, AES
+/// logiciel) et écrite qu'une fois.
+pub fn last_writes<V>(batch: Vec<(String, V)>) -> Vec<(String, V)> {
+    let mut seen = HashSet::new();
+    let mut out: Vec<(String, V)> = batch
+        .into_iter()
+        .rev()
+        .filter(|(key, _)| seen.insert(key.clone()))
+        .collect();
+    out.reverse();
+    out
+}
+
 /// Les messages effacés de chaque discussion (ses pierres tombales),
 /// gardés décodés : chaque message reçu y est cherché, et relire la liste
 /// (jusqu'à 20 000) coûtait 0,1 à 2,6 ms. Oubliés dès qu'une liste est
@@ -1764,6 +1780,46 @@ mod tests {
         assert!(t.get("g:1").is_none());
         t.forget();
         assert!(t.get("g:2").is_none());
+    }
+
+    /// Un lot réduit laisse IndexedDB dans le même état que le lot entier
+    /// (écrit dans l'ordre) : la dernière valeur de chaque clé, effacements
+    /// compris.
+    #[test]
+    fn a_batch_keeps_the_last_write_of_each_key() {
+        let w = |k: &str, v: Option<&str>| (k.to_owned(), v.map(str::to_owned));
+        let batch = vec![
+            w("chat", Some("1")),
+            w("m1", Some("a")),
+            w("chat", Some("2")),
+            w("m2", Some("b")),
+            w("m1", None),
+            w("chat", Some("3")),
+            w("m3", None),
+            w("m3", Some("c")),
+        ];
+        let apply = |ops: &[(String, Option<String>)]| {
+            let mut db = BTreeMap::new();
+            for (k, v) in ops {
+                match v {
+                    Some(v) => db.insert(k.clone(), v.clone()),
+                    None => db.remove(k),
+                };
+            }
+            db
+        };
+        let short = last_writes(batch.clone());
+        assert_eq!(apply(&short), apply(&batch));
+        assert_eq!(
+            short,
+            [
+                w("m2", Some("b")),
+                w("m1", None),
+                w("chat", Some("3")),
+                w("m3", Some("c"))
+            ]
+        );
+        assert!(last_writes(Vec::<(String, Option<String>)>::new()).is_empty());
     }
 
     #[test]
