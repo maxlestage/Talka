@@ -59,7 +59,7 @@ pub async fn sync() {
     if !available() {
         return;
     }
-    let want = core::settings().notify && granted();
+    let want = core::setting(|s| s.notify) && granted();
     let _ = apply(want).await;
 }
 
@@ -164,7 +164,7 @@ fn share_contacts(reg: &JsValue) {
         .map(|c| serde_json::json!({ "code": c.code, "dh": c.dh, "name": c.name }))
         .collect();
     // Et ce que la notification a le droit de montrer (Réglages → Aperçu).
-    let msg = serde_json::json!({ "t": "carnet", "list": list, "apercu": core::settings().notify_preview });
+    let msg = serde_json::json!({ "t": "carnet", "list": list, "apercu": core::setting(|s| s.notify_preview.clone()) });
     if let Ok(v) = js_sys::JSON::parse(&msg.to_string()) {
         let _ = call(&worker, "postMessage", &[v]);
     }
@@ -179,7 +179,7 @@ pub async fn contacts_changed() {
     }
     crate::dom::sleep(2_000).await;
     CARNET_PENDING.with(|p| p.set(false));
-    if !available() || !core::settings().notify || !granted() {
+    if !available() || !core::setting(|s| s.notify) || !granted() {
         return;
     }
     let sw = get(&get(&window(), "navigator"), "serviceWorker");

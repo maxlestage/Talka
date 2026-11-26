@@ -172,6 +172,13 @@ pub fn settings() -> Settings {
     with(|s| s.settings.clone())
 }
 
+/// Un réglage, lu sans recopier les autres (le fond d'écran : une photo).
+/// Chaque ligne de la liste des discussions en lit un : 200 copies des
+/// réglages coûtaient 1,8 ms par redessin avec un fond de 300 Ko.
+pub fn setting<T>(read: impl FnOnce(&Settings) -> T) -> T {
+    with(|s| read(&s.settings))
+}
+
 pub fn contact(code: &str) -> Option<Contact> {
     with(|s| s.contacts.get(code).cloned())
 }
@@ -508,7 +515,7 @@ async fn sweep() {
         }
     }
     // Les messages trop vieux (3 mois par défaut), une fois par heure.
-    let keep = settings().keep_days;
+    let keep = setting(|s| s.keep_days);
     let due = LAST_PRUNE.with(|l| t - l.get() >= 3_600_000.0);
     if keep > 0 && due {
         LAST_PRUNE.with(|l| l.set(t));
@@ -2536,7 +2543,7 @@ async fn store_message(m: &Message, bump: bool) {
     if bump && let Some(mut c) = chat(&m.chat) {
         c.last = Some(last_of(m));
         c.last_at = c.last_at.max(m.at);
-        if c.unarchives_on(&m.from, &my_code(), settings().keep_archived) {
+        if c.unarchives_on(&m.from, &my_code(), setting(|s| s.keep_archived)) {
             c.archived = false;
         }
         if m.exp.is_some() {
@@ -3463,7 +3470,7 @@ pub async fn mark_read(chat_id: &str) {
         }
     }
     let fresh = !by_sender.is_empty();
-    if settings().read_receipts {
+    if setting(|s| s.read_receipts) {
         for (code, ids) in by_sender {
             queue_receipt(&code, chat_id, &ids, "read");
         }
@@ -4060,7 +4067,7 @@ async fn handle(from: &str, wire: Wire, ts: f64, live: bool) {
             }
             store_message(&m, true).await;
             queue_receipt(from, &c.id, std::slice::from_ref(&id), "delivered");
-            if active && settings().read_receipts {
+            if active && setting(|s| s.read_receipts) {
                 queue_receipt(from, &c.id, &[id], "read");
             }
             // Lu ici, sous nos yeux : lu sur nos autres appareils aussi.
@@ -4633,7 +4640,7 @@ pub async fn mark_status_seen(st: &StatusItem) {
     s.seen = true;
     store::write("statuses", &s.key(), &s).await;
     emit(Ev::Statuses);
-    if settings().read_receipts {
+    if setting(|s| s.read_receipts) {
         enqueue(
             &st.owner,
             Wire::new(Body::StatusSeen { id: st.id.clone() }),

@@ -71,7 +71,7 @@ pub fn color_of(code: &str) -> &'static str {
 /// sinon. Ni pour un groupe, ni pour soi, ni pour un contact bloqué, ni si
 /// la pastille est désactivée dans les réglages.
 pub fn avatar_presence(id: &str, size: u32) -> Element {
-    let shown = core::settings().presence_dot
+    let shown = core::setting(|s| s.presence_dot)
         && id != core::my_code()
         && !core::is_group(id)
         && !core::blocked(id);
@@ -337,7 +337,7 @@ fn auto_lock() {
             if !lock::has_pin().await || query(".lock-screen").is_some() {
                 return;
             }
-            if now() - since >= core::settings().lock_after as f64 * 1000.0 {
+            if now() - since >= core::setting(|s| s.lock_after) as f64 * 1000.0 {
                 lock_now().await;
             }
         });
@@ -419,7 +419,7 @@ pub fn event(e: Ev) {
                 conv::refresh_header();
             }
             // La pastille de la liste des discussions.
-            if core::settings().presence_dot {
+            if core::setting(|s| s.presence_dot) {
                 queue_side();
             }
         }
@@ -1371,7 +1371,7 @@ fn close_chat() {
 
 fn on_incoming(chat: Chat, message: crate::model::Message, active: bool) {
     if active {
-        if core::settings().sound {
+        if core::setting(|s| s.sound) {
             sounds::sent();
         }
         if message.kind == "text"

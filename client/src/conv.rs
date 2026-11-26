@@ -508,7 +508,7 @@ fn apply_wallpaper() {
     };
     let Some(chat) = core::chat(&id) else { return };
     let w = if chat.wallpaper.is_empty() {
-        core::settings().wallpaper
+        core::setting(|s| s.wallpaper.clone())
     } else {
         chat.wallpaper
     };
@@ -2248,7 +2248,7 @@ pub fn render_composer(focus_it: bool) {
                         },
                     )
                     .await;
-                    if core::settings().sound {
+                    if core::setting(|s| s.sound) {
                         sounds::sent();
                     }
                     if had_reply {
@@ -2278,7 +2278,7 @@ pub fn render_composer(focus_it: bool) {
                 if k.key() == "Enter"
                     && !k.shift_key()
                     && !k.is_composing()
-                    && core::settings().enter_sends
+                    && core::setting(|s| s.enter_sends)
                     && matches_media("(pointer: fine)")
                 {
                     e.prevent_default();
@@ -2747,7 +2747,7 @@ async fn start_recording() {
                     },
                 )
                 .await;
-                if core::settings().sound {
+                if core::setting(|s| s.sound) {
                     sounds::sent();
                 }
             }
