@@ -1035,9 +1035,11 @@ impl State {
         let mut freed = 0;
         // Dans le magasin clé-valeur, ils expirent d'eux-mêmes.
         let mut kept = 0;
+        // L'heure lue une fois, pas pour chaque message ni chaque boîte.
+        let now = Instant::now();
         self.mailboxes.retain(|_, mb| {
             mb.queue.retain(|s| {
-                let keep = s.at.elapsed() <= s.ttl;
+                let keep = now.saturating_duration_since(s.at) <= s.ttl;
                 if !keep {
                     mb.bytes -= s.json.len();
                     freed += s.json.len();
@@ -1050,8 +1052,8 @@ impl State {
         self.total_bytes -= freed;
         self.kept_bytes -= kept;
         self.boite_push
-            .retain(|_, (_, at)| at.elapsed() < BOITE_PUSH_TTL);
-        self.swept = Some(Instant::now());
+            .retain(|_, (_, at)| now.saturating_duration_since(*at) < BOITE_PUSH_TTL);
+        self.swept = Some(now);
     }
 
     /// Le grand ménage, une fois par minute au plus : il relit toutes les
@@ -3195,6 +3197,57 @@ mod tests {
             st.evict_expired();
             assert!(!st.mailboxes.contains_key(&boite_key(addr)));
         }
+    }
+
+    /// Le ménage (l'heure lue une fois) garde ce qui vit, oublie ce qui a
+    /// expiré, et rend leurs octets.
+    #[test]
+    fn the_sweep_keeps_the_living_and_counts_what_it_frees() {
+        let relay = Relay::default();
+        let sub = Arc::new(crate::push::Subscription {
+            endpoint: "https://push.example/1".into(),
+            p256dh: Vec::new(),
+            auth: Vec::new(),
+        });
+        let old = Instant::now() - Duration::from_secs(10);
+        let mut st = relay.lock();
+        let stored = |n: u64, ttl: u64, kept: usize| Stored {
+            n,
+            json: Arc::new("x".repeat(10 * (n as usize + 1))),
+            at: old,
+            ttl: Duration::from_secs(ttl),
+            kept,
+        };
+        let mb = st.mailboxes.entry("A".into()).or_default();
+        mb.queue
+            .extend([stored(0, 5, 3), stored(1, 3600, 4), stored(2, 1, 0)]);
+        mb.bytes = 10 + 20 + 30;
+        st.mailboxes
+            .entry("B".into())
+            .or_default()
+            .queue
+            .push_back(stored(3, 2, 7));
+        st.mailboxes.get_mut("B").unwrap().bytes = 40;
+        st.total_bytes = 100;
+        st.kept_bytes = 14;
+        st.boite_push.insert(
+            "vieille".into(),
+            (
+                sub.clone(),
+                Instant::now() - BOITE_PUSH_TTL - Duration::from_secs(1),
+            ),
+        );
+        st.boite_push.insert("neuve".into(), (sub, Instant::now()));
+        st.evict_expired();
+        let a = &st.mailboxes["A"];
+        assert_eq!(a.queue.iter().map(|s| s.n).collect::<Vec<_>>(), [1]);
+        assert_eq!(a.bytes, 20);
+        assert!(!st.mailboxes.contains_key("B"));
+        assert_eq!(st.total_bytes, 20);
+        assert_eq!(st.kept_bytes, 4);
+        assert!(st.boite_push.contains_key("neuve"));
+        assert!(!st.boite_push.contains_key("vieille"));
+        assert!(st.swept.is_some());
     }
 
     /// Plein, le relais oublie les codes déconnectés depuis le plus
