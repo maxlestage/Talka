@@ -1656,17 +1656,28 @@ impl Relay {
         if bundle.is_empty() || bundle.len() > MAX_BUNDLE.div_ceil(3) * 4 || sig.len() > 128 {
             return Err("size");
         }
-        let bytes = B64.decode(bundle).map_err(|_| "size")?;
-        if bytes.len() > MAX_BUNDLE {
-            return Err("size");
-        }
-        let message = if dev.is_empty() {
-            code::bundle_message(&bytes)
-        } else {
-            code::device_bundle_message(dev, &bytes)
-        };
-        if !code::verify(sign, &message, sig) {
-            return Err("signature");
+        // Republié tel quel à chaque connexion : déjà vérifié, avec la même
+        // clé (le code en est l'empreinte). La signature n'est refaite que
+        // pour un paquet nouveau (270 µs).
+        let known = self
+            .lock()
+            .bundles
+            .get(code)
+            .and_then(|devices| devices.get(dev))
+            .is_some_and(|b| b.bundle == bundle && b.sig == sig);
+        if !known {
+            let bytes = B64.decode(bundle).map_err(|_| "size")?;
+            if bytes.len() > MAX_BUNDLE {
+                return Err("size");
+            }
+            let message = if dev.is_empty() {
+                code::bundle_message(&bytes)
+            } else {
+                code::device_bundle_message(dev, &bytes)
+            };
+            if !code::verify(sign, &message, sig) {
+                return Err("signature");
+            }
         }
         let mut st = self.lock();
         if st.banned.get(code).is_some_and(|b| b.contains(dev)) {
@@ -3320,6 +3331,51 @@ mod tests {
         assert_eq!(more.len(), 1);
         assert!(relay.lock().watching[&7].contains("CCCCCCCCCC"));
         assert!(!relay.lock().watching[&7].contains("DDDDDDDDDD"));
+    }
+
+    /// Un paquet republié tel quel passe sans refaire sa signature ; une
+    /// autre signature pour le même paquet est vérifiée (et refusée), et un
+    /// appareil retiré l'est toujours.
+    #[test]
+    fn a_bundle_published_again_is_known_and_only_it() {
+        let relay = Relay::default();
+        let id = talka_web::crypto::Identity::create(0.0);
+        let sign = code::public_key(&id.sign).unwrap();
+        relay.lock().keys.insert(
+            id.code.clone(),
+            Keys {
+                sign: id.sign.clone(),
+                dh: id.dh.clone(),
+            },
+        );
+        let dev = "0123456789abcdef";
+        let bytes = vec![7u8; 600];
+        let bundle = B64.encode(&bytes);
+        let sig = id.sign(&code::device_bundle_message(dev, &bytes));
+        assert_eq!(relay.publish(&id.code, &sign, dev, &bundle, &sig), Ok(()));
+        assert_eq!(relay.publish(&id.code, &sign, dev, &bundle, &sig), Ok(()));
+        // Une autre signature (celle d'un autre message) : vérifiée, refusée.
+        let other = id.sign(b"autre chose");
+        assert_eq!(
+            relay.publish(&id.code, &sign, dev, &bundle, &other),
+            Err("signature")
+        );
+        // Le même paquet pour un autre appareil : vérifié, refusé.
+        assert_eq!(
+            relay.publish(&id.code, &sign, "fedcba9876543210", &bundle, &sig),
+            Err("signature")
+        );
+        assert_eq!(relay.lock().bundles[&id.code][dev].sig, sig);
+        relay
+            .lock()
+            .banned
+            .entry(id.code.clone())
+            .or_default()
+            .insert(dev.to_owned());
+        assert_eq!(
+            relay.publish(&id.code, &sign, dev, &bundle, &sig),
+            Err("dev")
+        );
     }
 
     /// Le ménage (l'heure lue une fois) garde ce qui vit, oublie ce qui a
