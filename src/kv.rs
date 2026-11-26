@@ -367,25 +367,67 @@ impl Kv {
         Ok(())
     }
 
-    /// Écrit `ops`, par lots.
+    /// Écrit `ops`, par lots, `READERS` lots à la fois (chaque lot est un
+    /// aller-retour réseau : la recopie après une panne en a des centaines).
+    /// Les messages, rangés en dernier par le relais, partent après tout le
+    /// reste : s'il manque de la place, ce sont eux que le magasin laisse
+    /// partir.
     fn write(&self, ops: &[Op]) -> Result<(), String> {
-        let mut batch = Vec::new();
-        let mut bytes = 0;
-        for op in ops {
-            let Some(command) = self.command(op) else {
-                continue;
-            };
+        let split = ops
+            .iter()
+            .position(|op| matches!(op, Op::Set { kind: 'm', .. }))
+            .unwrap_or(ops.len());
+        let (rest, messages) = ops.split_at(split);
+        self.write_batches(rest)?;
+        self.write_batches(messages)
+    }
+
+    /// Les lots de `ops`, écrits sur plusieurs fils, dans n'importe quel
+    /// ordre (des clés différentes). Chaque fil chiffre ses propres lots :
+    /// il n'y en a jamais plus de `READERS` en mémoire à la fois.
+    fn write_batches(&self, ops: &[Op]) -> Result<(), String> {
+        // Les bornes des lots, comme avant : `BATCH_COUNT` fiches ou
+        // `BATCH_BYTES` au plus (les fiches que le magasin n'a pas comptent
+        // pour rien).
+        let mut bounds = Vec::new();
+        let (mut start, mut count, mut bytes) = (0, 0, 0);
+        for (i, op) in ops.iter().enumerate() {
+            count += 1;
             bytes += op.weight();
-            batch.push(command);
-            if batch.len() >= BATCH_COUNT || bytes >= BATCH_BYTES {
-                self.run(std::mem::take(&mut batch))?;
-                bytes = 0;
+            if count >= BATCH_COUNT || bytes >= BATCH_BYTES {
+                bounds.push(start..i + 1);
+                (start, count, bytes) = (i + 1, 0, 0);
             }
         }
-        if !batch.is_empty() {
-            self.run(batch)?;
+        if start < ops.len() {
+            bounds.push(start..ops.len());
         }
-        Ok(())
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let write = || loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(range) = bounds.get(i) else {
+                return Ok(());
+            };
+            let batch: Vec<Value> = ops[range.clone()]
+                .iter()
+                .filter_map(|op| self.command(op))
+                .collect();
+            if !batch.is_empty() {
+                self.run(batch)?;
+            }
+        };
+        let writers = READERS.min(bounds.len()).max(1);
+        let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..writers).map(|_| scope.spawn(write)).collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err("écriture interrompue".into()))
+                })
+                .collect()
+        });
+        results.into_iter().collect()
     }
 }
 
@@ -810,6 +852,44 @@ mod tests {
         assert_eq!(codes, expected);
         assert_eq!(nuage.count('k'), total);
         assert!(Kv::new(&nuage.url, "jeton", "secret").load().unwrap().len() == total);
+    }
+
+    /// Écrite sur plusieurs fils, la recopie met tout dans le magasin :
+    /// plus de lots que de fils, un dernier lot incomplet, les messages
+    /// après le reste.
+    #[test]
+    fn a_copy_written_by_several_threads_is_whole() {
+        let nuage = fake::Nuage::start();
+        let kv = nuage.kv();
+        let set = |kind: char, i: usize| Op::Set {
+            kind,
+            name: format!("C{i:09}"),
+            value: json!({ "k": kind.to_string(), "c": format!("C{i:09}") }),
+            ttl: Duration::from_secs(60),
+        };
+        let keys = BATCH_COUNT * READERS * 2 + 5;
+        let messages = BATCH_COUNT * 3 + 1;
+        let ops: Vec<Op> = (0..keys)
+            .map(|i| set('k', i))
+            .chain((0..messages).map(|i| set('m', i)))
+            .collect();
+        kv.write(&ops).unwrap();
+        assert_eq!(nuage.count('k'), keys);
+        assert_eq!(nuage.count('m'), messages);
+        let mut back: Vec<String> = kv
+            .load()
+            .unwrap()
+            .iter()
+            .filter(|r| r["k"] == "k")
+            .map(|r| r["c"].as_str().unwrap().to_owned())
+            .collect();
+        back.sort();
+        assert_eq!(
+            back,
+            (0..keys).map(|i| format!("C{i:09}")).collect::<Vec<_>>()
+        );
+        // Rien à écrire : rien d'envoyé, pas d'erreur.
+        kv.write(&[]).unwrap();
     }
 
     #[test]
