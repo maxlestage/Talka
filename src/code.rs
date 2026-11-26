@@ -86,6 +86,43 @@ pub fn jeton_message(code: &str, nonce: &str) -> Vec<u8> {
 /// `to`, dont on donne les deux clés publiques ? Rien n'est gardé : le
 /// jeton se vérifie seul, même après un redémarrage.
 pub fn verify_jeton(to: &str, sign_b64: &str, dh_b64: &str, jeton: &str) -> bool {
+    // Chaque envoi scellé montre le jeton de son destinataire, souvent le
+    // même : une vérification réussie est gardée (son empreinte), et la
+    // suivante ne refait pas la signature (270 µs). La révocation, elle,
+    // est vérifiée à chaque envoi, à part.
+    let seen = verified_key(to, sign_b64, dh_b64, jeton);
+    let verified = VERIFIED.get_or_init(Default::default);
+    if verified.lock().is_ok_and(|set| set.contains(&seen)) {
+        return true;
+    }
+    let ok = check_jeton(to, sign_b64, dh_b64, jeton);
+    if ok && let Ok(mut set) = verified.lock() {
+        if set.len() >= VERIFIED_MAX {
+            set.clear();
+        }
+        set.insert(seen);
+    }
+    ok
+}
+
+/// Les jetons déjà vérifiés : 32 octets chacun, `VERIFIED_MAX` au plus.
+static VERIFIED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<[u8; 32]>>> =
+    std::sync::OnceLock::new();
+const VERIFIED_MAX: usize = 50_000;
+
+/// L'empreinte de ce qu'on vérifie : chaque champ précédé de sa longueur,
+/// pour qu'aucun découpage ne se confonde avec un autre.
+fn verified_key(to: &str, sign_b64: &str, dh_b64: &str, jeton: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for field in [to, sign_b64, dh_b64, jeton] {
+        hash.update((field.len() as u64).to_be_bytes());
+        hash.update(field.as_bytes());
+    }
+    hash.finalize().into()
+}
+
+fn check_jeton(to: &str, sign_b64: &str, dh_b64: &str, jeton: &str) -> bool {
     let (Some(sign), Some(dh)) = (public_key(sign_b64), public_key(dh_b64)) else {
         return false;
     };
@@ -128,6 +165,35 @@ pub fn valid_boite(addr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un jeton vérifié une fois passe encore sans refaire la signature ;
+    /// ce qui a été gardé ne valide rien d'autre.
+    #[test]
+    fn a_verified_jeton_is_kept_and_only_it() {
+        let bob = talka_web::crypto::Identity::create(0.0);
+        let eve = talka_web::crypto::Identity::create(0.0);
+        let jeton = bob.jeton_for("AAAAAAAAAA", 0);
+        assert!(verify_jeton(&bob.code, &bob.sign, &bob.dh, &jeton));
+        assert!(verify_jeton(&bob.code, &bob.sign, &bob.dh, &jeton));
+        // Le même jeton pour un autre code, avec d'autres clés, abîmé : non.
+        assert!(!verify_jeton(&eve.code, &bob.sign, &bob.dh, &jeton));
+        assert!(!verify_jeton(&bob.code, &eve.sign, &eve.dh, &jeton));
+        let (nonce, sig) = jeton.split_once('.').unwrap();
+        let forged = format!("{nonce}x.{sig}");
+        assert!(!verify_jeton(&bob.code, &bob.sign, &bob.dh, &forged));
+        // Les champs ne se confondent pas en se décalant.
+        assert_ne!(
+            verified_key("ab", "c", "d", "e"),
+            verified_key("a", "bc", "d", "e")
+        );
+        // Un jeton d'Ève, pour elle : oui.
+        assert!(verify_jeton(
+            &eve.code,
+            &eve.sign,
+            &eve.dh,
+            &eve.jeton_for("AAAAAAAAAA", 0)
+        ));
+    }
 
     #[test]
     fn codes_are_stable_and_normalized() {
