@@ -902,22 +902,7 @@ fn row_aad(name: &str) -> Vec<u8> {
 
 /// Chiffre la valeur `value` de la ligne `name` avec la clé de l'appareil.
 pub fn seal_row(key: &[u8], name: &str, value: &str) -> Option<Vec<u8>> {
-    let cipher = Aes256Gcm::new_from_slice(key).ok()?;
-    let iv = random_bytes(12);
-    let aad = row_aad(name);
-    let ct = cipher
-        .encrypt(
-            Nonce::from_slice(&iv),
-            Payload {
-                msg: value.as_bytes(),
-                aad: &aad,
-            },
-        )
-        .ok()?;
-    let mut out = ROW_MAGIC.to_vec();
-    out.extend(iv);
-    out.extend(ct);
-    Some(out)
+    RowKey::new(key)?.seal(name, value)
 }
 
 /// Déchiffre une valeur gardée ; `None` si elle est abîmée, d'une autre
@@ -926,14 +911,35 @@ pub fn open_row(key: &[u8], name: &str, sealed: &[u8]) -> Option<String> {
     RowKey::new(key)?.open(name, sealed)
 }
 
-/// La clé de l'appareil, prête à déchiffrer beaucoup de lignes : la
-/// préparer pour chacune (AES-256, GHASH) coûtait, au démarrage, 74 ms au
-/// lieu de 53 pour 20 000 lignes (AES logiciel, comme dans le navigateur).
+/// La clé de l'appareil, prête à chiffrer ou déchiffrer beaucoup de
+/// lignes : la préparer pour chacune (AES-256, GHASH) coûtait, au
+/// démarrage, 74 ms au lieu de 53 pour 20 000 lignes (AES logiciel, comme
+/// dans le navigateur).
 pub struct RowKey(Aes256Gcm);
 
 impl RowKey {
     pub fn new(key: &[u8]) -> Option<RowKey> {
         Aes256Gcm::new_from_slice(key).ok().map(RowKey)
+    }
+
+    /// Comme [`seal_row`].
+    pub fn seal(&self, name: &str, value: &str) -> Option<Vec<u8>> {
+        let iv = random_bytes(12);
+        let aad = row_aad(name);
+        let ct = self
+            .0
+            .encrypt(
+                Nonce::from_slice(&iv),
+                Payload {
+                    msg: value.as_bytes(),
+                    aad: &aad,
+                },
+            )
+            .ok()?;
+        let mut out = ROW_MAGIC.to_vec();
+        out.extend(iv);
+        out.extend(ct);
+        Some(out)
     }
 
     /// Comme [`open_row`].
@@ -1426,6 +1432,15 @@ mod tests {
         assert!(prepared.open("messages/c|m1", &bad).is_none());
         assert!(prepared.open("x", b"{}").is_none());
         assert!(RowKey::new(&[0u8; 16]).is_none());
+        // Ce qu'elle chiffre, `open_row` l'ouvre (et l'inverse).
+        let again = prepared.seal("messages/c|m1", json).unwrap();
+        assert!(again.starts_with(ROW_MAGIC));
+        assert_ne!(again, sealed, "un iv neuf");
+        assert_eq!(
+            open_row(&key, "messages/c|m1", &again).as_deref(),
+            Some(json)
+        );
+        assert!(open_row(&key, "messages/c|m2", &again).is_none());
     }
 
     #[test]
