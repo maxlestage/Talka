@@ -284,6 +284,32 @@ fn browser_and_server_agree() {
     ));
 }
 
+/// Une icône, le logo ou un fichier d'une ancienne version déjà reçus ne
+/// repartent pas : un 304 vide ; une autre empreinte, le fichier entier.
+#[tokio::test]
+async fn a_file_already_received_is_not_sent_again() {
+    let client = talka::app().test().await;
+    for path in ["/icons/icon-512.png", "/logo.svg", "/s/ancienne/app.css"] {
+        let first = client.get(path).header("accept-encoding", "br").await;
+        assert_eq!(first.status(), 200, "{path}");
+        let etag = first.header("etag").expect("ETag").to_owned();
+        let again = client.get(path).header("if-none-match", &etag).await;
+        assert_eq!(again.status(), 304, "{path}");
+        assert!(again.bytes().is_empty());
+        assert_eq!(again.header("etag"), Some(etag.as_str()));
+        let other = client
+            .get(path)
+            .header("if-none-match", "W/\"autre\"")
+            .await;
+        assert_eq!(other.status(), 200);
+        assert!(!other.bytes().is_empty());
+    }
+    // Deux fichiers différents, deux empreintes.
+    let a = client.get("/logo.svg").await;
+    let b = client.get("/icons/icon-512.png").await;
+    assert_ne!(a.header("etag"), b.header("etag"));
+}
+
 /// Une page déjà reçue ne repart pas : un 304 vide, avec sa politique de
 /// sécurité ; une autre empreinte, ou aucune, et la page repart entière.
 #[tokio::test]

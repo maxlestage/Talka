@@ -130,10 +130,42 @@ fn respond(req: &Request, path: &str, cache: &str) -> Response {
     if COMPRESSED.iter().any(|(p, _, _)| *p == path) {
         res = res.header("vary", "accept-encoding");
     }
+    // Déjà reçu (les icônes et le logo, revérifiés chaque jour ; un fichier
+    // d'une ancienne version, chaque fois) : un 304 vide.
+    if let Some(etag) = etag(path) {
+        res = res.header("etag", etag);
+        let fresh = req.header("if-none-match").is_some_and(|tags| {
+            let bare = |t: &str| t.trim().trim_start_matches("W/").to_owned();
+            tags.split(',')
+                .any(|t| t.trim() == "*" || bare(t) == bare(etag))
+        });
+        if fresh {
+            return res.status(304);
+        }
+    }
     if let Some(coding) = coding {
         res = res.header("content-encoding", coding);
     }
     res.send(bytes)
+}
+
+/// L'empreinte (faible : la même dans tous les codages) d'un fichier.
+fn etag(path: &str) -> Option<&'static str> {
+    static ETAGS: OnceLock<Vec<(&'static str, String)>> = OnceLock::new();
+    ETAGS
+        .get_or_init(|| {
+            FILES
+                .iter()
+                .map(|(path, bytes)| {
+                    let hash = Sha256::digest(bytes);
+                    let hex: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
+                    (*path, format!("W/\"{hex}\""))
+                })
+                .collect()
+        })
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map(|(_, etag)| etag.as_str())
 }
 
 /// L'empreinte de tous les fichiers : 10 caractères hexadécimaux.
