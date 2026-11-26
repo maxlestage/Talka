@@ -1,0 +1,63 @@
+# L'application Android (android/) : les tests du protocole et du cœur
+# (Kotlin pour la JVM, contre les vecteurs du navigateur), puis l'APK.
+#
+# L'APK est signé par la clé du dépôt si ses secrets sont là
+# (TALKA_KEYSTORE_B64, TALKA_KEYSTORE_PASSWORD, TALKA_KEY_ALIAS,
+# TALKA_KEY_PASSWORD) : chaque version s'installe alors par-dessus la
+# précédente. Sans eux, il est signé par une clé de débogage jetable.
+# Il se télécharge depuis la page de l'exécution (artefact « talka-android »).
+
+name: Android
+
+on:
+  push:
+    paths:
+      - "android/**"
+      - "ios/Tests/TalkaKitTests/vectors.json"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+jobs:
+  android:
+    name: Android (protocole, cœur et APK)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Protocole et cœur — tests (vecteurs du navigateur)
+        run: ./gradlew --no-daemon :brocolis:test :talkakit:test
+      - name: Clé de signature
+        env:
+          TALKA_KEYSTORE_B64: ${{ secrets.TALKA_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$TALKA_KEYSTORE_B64" ]; then
+            echo "$TALKA_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/talka.jks"
+            echo "TALKA_KEYSTORE=$RUNNER_TEMP/talka.jks" >> "$GITHUB_ENV"
+          else
+            echo "::notice::Pas de clé de signature dans les secrets : APK signé par une clé de débogage."
+          fi
+      - name: Application — APK
+        env:
+          TALKA_KEYSTORE_PASSWORD: ${{ secrets.TALKA_KEYSTORE_PASSWORD }}
+          TALKA_KEY_ALIAS: ${{ secrets.TALKA_KEY_ALIAS }}
+          TALKA_KEY_PASSWORD: ${{ secrets.TALKA_KEY_PASSWORD }}
+          TALKA_VERSION_CODE: ${{ github.run_number }}
+          TALKA_VERSION_NAME: 1.0.${{ github.run_number }}
+        run: ./gradlew --no-daemon :app:assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: talka-android
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error

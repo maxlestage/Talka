@@ -1,5 +1,6 @@
 # Fusionne dans `master`, toute seule, chaque autre branche dont les
-# vérifications passent : la CI, et l'iOS quand `ios/` a changé. C'est le
+# vérifications passent : la CI, l'iOS quand `ios/` a changé, l'Android quand
+# `android/` a changé. C'est le
 # commit vérifié qui est fusionné (pas un plus récent de la branche, qui
 # attendra ses propres vérifications) : en avance rapide si possible, sinon
 # par un commit de fusion ; un conflit arrête tout, et `master` ne bouge pas.
@@ -16,7 +17,7 @@ name: Fusion
 
 on:
   workflow_run:
-    workflows: [CI, iOS]
+    workflows: [CI, iOS, Android]
     types: [completed]
     branches-ignore: [master]
 
@@ -46,7 +47,7 @@ jobs:
         id: checks
         run: |
           runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&event=push&per_page=100" \
-            --jq '.workflow_runs[] | select(.name == "CI" or .name == "iOS") | "\(.name) \(.status) \(.conclusion)"')
+            --jq '.workflow_runs[] | select(.name == "CI" or .name == "iOS" or .name == "Android") | "\(.name) \(.status) \(.conclusion)"')
           echo "$runs"
           if echo "$runs" | grep -qvE ' completed success$'; then
             if echo "$runs" | grep -qE ' completed '; then
@@ -91,7 +92,7 @@ jobs:
           changed=$(git diff --name-only "$before" HEAD)
           echo "$changed"
           # Ce que suit chaque workflow lancé par un push dans master.
-          echo "$changed" | grep -qvE '(\.md$|^ios/)' && echo "heroku=true" >> "$GITHUB_OUTPUT" || true
+          echo "$changed" | grep -qvE '(\.md$|^ios/|^android/)' && echo "heroku=true" >> "$GITHUB_OUTPUT" || true
           echo "$changed" | grep -qE '(^|/)Cargo\.(lock|toml)$|^\.github/workflows/securite\.yml$' \
             && echo "securite=true" >> "$GITHUB_OUTPUT" || true
 

@@ -22,6 +22,7 @@ on:
     paths-ignore:
       - "**.md"
       - "ios/**"
+      - "android/**"
   workflow_dispatch:
 
 permissions:

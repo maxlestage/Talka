@@ -223,9 +223,9 @@ codes, et discutez.
 
 - **Fusion automatique** ([`.github/workflows/fusion.yml`](.github/workflows/fusion.yml)) :
   toute branche autre que `master` poussée sur ce dépôt est fusionnée seule dans
-  `master` dès que ses vérifications passent (la CI, et l'iOS quand `ios/` a
-  changé), puis déployée comme après un push dans `master` (Heroku, GitHub
-  Pages). Un conflit arrête la fusion : `master` ne bouge pas, et le
+  `master` dès que ses vérifications passent (la CI, l'iOS quand `ios/` a
+  changé, l'Android quand `android/` a changé), puis déployée comme après un
+  push dans `master` (Heroku, GitHub Pages). Un conflit arrête la fusion : `master` ne bouge pas, et le
   workflow échoue pour le dire.
 - **Heroku** : `app.json`, `Procfile` et `RustConfig` (buildpack `emk/rust`,
   qui compile d'abord le navigateur en WebAssembly). Une seule instance
