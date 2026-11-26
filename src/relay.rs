@@ -690,6 +690,17 @@ impl Snapshot {
     }
 }
 
+/// Ce que voit qui suit `code` : en ligne, ou vu pour la dernière fois.
+fn presence_text(code: &str, online: bool, seen: Option<u64>) -> String {
+    json!({
+        "t": "presence",
+        "code": code,
+        "online": online,
+        "seen": seen,
+    })
+    .to_string()
+}
+
 fn rec_keys(code: &str, keys: &Keys) -> Value {
     json!({ "k": "k", "c": code, "s": keys.sign, "d": keys.dh })
 }
@@ -1024,13 +1035,7 @@ impl State {
     }
 
     fn presence(&self, code: &str) -> String {
-        json!({
-            "t": "presence",
-            "code": code,
-            "online": self.is_visible(code),
-            "seen": self.seen.get(code),
-        })
-        .to_string()
+        presence_text(code, self.is_visible(code), self.seen.get(code).copied())
     }
 
     fn notify_watchers(&mut self, code: &str) {
@@ -1791,21 +1796,36 @@ impl Relay {
     }
 
     fn watch(&self, watcher: &str, conn_id: u64, codes: &[String]) -> Vec<String> {
-        let mut st = self.lock();
-        // `MAX_WATCH` codes suivis par connexion, en tout.
-        let already = st.watching.get(&conn_id).map_or(0, HashSet::len);
-        codes
+        // Les codes lus avant de prendre le verrou commun, et les présences
+        // écrites après : sous le verrou, une connexion qui en suit 2 000 le
+        // tenait 1,6 à 2 ms.
+        let asked: Vec<Option<String>> = codes
             .iter()
-            .take(MAX_WATCH.saturating_sub(already))
-            .filter_map(|c| code::normalize(c))
-            .map(|c| {
-                st.watchers
-                    .entry(c.clone())
-                    .or_default()
-                    .insert((watcher.to_owned(), conn_id));
-                st.watching.entry(conn_id).or_default().insert(c.clone());
-                st.presence(&c)
-            })
+            .take(MAX_WATCH)
+            .map(|c| code::normalize(c))
+            .collect();
+        let seen: Vec<(String, bool, Option<u64>)> = {
+            let mut st = self.lock();
+            // `MAX_WATCH` codes suivis par connexion, en tout (un code
+            // illisible compte, comme avant).
+            let already = st.watching.get(&conn_id).map_or(0, HashSet::len);
+            asked
+                .into_iter()
+                .take(MAX_WATCH.saturating_sub(already))
+                .flatten()
+                .map(|c| {
+                    st.watchers
+                        .entry(c.clone())
+                        .or_default()
+                        .insert((watcher.to_owned(), conn_id));
+                    st.watching.entry(conn_id).or_default().insert(c.clone());
+                    let (online, seen) = (st.is_visible(&c), st.seen.get(&c).copied());
+                    (c, online, seen)
+                })
+                .collect()
+        };
+        seen.into_iter()
+            .map(|(c, online, seen)| presence_text(&c, online, seen))
             .collect()
     }
 
@@ -3267,6 +3287,39 @@ mod tests {
         relay.lock().swept = Some(first - EVICT_WHEN_FULL);
         assert!(send().is_ok());
         assert!(!relay.lock().mailboxes.contains_key("VIEILLE"));
+    }
+
+    /// Suivre des codes : les présences sont celles qu'on écrivait sous le
+    /// verrou, les codes mal écrits sont lus, et le quota compte aussi ceux
+    /// qui ne se lisent pas.
+    #[test]
+    fn watching_says_the_same_presence_as_before() {
+        let relay = Relay::default();
+        relay.lock().seen.insert("BBBBBBBBBB".into(), 1234);
+        let codes = vec![
+            "aaaaa-aaaaa".to_owned(),
+            "pas un code".to_owned(),
+            "BBBBB BBBBB".to_owned(),
+        ];
+        let out = relay.watch("WATCHER234", 7, &codes);
+        let st = relay.lock();
+        assert_eq!(out, [st.presence("AAAAAAAAAA"), st.presence("BBBBBBBBBB")]);
+        let b: Value = serde_json::from_str(&out[1]).unwrap();
+        assert_eq!(
+            b,
+            json!({ "t": "presence", "code": "BBBBBBBBBB", "online": false, "seen": 1234 })
+        );
+        assert!(st.watchers["AAAAAAAAAA"].contains(&("WATCHER234".to_owned(), 7)));
+        assert_eq!(st.watching[&7].len(), 2);
+        drop(st);
+        // Plein : `MAX_WATCH` en tout, les codes illisibles comptés.
+        let many: Vec<String> = std::iter::repeat_n("illisible".to_owned(), MAX_WATCH - 3)
+            .chain(["CCCCCCCCCC".to_owned(), "DDDDDDDDDD".to_owned()])
+            .collect();
+        let more = relay.watch("WATCHER234", 7, &many);
+        assert_eq!(more.len(), 1);
+        assert!(relay.lock().watching[&7].contains("CCCCCCCCCC"));
+        assert!(!relay.lock().watching[&7].contains("DDDDDDDDDD"));
     }
 
     /// Le ménage (l'heure lue une fois) garde ce qui vit, oublie ce qui a
