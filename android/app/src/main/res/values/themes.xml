@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.Talka" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#FF0B141A</item>
+        <!-- Le vert de l'écran de chargement (`LaunchBackground` de l'iPhone). -->
+        <item name="android:windowBackground">#FF0E6B63</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
 </resources>

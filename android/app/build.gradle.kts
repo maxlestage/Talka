@@ -18,6 +18,14 @@ android {
         // La CI donne le numéro de version (son numéro d'exécution).
         versionCode = (System.getenv("TALKA_VERSION_CODE") ?: "1").toInt()
         versionName = System.getenv("TALKA_VERSION_NAME") ?: "1.0"
+        // Le relais : celui que la CI intègre (`TALKA_SERVER`), sinon le
+        // relais officiel (`TalkaServer.official`), comme `TalkaServer` dans
+        // l'Info.plist de l'iPhone. Rien à choisir dans l'application.
+        val server = (System.getenv("TALKA_SERVER") ?: "").trim()
+        buildConfigField("String", "TALKA_SERVER", "\"${server.replace("\"", "")}\"")
+        // Les liens d'invitation (`https://<relais>/c/…`) s'ouvrent dans Talka.
+        manifestPlaceholders["talkaHost"] = Regex("^https?://([^/:]+)").find(server)?.groupValues?.get(1)
+            ?: "talka-maxlestage-e497dd868a8c.herokuapp.com"
     }
 
     // Signée par la clé du dépôt (secrets de la CI) si elle est là : une
@@ -48,7 +56,10 @@ android {
     }
     kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     // Les tests de la JVM avec Robolectric : SQLite d'Android, sans appareil.
     testOptions { unitTests.isIncludeAndroidResources = true }
@@ -71,11 +82,20 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
+    // L'empreinte et le visage (`BiometricPrompt`, qui demande une `FragmentActivity`).
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
+    // Le fil principal d'Android comme fil du moteur (`Dispatchers.Main`).
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    // Les écrans dans les tests (Robolectric) : l'activité vide où ils se dessinent.
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation(kotlin("test"))
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation(composeBom)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
 }
 
 // L'image d'Android que Robolectric fait tourner, téléchargée par Gradle (qui

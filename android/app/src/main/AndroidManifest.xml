@@ -2,8 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Le retour du réseau : le relais se reconnecte aussitôt. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Les notifications locales (Android 13 et plus les demande). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- L'empreinte ou le visage. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <!-- Prendre une photo avec l'appareil (le profil), sans l'exiger. -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application
+        android:name=".TalkaApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
@@ -13,10 +23,25 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- talka://add/K7Q2MX9PRT, talka://chat/…, talka://chats -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="talka" />
+            </intent-filter>
+            <!-- Les liens d'invitation du relais : https://…/c/K7Q2MX9PRT -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="${talkaHost}" android:pathPrefix="/c/" />
             </intent-filter>
         </activity>
     </application>
