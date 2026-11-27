@@ -19,6 +19,10 @@ dependencies {
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     api("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation(kotlin("test"))
+    // SQLite pour les tests JVM (sur Android : `android.database.sqlite`, branché par l'application).
+    testImplementation("org.xerial:sqlite-jdbc:3.49.1.0")
+    // Un faux relais WebSocket pour les tests du relais.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
 
 tasks.test {
