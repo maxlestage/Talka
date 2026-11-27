@@ -1,11 +1,15 @@
 # L'application Android (android/) : les tests du protocole et du cœur
-# (Kotlin pour la JVM, contre les vecteurs du navigateur), puis l'APK.
+# (Kotlin pour la JVM, contre les vecteurs du navigateur), puis les APK :
+# celui du téléphone et celui de la montre (Wear OS).
 #
 # L'APK est signé par la clé du dépôt si ses secrets sont là
 # (TALKA_KEYSTORE_B64, TALKA_KEYSTORE_PASSWORD, TALKA_KEY_ALIAS,
 # TALKA_KEY_PASSWORD) : chaque version s'installe alors par-dessus la
 # précédente. Sans eux, il est signé par une clé de débogage jetable.
-# Il se télécharge depuis la page de l'exécution (artefact « talka-android »).
+# La montre est signée par la même clé que le téléphone : la couche de
+# données de Wear OS ne relie que deux applications signées pareil.
+# Ils se téléchargent depuis la page de l'exécution (artefacts
+# « talka-android » et « talka-wear »).
 
 name: Android
 
@@ -23,7 +27,7 @@ on:
 
 jobs:
   android:
-    name: Android (protocole, cœur et APK)
+    name: Android (protocole, cœur, APK du téléphone et de la montre)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -51,16 +55,21 @@ jobs:
           else
             echo "::notice::Pas de clé de signature dans les secrets : APK signé par une clé de débogage."
           fi
-      - name: Application — tests (Robolectric) et APK
+      - name: Applications du téléphone et de la montre — tests (Robolectric) et APK
         env:
           TALKA_KEYSTORE_PASSWORD: ${{ secrets.TALKA_KEYSTORE_PASSWORD }}
           TALKA_KEY_ALIAS: ${{ secrets.TALKA_KEY_ALIAS }}
           TALKA_KEY_PASSWORD: ${{ secrets.TALKA_KEY_PASSWORD }}
           TALKA_VERSION_CODE: ${{ github.run_number }}
           TALKA_VERSION_NAME: 1.0.${{ github.run_number }}
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease :wear:testDebugUnitTest :wear:assembleRelease
       - uses: actions/upload-artifact@v4
         with:
           name: talka-android
           path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: talka-wear
+          path: android/wear/build/outputs/apk/release/*.apk
           if-no-files-found: error

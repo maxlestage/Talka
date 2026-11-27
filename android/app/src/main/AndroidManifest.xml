@@ -75,5 +75,46 @@
         <receiver
             android:name=".call.CallActions"
             android:exported="false" />
+        <!-- Les widgets de l'écran d'accueil (Jetpack Glance) : « Non lus » et
+             « Discussions », ceux de l'iPhone. -->
+        <receiver
+            android:name=".widgets.UnreadWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_unread_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_unread" />
+        </receiver>
+        <receiver
+            android:name=".widgets.RecentChatsWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_recent_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_recent" />
+        </receiver>
+
+        <!-- La montre (Wear OS) : ce qu'elle envoie au téléphone, même Talka
+             fermé (voir WearProtocol). Seulement de la montre appairée, et
+             seulement si elle porte la même application, signée de la même clé. -->
+        <service
+            android:name=".watch.WatchService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data android:scheme="wear" android:host="*" android:path="/talka/action" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.DATA_CHANGED" />
+                <data android:scheme="wear" android:host="*" android:pathPrefix="/talka/queue/" />
+                <data android:scheme="wear" android:host="*" android:pathPrefix="/talka/voice/" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

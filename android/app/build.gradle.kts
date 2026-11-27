@@ -64,6 +64,10 @@ android {
     // Les tests de la JVM avec Robolectric : SQLite d'Android, sans appareil.
     testOptions { unitTests.isIncludeAndroidResources = true }
 
+    // Ce que l'application partage avec celle de la montre (`wear`) : le
+    // lien entre les deux (WearProtocol), les textes des widgets.
+    sourceSets["main"].kotlin.srcDir("../shared/kotlin")
+
     packaging {
         resources { excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "META-INF/versions/9/OSGI-INF/MANIFEST.MF") }
     }
@@ -101,6 +105,11 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraX")
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-view:$cameraX")
+    // Les widgets de l'écran d'accueil (`TalkaWidgets.swift` de l'iPhone).
+    implementation("androidx.glance:glance-appwidget:1.1.1")
+    // La montre (Wear OS) : la couche de données, que l'application de la
+    // montre emploie aussi (WatchConnectivity sur l'iPhone).
+    implementation("com.google.android.gms:play-services-wearable:19.0.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
     // Les écrans dans les tests (Robolectric) : l'activité vide où ils se dessinent.
     debugImplementation("androidx.compose.ui:ui-test-manifest")
@@ -110,6 +119,8 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation(composeBom)
     testImplementation("androidx.compose.ui:ui-test-junit4")
+    // Les widgets dessinés dans les tests (sans écran d'accueil).
+    testImplementation("androidx.glance:glance-appwidget-testing:1.1.1")
 }
 
 // L'image d'Android que Robolectric fait tourner, téléchargée par Gradle (qui

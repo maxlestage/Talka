@@ -27,6 +27,8 @@ import talka.app.call.CallEngine
 import talka.app.sys.AndroidSql
 import talka.app.ui.Notifier
 import talka.app.ui.Sounds
+import talka.app.watch.WatchBridge
+import talka.app.watch.WatchPort
 import talka.kit.Body
 import talka.kit.Brocolis
 import talka.kit.CallEntry
@@ -46,7 +48,6 @@ import talka.kit.TalkaCode
 import talka.kit.TalkaCrypto
 import talka.kit.TalkaServer
 import talka.kit.WidgetData
-import talka.kit.WidgetShare
 import talka.kit.leaveAccount
 import talka.kit.nowMs
 import talka.kit.randomId
@@ -92,6 +93,10 @@ class AppEnv(
     val callMedia: (() -> talka.app.call.CallMedia)? = null,
     /** Les signaux d'appel : par le moteur, chiffrés (null), ou un faux réseau dans les tests. */
     val callSignals: ((String, Body) -> Unit)? = null,
+    /** La montre : la couche de données de Wear OS (`WearDataLayer`), un faux dans les tests, ou rien. */
+    val watch: WatchPort? = null,
+    /** Recharge les widgets de l'écran d'accueil (`TalkaWidgets.reload`). */
+    val reloadWidgets: () -> Unit = {},
 ) {
     /** Les réglages de l'appareil (les `UserDefaults` de l'iPhone). */
     val prefs: SharedPreferences = context.getSharedPreferences("talka.reglages", Context.MODE_PRIVATE)
@@ -175,6 +180,9 @@ class AppModel(val env: AppEnv) {
     private var goingOut = false
     private var hiddenOnPurpose = false
 
+    /** La montre et les widgets (`WatchBridge.shared` de l'iPhone). */
+    val watch = WatchBridge(this, env.watch, env.reloadWidgets)
+
     init {
         if (StoreVault.isProtected || StoreVault.isCodeLocked) {
             store = Store(env.dir, env.sql, null)
@@ -188,6 +196,7 @@ class AppModel(val env: AppEnv) {
             if (Engine.hasAccount(store)) start()
             scope.launch { finishLoading() }
         }
+        watch.start()
     }
 
     /** L'écran de chargement : le temps de retrouver le relais. */
@@ -311,7 +320,7 @@ class AppModel(val env: AppEnv) {
         vaultLocked = false
         prefs.edit().remove(faceIdKey).remove(failsKey).remove(untilKey).apply()
         faceIDState = false
-        WidgetShare.clear()
+        watch.clearWidgets()
         Notifier.cancelAll()
     }
 
@@ -344,6 +353,8 @@ class AppModel(val env: AppEnv) {
                 hiddenOnPurpose = hiddenOnPurpose || goingOut
                 goingOut = false
                 store.save()
+                // Les widgets et la montre partent avec le dernier état.
+                watch.push()
             }
             Phase.inactive -> {
                 active = false
@@ -627,6 +638,7 @@ class AppModel(val env: AppEnv) {
             val shown = e.settings.notification(e.title(chat), body)
             Notifier.message(shown.title, shown.body, chat.id, e.settings.sound)
         }
+        watch.push()
     }
 
     // ----- Appels -----
@@ -721,6 +733,7 @@ class AppModel(val env: AppEnv) {
 
     /** Arrête tout (l'activité est détruite pour de bon, ou les tests). */
     fun close() {
+        watch.stop()
         engine?.stop()
         engine = null
         store.close()

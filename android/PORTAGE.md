@@ -28,7 +28,7 @@ kotlinx.serialization. Rien d'autre que du Kotlin pour le code de l'app.
 - [x] `app` : base (modèle, onglets, verrou PIN/biométrie, SQLite et Keystore), bienvenue, discussions, réglages ; 19 tests Robolectric
 - [x] `app` : conversation, fiche, appareils (QR), actus, Brocolis
 - [x] `app` : appels (WebRTC, à plusieurs), vocaux (AAC/MP4), photos ; 59 tests Robolectric
-- [ ] `app` : widgets d'écran d'accueil, pont vers la montre, app Wear OS
+- [x] `app` : widgets d'écran d'accueil (Glance), pont vers la montre ; `wear` : l'app Wear OS (14 tests)
 
 Comme l'iPhone, pas de notification quand Talka est fermée (l'iPhone n'en a pas : il prévient tant que l'app tourne) ni d'extension « Partager vers Talka ».
 - [ ] Essayer sur un vrai téléphone (pas d'émulateur ici) : WebRTC, caméra, micro, biométrie, Keystore
@@ -38,51 +38,53 @@ Comme l'iPhone, pas de notification quand Talka est fermée (l'iPhone n'en a pas
 
 Chaque fonction de l'app iPhone (`ios/Talka`, `ios/Sources/TalkaKit`), à
 cocher quand l'Android la fait de la même façon (et parle le même protocole).
+Toutes sont portées et testées sur la JVM (Robolectric) ; aucune n'a encore
+tourné sur un vrai téléphone ni une vraie montre.
 
 **Compte et sécurité**
-- [ ] Créer son code (nom, photo) ; restaurer une sauvegarde chiffrée
-- [ ] Clé de l'appareil gardée par le Keystore Android ; code de verrouillage (PIN), empreinte / visage
-- [ ] Sauvegarde chiffrée (exporter, importer), mot de passe
-- [ ] Numéro de sécurité, protection de la discussion (double cliquet ou ancien chiffrement), blocage
-- [ ] Plusieurs appareils (v4) : lier par QR code, liste des appareils, retirer un appareil
-- [ ] Expéditeur scellé (v4/v6), boîtes tournantes, relais authentifié, cliquet post-quantique (v6)
+- [x] Créer son code (nom, photo) ; restaurer une sauvegarde chiffrée
+- [x] Clé de l'appareil gardée par le Keystore Android ; code de verrouillage (PIN), empreinte / visage
+- [x] Sauvegarde chiffrée (exporter, importer), mot de passe
+- [x] Numéro de sécurité, protection de la discussion (double cliquet ou ancien chiffrement), blocage
+- [x] Plusieurs appareils (v4) : lier par QR code, liste des appareils, retirer un appareil
+- [x] Expéditeur scellé (v4/v6), boîtes tournantes, relais authentifié, cliquet post-quantique (v6)
 
 **Discussions** (onglet Discussions)
-- [ ] Liste triée, épinglées, archivées, non lues, recherche dans toutes les discussions
-- [ ] Ajouter un contact (code, QR code, lien d'invitation), montrer son code (QR)
-- [ ] Groupes : créer, nom, photo, description, membres, admins, « seuls les admins écrivent », quitter
-- [ ] Sourdine, archiver, épingler, vider, supprimer, exporter une discussion, fond d'écran
+- [x] Liste triée, épinglées, archivées, non lues, recherche dans toutes les discussions
+- [x] Ajouter un contact (code, QR code, lien d'invitation), montrer son code (QR)
+- [x] Groupes : créer, nom, photo, description, membres, admins, « seuls les admins écrivent », quitter
+- [x] Sourdine, archiver, épingler, vider, supprimer, exporter une discussion, fond d'écran
 
 **Conversation**
-- [ ] Bulles : texte (mise en forme, liens), photo, vocal, fichier, carte de contact
-- [ ] Répondre, réagir, modifier, supprimer pour tous, transférer, important (étoile), épingler un message
-- [ ] ✓ envoyé, ✓✓ distribué, ✓✓ lu (accusés de lecture réglables), « en train d'écrire »
-- [ ] Messages éphémères, capsules temporelles, mentions « @ », recherche dans la discussion
-- [ ] Brouillons, messages plus anciens à la demande, bandeau des non-lus, saut vers un message cité
+- [x] Bulles : texte (mise en forme, liens), photo, vocal, fichier, carte de contact
+- [x] Répondre, réagir, modifier, supprimer pour tous, transférer, important (étoile), épingler un message
+- [x] ✓ envoyé, ✓✓ distribué, ✓✓ lu (accusés de lecture réglables), « en train d'écrire »
+- [x] Messages éphémères, capsules temporelles, mentions « @ », recherche dans la discussion
+- [x] Brouillons, messages plus anciens à la demande, bandeau des non-lus, saut vers un message cité
 
 **Brocolis 🥦**
-- [ ] Clés partagées avec l'app Brocolis (PSK), jetons Brocolis dans les messages, l'œuf de Pâques
+- [x] Clés partagées avec l'app Brocolis (PSK), jetons Brocolis dans les messages, l'œuf de Pâques
 
 **Actus** (onglet Actus)
-- [ ] Actus texte sur fond de couleur et photo, 24 heures, vues, supprimer
+- [x] Actus texte sur fond de couleur et photo, 24 heures, vues, supprimer
 
 **Appels** (onglet Appels)
-- [ ] Audio et vidéo (WebRTC), haut-parleur, caméra avant/arrière, couper le micro
-- [ ] Appels à plusieurs (8 au plus) : un groupe, des contacts choisis, ajouter en cours d'appel
-- [ ] Journal des appels, rappeler, appel entrant en plein écran (même verrouillé)
+- [x] Audio et vidéo (WebRTC), haut-parleur, caméra avant/arrière, couper le micro
+- [x] Appels à plusieurs (8 au plus) : un groupe, des contacts choisis, ajouter en cours d'appel
+- [x] Journal des appels, rappeler, appel entrant en plein écran (même verrouillé)
 
 **Réglages**
-- [ ] Profil, code, confidentialité (présence, accusés de lecture), verrou, apparence, notifications, conservation, sauvegarde
+- [x] Profil, code, confidentialité (présence, accusés de lecture), verrou, apparence, notifications, conservation, sauvegarde
 
 **Système**
-- [ ] Notifications (avec aperçu chiffré si permis), sonnerie d'appel
-- [ ] Widgets d'écran d'accueil (non-lus, discussions récentes), comme ceux de l'iPhone
-- [ ] Montre (Wear OS), comme l'Apple Watch : à faire en dernier
+- [x] Notifications (avec aperçu chiffré si permis), sonnerie d'appel
+- [x] Widgets d'écran d'accueil (non-lus, discussions récentes), comme ceux de l'iPhone
+- [x] Montre (Wear OS), comme l'Apple Watch : à faire en dernier
 
 ## Construire
 
 ```sh
 cd android
 ./gradlew :brocolis:test :talkakit:test   # sans SDK Android
-./gradlew :app:assembleDebug              # avec ANDROID_HOME
+./gradlew :app:testDebugUnitTest :app:assembleDebug :wear:assembleDebug   # avec ANDROID_HOME
 ```

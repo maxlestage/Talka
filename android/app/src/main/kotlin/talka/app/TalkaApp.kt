@@ -93,10 +93,14 @@ import talka.app.ui.Sounds
 import talka.app.ui.StatusTab
 import talka.app.ui.VaultLockView
 import talka.app.ui.WelcomeView
+import talka.app.watch.WearDataLayer
+import talka.app.widgets.TalkaWidgets
 import talka.kit.BrocolisVault
 import talka.kit.StoreVault
 import talka.kit.TalkaLog
 import talka.kit.V3Vault
+import talka.kit.WidgetShare
+import talka.link.FileWidgetStorage
 
 /**
  * L'application : la garde des clés (le Keystore) et le modèle, un seul
@@ -109,6 +113,13 @@ class TalkaApp : Application() {
     /** Un modèle tout prêt, à la place du Keystore (absent des tests sous Robolectric). */
     var preset: AppModel? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        // Ce que lisent les widgets : branché dès le lancement, car un widget
+        // peut se dessiner sans que Talka ait été ouvert.
+        if (WidgetShare.storage == null) WidgetShare.storage = FileWidgetStorage(this)
+    }
+
     val model: AppModel by lazy {
         preset?.let { return@lazy it }
         val g = KeystoreGuard(this)
@@ -119,7 +130,14 @@ class TalkaApp : Application() {
         Notifier.prepare(this)
         Sounds.prepare(this)
         if (BuildConfig.DEBUG) TalkaLog.sink = { Log.d("Talka", it) }
-        AppModel(AppEnv(this, unlockCipher = { account -> g.unlockCipher(account) }))
+        AppModel(
+            AppEnv(
+                this,
+                unlockCipher = { account -> g.unlockCipher(account) },
+                watch = WearDataLayer(this),
+                reloadWidgets = { TalkaWidgets.reload(this) },
+            ),
+        )
     }
 }
 

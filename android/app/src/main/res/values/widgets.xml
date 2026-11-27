@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Les widgets de l'écran d'accueil (leurs noms et descriptions, ceux de l'iPhone). -->
+<resources>
+    <string name="widget_unread_name">Non lus</string>
+    <string name="widget_unread_description">Vos messages non lus et le dernier arrivé.</string>
+    <string name="widget_recent_name">Discussions</string>
+    <string name="widget_recent_description">Vos discussions récentes : touchez-en une pour l\'ouvrir.</string>
+    <color name="widget_surface">#FFFFFFFF</color>
+</resources>

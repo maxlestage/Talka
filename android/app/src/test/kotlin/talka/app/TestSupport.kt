@@ -189,6 +189,8 @@ open class AppTestBase {
         base: File = dir,
         server: String = "http://relais.test",
         sockets: talka.kit.SocketOpener = relay,
+        watch: talka.app.watch.WatchPort? = null,
+        reloadWidgets: () -> Unit = {},
     ): AppModel {
         val env = AppEnv(
             RuntimeEnvironment.getApplication(),
@@ -199,6 +201,8 @@ open class AppTestBase {
             deviceName = "Pixel de test",
             splashMs = 0,
             netWaitMs = 0,
+            watch = watch,
+            reloadWidgets = reloadWidgets,
         )
         return AppModel(env).also {
             it.biometrics = biometrics

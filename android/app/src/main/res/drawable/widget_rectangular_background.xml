@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Le fond du bandeau « Non lus » (le rectangle de l'écran verrouillé de l'iPhone). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="315" android:startColor="#FF0A423B" android:endColor="#FF05211F" android:type="linear" />
+    <corners android:radius="20dp" />
+</shape>

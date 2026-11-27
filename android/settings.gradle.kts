@@ -6,7 +6,9 @@
 // - `talkakit` : le cœur de Talka (codes, chiffrement, relais, discussions),
 //   portage Kotlin de TalkaKit (l'iPhone), vérifié contre les vecteurs du
 //   navigateur ;
-// - `app` : l'application Android.
+// - `app` : l'application Android ;
+// - `wear` : l'application de la montre (Wear OS), qui passe par le
+//   téléphone comme celle de l'Apple Watch passe par l'iPhone.
 //
 // `brocolis` et `talkakit` sont du Kotlin pour la JVM, sans Android : leurs
 // tests tournent partout (`gradle :talkakit:test`).
@@ -34,7 +36,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "talka-android"
 include(":brocolis", ":talkakit")
-// L'application demande le SDK Android : seulement s'il est là.
+// Les applications demandent le SDK Android : seulement s'il est là.
 if (System.getenv("ANDROID_HOME") != null || file("local.properties").exists()) {
-    include(":app")
+    include(":app", ":wear")
 }
