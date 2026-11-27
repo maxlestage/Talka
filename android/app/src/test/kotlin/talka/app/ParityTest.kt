@@ -28,7 +28,9 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.swipeRight
+import androidx.compose.ui.test.swipeUp
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -166,7 +168,7 @@ class ParityTest : AppTestBase() {
         assertTrue(compose.onAllNodesWithText("Archiver").fetchSemanticsNodes().isEmpty())
 
         // Vers la droite : lu / non lu, épingler.
-        compose.onNodeWithText("Max").performTouchInput { swipeRight() }
+        compose.onNodeWithText("Max").performTouchInput { swipeRight(startX = centerX, endX = centerX + 150.dp.toPx()) }
         compose.waitForIdle()
         compose.onNodeWithText("Non lu").assertIsDisplayed()
         compose.onNodeWithText("Épingler").performClick()
@@ -174,14 +176,14 @@ class ParityTest : AppTestBase() {
         compose.onNodeWithContentDescription("Épinglée", useUnmergedTree = true).assertExists()
 
         // Vers la gauche : supprimer, archiver, la sourdine.
-        compose.onNodeWithText("Max").performTouchInput { swipeLeft() }
+        compose.onNodeWithText("Max").performTouchInput { swipeLeft(startX = centerX, endX = centerX - 150.dp.toPx()) }
         compose.waitForIdle()
         compose.onNodeWithText("Supprimer").assertIsDisplayed()
         compose.onNodeWithText("Silence").performClick()
         compose.onNodeWithText("Plus de notification ni de son ; les messages arrivent quand même.").assertIsDisplayed()
         compose.onNodeWithText("8 heures").performClick()
         waitUntil { e.chat(max.code)!!.muted }
-        compose.onNodeWithText("Max").performTouchInput { swipeLeft() }
+        compose.onNodeWithText("Max").performTouchInput { swipeLeft(startX = centerX, endX = centerX - 150.dp.toPx()) }
         compose.waitForIdle()
         compose.onNodeWithText("Archiver").performClick()
         waitUntil { e.chat(max.code)!!.archived }
@@ -191,7 +193,7 @@ class ParityTest : AppTestBase() {
         // Les archivées : on désarchive en balayant ; vide, le texte de l'iPhone.
         compose.onNodeWithText("Archivées").performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("Max").performTouchInput { swipeLeft() }
+        compose.onNodeWithText("Max").performTouchInput { swipeLeft(startX = centerX, endX = centerX - 150.dp.toPx()) }
         compose.waitForIdle()
         compose.onNodeWithText("Son").assertIsDisplayed()
         compose.onNodeWithText("Désarchiver").performClick()
@@ -211,10 +213,70 @@ class ParityTest : AppTestBase() {
         waitUntil { e.chat(max.code)!!.markedUnread }
 
         // Supprimer, tout au bout à droite.
-        compose.onNodeWithText("Max").performTouchInput { swipeLeft() }
+        compose.onNodeWithText("Max").performTouchInput { swipeLeft(startX = centerX, endX = centerX - 150.dp.toPx()) }
         compose.waitForIdle()
         compose.onNodeWithText("Supprimer").performClick()
         waitUntil { e.chat(max.code) == null }
+    }
+
+    /**
+     * Comme sur l'iPhone : un balayage long fait aussitôt l'action du bord ;
+     * une seule ligne ouverte à la fois ; la toucher la referme sans
+     * l'ouvrir.
+     */
+    @Test
+    fun aLongSwipeDoesTheEdgeActionAndOneRowOpensAtATime() {
+        val m = account()
+        val e = m.engine!!
+        val max = friend(m, "Max")
+        val zoe = friend(m, "Zoé")
+        e.ensureDirectChat(max.code)
+        e.ensureDirectChat(zoe.code)
+        compose.setContent { TalkaTheme(m) { ChatsTab() } }
+        compose.waitForIdle()
+
+        // Tout au bout vers la droite : « Non lu », sans toucher de tuile.
+        compose.onNodeWithText("Max").performTouchInput { swipeRight(startX = centerX, endX = centerX + 400.dp.toPx()) }
+        waitUntil { e.chat(max.code)!!.markedUnread }
+        compose.waitForIdle()
+        assertTrue(compose.onAllNodesWithText("Épingler").fetchSemanticsNodes().isEmpty(), "la ligne s'est refermée")
+
+        // Une ligne ouverte, puis une autre : la première se referme.
+        compose.onNodeWithText("Max").performTouchInput { swipeLeft(startX = centerX, endX = centerX - 150.dp.toPx()) }
+        compose.waitForIdle()
+        assertEquals(1, compose.onAllNodesWithText("Archiver").fetchSemanticsNodes().size)
+        compose.onNodeWithText("Zoé").performTouchInput { swipeLeft(startX = centerX, endX = centerX - 150.dp.toPx()) }
+        compose.waitForIdle()
+        assertEquals(1, compose.onAllNodesWithText("Archiver").fetchSemanticsNodes().size, "une seule ligne ouverte")
+
+        // La toucher la referme, sans ouvrir la discussion.
+        compose.onNodeWithText("Zoé").performClick()
+        compose.waitForIdle()
+        assertTrue(compose.onAllNodesWithText("Archiver").fetchSemanticsNodes().isEmpty())
+        assertTrue(m.path.isEmpty(), "la discussion ne s'est pas ouverte")
+
+        // Tout au bout vers la gauche : supprimer, aussitôt.
+        compose.onNodeWithText("Zoé").performTouchInput { swipeLeft(startX = centerX, endX = centerX - 400.dp.toPx()) }
+        waitUntil { e.chat(zoe.code) == null }
+        assertTrue(e.chat(max.code) != null)
+    }
+
+    /** Faire défiler la liste referme la ligne ouverte. */
+    @Test
+    fun scrollingClosesTheOpenRow() {
+        val m = account()
+        val e = m.engine!!
+        val codes = (1..25).map { i -> friend(m, "Ami %02d".format(i)).code }
+        for (c in codes) e.ensureDirectChat(c)
+        compose.setContent { TalkaTheme(m) { ChatsTab() } }
+        compose.waitForIdle()
+        val first = compose.onAllNodesWithText("Ami", substring = true)[0]
+        first.performTouchInput { swipeLeft(startX = centerX, endX = centerX - 150.dp.toPx()) }
+        compose.waitForIdle()
+        assertEquals(1, compose.onAllNodesWithText("Archiver").fetchSemanticsNodes().size)
+        compose.onAllNodesWithText("Ami", substring = true)[2].performTouchInput { swipeUp() }
+        compose.waitForIdle()
+        assertTrue(compose.onAllNodesWithText("Archiver").fetchSemanticsNodes().isEmpty(), "le défilement l'a refermée")
     }
 
     @Test
@@ -225,7 +287,7 @@ class ParityTest : AppTestBase() {
         compose.setContent { TalkaTheme(m) { BrocolisKeysView(onBack = {}) } }
         compose.waitForIdle()
         scrollTo("Balayez une clé")
-        compose.onNodeWithText("Maman").performTouchInput { swipeLeft() }
+        compose.onNodeWithText("Maman").performTouchInput { swipeLeft(startX = centerX, endX = centerX - 150.dp.toPx()) }
         compose.waitForIdle()
         compose.onNodeWithText("Oublier").assertIsDisplayed()
         compose.onNodeWithText("Renommer").assertIsDisplayed()
@@ -234,7 +296,7 @@ class ParityTest : AppTestBase() {
         compose.onNodeWithText("Renouveler").performClick()
         waitUntil { e.brocolisKeys.size == 2 }
         // L'ancienne ne se renouvelle plus : oublier et renommer seulement.
-        compose.onNodeWithText("Maman (ancienne)").performTouchInput { swipeLeft() }
+        compose.onNodeWithText("Maman (ancienne)").performTouchInput { swipeLeft(startX = centerX, endX = centerX - 150.dp.toPx()) }
         compose.waitForIdle()
         assertTrue(compose.onAllNodesWithText("Renouveler").fetchSemanticsNodes().isEmpty())
         compose.onNodeWithText("Oublier").performClick()

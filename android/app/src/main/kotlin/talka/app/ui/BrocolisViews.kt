@@ -151,7 +151,7 @@ fun BrocolisKeysView(onBack: () -> Unit) {
     }
 
     Page("Brocolis 🥦", onBack) { padding ->
-        LazyColumn(Modifier.padding(padding).fillMaxSize()) {
+        SwipeGroupHost { swipes -> LazyColumn(Modifier.padding(padding).fillMaxSize().then(swipes)) {
             // Ce que le moteur change (hors de l'état de Compose) : la liste suit `revision`.
             model.revision
             if (e.brocolisKeys.isEmpty()) {
@@ -230,7 +230,7 @@ fun BrocolisKeysView(onBack: () -> Unit) {
                 )
                 SectionFooter("Une clé créée ici est copiée : partagez-la par un canal sûr, ou envoyez-la par Talka depuis une discussion (⋮ → Chiffrer avec Brocolis). Balayez une clé (ou touchez son ⋮) pour la renommer, la renouveler ou l'oublier.\n\n$brocolisStrength")
             }
-        }
+        } }
     }
     if (adding) AddBrocolisKey(onDismiss = { adding = false })
     exporting?.let { k -> ExportBrocolisKey(k, onDismiss = { exporting = null }) }

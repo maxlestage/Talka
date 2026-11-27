@@ -280,7 +280,7 @@ fun ChatList(
     var clearing by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     val selected = if (LocalWide.current) model.path.lastOrNull() else null
 
-    LazyColumn(modifier.fillMaxSize()) {
+    SwipeGroupHost { swipes -> LazyColumn(modifier.fillMaxSize().then(swipes)) {
         if (e.netState != Relay.State.online) {
             item(key = "réseau") {
                 Row(
@@ -364,7 +364,7 @@ fun ChatList(
                 }
             }
         }
-    }
+    } }
     muting?.let { id -> MuteChoicesDialog(e, id, muted = false, onDismiss = { muting = null }) }
     clearing?.let { (id, keepable) -> ClearChatDialog(e, id, keepable, onDismiss = { clearing = null }) }
 }
