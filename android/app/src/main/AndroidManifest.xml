@@ -9,6 +9,9 @@
     <!-- L'empreinte ou le visage. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
+    <!-- La caméra (déclarée avec les appels plus bas) sert aussi à scanner
+         un QR code : lier un appareil, ajouter un contact. -->
+
     <!-- Prendre une photo avec l'appareil (le profil), sans l'exiger. -->
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 

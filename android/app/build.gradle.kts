@@ -92,6 +92,15 @@ dependencies {
     // bibliothèque que l'iPhone, `stasel/WebRTC`, à la même branche de
     // Chromium ou presque). Rien d'autre de Stream : ni service ni compte.
     implementation("io.getstream:stream-webrtc-android:1.3.10")
+
+    // Le QR code (appareils liés, mon code, numéro de sécurité) : zxing le
+    // dessine et le lit ; la caméra par CameraX, dont chaque image est lue
+    // par zxing. Rien de Google Play Services.
+    implementation("com.google.zxing:core:3.5.3")
+    val cameraX = "1.4.1"
+    implementation("androidx.camera:camera-camera2:$cameraX")
+    implementation("androidx.camera:camera-lifecycle:$cameraX")
+    implementation("androidx.camera:camera-view:$cameraX")
     debugImplementation("androidx.compose.ui:ui-tooling")
     // Les écrans dans les tests (Robolectric) : l'activité vide où ils se dessinent.
     debugImplementation("androidx.compose.ui:ui-test-manifest")
