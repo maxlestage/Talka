@@ -172,37 +172,60 @@ internal fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, length
 
 /** AES-256-GCM, nonce de 12 octets, étiquette de 16 (comme `AES.GCM`). */
 internal object AesGcm {
-    private fun cipher(mode: Int, key: ByteArray, nonce: ByteArray, aad: ByteArray?): Cipher {
-        val c = Cipher.getInstance("AES/GCM/NoPadding")
-        c.init(mode, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+    // Un chiffreur par fil, réinitialisé à chaque usage (nouvelle clé, nouveau
+    // nonce) : `Cipher.getInstance` cherche son fournisseur à chaque appel,
+    // ce qui pèse sur les milliers de lignes de la mémoire (`Store`).
+    private val ciphers: ThreadLocal<Cipher> = ThreadLocal.withInitial { Cipher.getInstance("AES/GCM/NoPadding") }
+
+    private fun cipher(mode: Int, key: ByteArray, nonce: ByteArray, nonceAt: Int, aad: ByteArray?): Cipher {
+        val spec = SecretKeySpec(key, "AES")
+        val params = GCMParameterSpec(128, nonce, nonceAt, 12)
+        val c = try {
+            ciphers.get().also { it.init(mode, spec, params) }
+        } catch (e: java.security.InvalidAlgorithmParameterException) {
+            // Le chiffreur d'un fil refuse de rechiffrer avec la clé et le
+            // nonce qu'il vient d'employer (un nonce donné par l'appelant : les
+            // vecteurs) ; un chiffreur neuf l'accepte, comme avant.
+            Cipher.getInstance("AES/GCM/NoPadding").also { it.init(mode, spec, params) }
+        }
         if (aad != null) c.updateAAD(aad)
         return c
     }
 
     /** Chiffré ‖ étiquette. */
     fun sealParts(key: ByteArray, nonce: ByteArray, plain: ByteArray, aad: ByteArray? = null): ByteArray? =
-        if (key.size != 32 || nonce.size != 12) null else cipher(Cipher.ENCRYPT_MODE, key, nonce, aad).doFinal(plain)
+        if (key.size != 32 || nonce.size != 12) null else cipher(Cipher.ENCRYPT_MODE, key, nonce, 0, aad).doFinal(plain)
 
     /** Nonce ‖ chiffré ‖ étiquette (`SealedBox.combined`). */
     fun seal(key: ByteArray, plain: ByteArray, aad: ByteArray? = null): ByteArray? {
-        val nonce = randomBytes(12)
-        return sealParts(key, nonce, plain, aad)?.let { nonce + it }
+        if (key.size != 32) return null
+        // Le nonce, puis le chiffré écrit juste derrière : une seule copie.
+        val out = ByteArray(12 + plain.size + 16)
+        randomBytes(12).copyInto(out)
+        cipher(Cipher.ENCRYPT_MODE, key, out, 0, aad).doFinal(plain, 0, plain.size, out, 12)
+        return out
     }
 
     fun openParts(key: ByteArray, nonce: ByteArray, sealed: ByteArray, aad: ByteArray? = null): ByteArray? {
-        if (key.size != 32 || nonce.size != 12 || sealed.size < 16) return null
+        if (nonce.size != 12) return null
+        return openAt(key, nonce, 0, sealed, 0, sealed.size, aad)
+    }
+
+    /** Nonce ‖ chiffré ‖ étiquette, lus à partir de `at` dans `data`, sans copie. */
+    fun open(key: ByteArray, data: ByteArray, aad: ByteArray? = null, at: Int = 0): ByteArray? {
+        if (at < 0 || data.size - at < 12 + 16) return null
+        return openAt(key, data, at, data, at + 12, data.size - at - 12, aad)
+    }
+
+    private fun openAt(key: ByteArray, nonce: ByteArray, nonceAt: Int, sealed: ByteArray, from: Int, length: Int, aad: ByteArray?): ByteArray? {
+        if (key.size != 32 || length < 16) return null
         return try {
-            cipher(Cipher.DECRYPT_MODE, key, nonce, aad).doFinal(sealed)
+            cipher(Cipher.DECRYPT_MODE, key, nonce, nonceAt, aad).doFinal(sealed, from, length)
         } catch (e: AEADBadTagException) {
             null
         } catch (e: java.security.GeneralSecurityException) {
             null
         }
-    }
-
-    fun open(key: ByteArray, combined: ByteArray, aad: ByteArray? = null): ByteArray? {
-        if (combined.size < 12 + 16) return null
-        return openParts(key, combined.copyOfRange(0, 12), combined.copyOfRange(12, combined.size), aad)
     }
 }
 
@@ -562,7 +585,7 @@ object TalkaCrypto {
         val ephRaw = data.copyOfRange(11, 76)
         val e = P256.ecdh(nkPriv, ephRaw) ?: return null
         val st = P256.ecdh(nkPriv, dh) ?: return null
-        val plain = AesGcm.open(apercuKey(e, st, ephRaw, nkPub, from), data.copyOfRange(76, data.size), "talka-apercu:$from".toByteArray())
+        val plain = AesGcm.open(apercuKey(e, st, ephRaw, nkPub, from), data, "talka-apercu:$from".toByteArray(), at = 76)
             ?: return null
         return utf8(plain)?.let { Apercu(from, it) }
     }
@@ -601,7 +624,7 @@ object TalkaCrypto {
         val myDh = unb64(me.dh) ?: return null
         val ephRaw = data.copyOfRange(0, 65)
         val secret = me.dhKey?.let { P256.ecdh(it, ephRaw) } ?: return null
-        val plain = AesGcm.open(sealedKey(secret, ephRaw, myDh, me.code), data.copyOfRange(65, data.size), "talka-scelle:${me.code}".toByteArray())
+        val plain = AesGcm.open(sealedKey(secret, ephRaw, myDh, me.code), data, "talka-scelle:${me.code}".toByteArray(), at = 65)
             ?: return null
         val s = SealedSender.parse(plain) ?: return null
         if (TalkaCode.normalize(s.from) != s.from) return null

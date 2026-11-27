@@ -116,7 +116,7 @@ object Brocolis {
         if (end < 0) return null
         val data = unb64(text.substring(from, end))?.takeIf { it.size == 16 + 12 + 32 + 16 } ?: return null
         val key = TalkaCrypto.pbkdf2(phrase, data.copyOfRange(0, 16), phraseRounds)
-        val raw = AesGcm.open(key, data.copyOfRange(16, data.size), keyAD)?.takeIf { it.size == 32 } ?: return null
+        val raw = AesGcm.open(key, data, keyAD, at = 16)?.takeIf { it.size == 32 } ?: return null
         return b64(raw)
     }
 

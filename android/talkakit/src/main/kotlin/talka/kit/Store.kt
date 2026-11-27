@@ -314,7 +314,7 @@ class Store(directory: File, sql: SqlOpener, val key: ByteArray? = null) : Close
     internal fun open(data: ByteArray, store: String, key: String): String? {
         val k = this.key ?: return null
         if (data.size <= magic.size + 28 || data[0] != magic[0] || data[1] != magic[1]) return null
-        val plain = AesGcm.open(k, data.copyOfRange(2, data.size), aad(store, key)) ?: return null
+        val plain = AesGcm.open(k, data, aad(store, key), at = magic.size) ?: return null
         return utf8(plain)
     }
 
