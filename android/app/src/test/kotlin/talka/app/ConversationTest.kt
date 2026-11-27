@@ -39,6 +39,8 @@ import talka.app.ui.voiceBar
 import talka.kit.Body
 import talka.kit.Content
 import talka.kit.Engine
+import talka.kit.nowMs
+import talka.kit.Message
 import talka.kit.Identity
 import talka.kit.TalkaCrypto
 import talka.kit.Wire
@@ -226,6 +228,21 @@ class ConversationTest : AppTestBase() {
         compose.onNodeWithContentDescription("Envoyer").performClick()
         waitUntil { e.messages(g.id).lastOrNull { it.kind == "text" }?.text == "Salut @Max ça va ?" }
         assertEquals(listOf(friend.code), e.messages(g.id).last().mentions)
+    }
+
+    /** Un contact renommé pendant qu'on lit la discussion : son nom change sur ses bulles. */
+    @Test
+    fun aRenamedContactIsRenamedOnTheBubbles() {
+        val (m, e, friend) = withFriend()
+        val g = e.createGroup("Les amis", listOf(friend.code), "")
+        e.store.writeMessage(Message(g.id, "x1", friend.code, nowMs(), Content(text = "Coucou tout le monde")))
+        m.openChat(g.id)
+        show(m)
+        waitFor("Coucou tout le monde")
+        compose.onNodeWithText("Max").assertIsDisplayed()
+        e.updateContact(friend.code) { it.copy(name = "Maxime") }
+        waitFor("Maxime")
+        assertTrue(gone("Max"))
     }
 
     @Test
