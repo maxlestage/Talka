@@ -26,8 +26,10 @@ kotlinx.serialization. Rien d'autre que du Kotlin pour le code de l'app.
 - [x] `talkakit` : relais (`Relay.swift`, `Socket.swift`, OkHttp) et stockage (`Store.swift`, chiffré, SQLite derrière une interface) ; 79 tests
 - [x] `talkakit` : moteur (`Engine.swift`, `EngineV3.swift`, `EngineV4.swift`, montre, widgets) ; 194 tests, dont les 7 en direct contre le relais local (sautés sans `TALKA_SERVER`)
 - [x] `app` : base (modèle, onglets, verrou PIN/biométrie, SQLite et Keystore), bienvenue, discussions, réglages ; 19 tests Robolectric
-- [ ] `app` : conversation, fiche, appareils (QR), actus, Brocolis
-- [ ] `app` : appels (WebRTC), vocaux, photos, notifications
+- [x] `app` : conversation, fiche, appareils (QR), actus, Brocolis
+- [x] `app` : appels (WebRTC, à plusieurs), vocaux (AAC/MP4), photos ; 59 tests Robolectric
+- [ ] `app` : notifications quand l'app est fermée (push), widgets, partager vers Talka, Wear OS
+- [ ] Essayer sur un vrai téléphone (pas d'émulateur ici) : WebRTC, caméra, micro, biométrie, Keystore
 - [x] CI : tests JVM + APK (`.github/workflows/android.yml`) ; signature : les secrets restent à ajouter
 
 ## Parité avec l'iPhone

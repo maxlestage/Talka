@@ -8,8 +8,6 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- L'empreinte ou le visage. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
-    <!-- Les messages vocaux de la discussion (demandé au premier enregistrement). -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- La caméra (déclarée avec les appels plus bas) sert aussi à scanner
          un QR code : lier un appareil, ajouter un contact. -->

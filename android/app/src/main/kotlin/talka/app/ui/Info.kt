@@ -1018,7 +1018,7 @@ fun PhotosSection(e: Engine, chatId: String) {
         }
         if (!all && photos.size > 24) TextButton(onClick = { all = true }, Modifier.padding(horizontal = 8.dp)) { Text("Tout voir (${photos.size})") }
     }
-    viewing?.let { m -> PhotoViewer(e, m, onDismiss = { viewing = null }) }
+    viewing?.let { m -> ImageViewer(e, m, onDismiss = { viewing = null }) }
 }
 
 /** Enregistrer un fichier où l'on veut (le sélecteur de fichiers d'Android) : `save(nom, octets)`. */
@@ -1051,40 +1051,6 @@ private fun rememberFileSaver(mime: String): (String, ByteArray) -> Unit {
         } catch (x: Exception) {
             pending = null
             model.show("Impossible d'enregistrer ici.")
-        }
-    }
-}
-
-/** Une photo en grand : pincer pour l'agrandir ; l'enregistrer. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun PhotoViewer(e: Engine, message: Message, onDismiss: () -> Unit) {
-    val save = rememberFileSaver("image/jpeg")
-    var scale by remember { mutableFloatStateOf(1f) }
-    val zoom = rememberTransformableState { change, _, _ -> scale = max(1f, scale * change) }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Surface(Modifier.fillMaxSize(), color = Color.Black, contentColor = Color.White) {
-            Column(Modifier.fillMaxSize()) {
-                TopAppBar(
-                    title = { Text(e.displayName(message.from), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    navigationIcon = { TextButton(onClick = onDismiss) { Text("Fermer", color = Color.White) } },
-                    actions = {
-                        IconButton(onClick = { dataOfURL(message.data)?.let { save(message.saveName, it) } }) {
-                            Icon(Icons.Filled.Download, "Enregistrer la photo")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Black,
-                        titleContentColor = Color.White,
-                        actionIconContentColor = Color.White,
-                    ),
-                )
-                Box(Modifier.fillMaxSize().transformable(zoom), contentAlignment = Alignment.Center) {
-                    Images.fromDataURL(message.data)?.let {
-                        Image(it, "Photo", Modifier.fillMaxSize().graphicsLayer(scaleX = scale, scaleY = scale), contentScale = ContentScale.Fit)
-                    }
-                }
-            }
         }
     }
 }

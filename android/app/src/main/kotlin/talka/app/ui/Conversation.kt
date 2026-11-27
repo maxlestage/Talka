@@ -1876,7 +1876,7 @@ private fun BubbleContent(e: Engine, m: Message, size: Int, big: Boolean, onOpen
         }
         "voice" -> VoiceBubble(m)
         "file" -> FileBubble(m)
-        "brokey" -> BrokeyCard(e, m)
+        "brokey" -> BrocolisKeyCard(e, m)
         "contact" -> ContactBubble(e, m)
         else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(richText(m.text, mentionLabels(e, m)), fontSize = if (big) 46.sp else size.sp, lineHeight = if (big) 54.sp else (size * 1.3f).sp)
@@ -2124,46 +2124,6 @@ private fun ReactionsSheet(e: Engine, message: Message, onDismiss: () -> Unit) {
 
 // ----- Brocolis 🥦 -----
 
-/**
- * La bulle d'une clé partagée par Talka : son nom, son empreinte, et
- * « Ajouter la clé » (qui l'active aussi dans la discussion). Le
- * `BrocolisKeyCard` de l'iPhone (`BrocolisViews.swift`), dont la discussion
- * a besoin.
- */
-@Composable
-private fun BrokeyCard(e: Engine, m: Message) {
-    val model = LocalAppModel.current
-    model.revision
-    val have = e.sharedKey(m)
-    val secondary = MaterialTheme.colorScheme.onSurfaceVariant
-    Column(Modifier.widthIn(min = 220.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("🥦", fontSize = 22.sp)
-            Column {
-                Text("Clé Brocolis « ${m.name} »", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                KeyFingerprint(if (m.data.isEmpty()) have?.key ?: "" else m.data)
-            }
-        }
-        when {
-            m.from == e.me.code -> Text("Vous avez partagé cette clé. Comparez l'empreinte de vive voix.", style = MaterialTheme.typography.bodySmall, color = secondary)
-            have != null -> Text("✓ Dans vos clés (« ${have.name} »)", style = MaterialTheme.typography.bodySmall, color = secondary)
-            m.data.isEmpty() -> Text("Clé oubliée sur cet appareil.", style = MaterialTheme.typography.bodySmall, color = secondary)
-            else -> Button(
-                onClick = {
-                    try {
-                        val k = e.acceptBrocolisKey(m)
-                        model.show("🥦 « ${k.name} » ajoutée et activée ici · empreinte ${Brocolis.fingerprint(k.key) ?: ""}")
-                    } catch (x: Exception) {
-                        model.show(x.message ?: "La clé n'a pas pu être ajoutée.")
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = TalkaColors.green),
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Ajouter la clé") }
-        }
-    }
-}
-
 @Composable
 private fun KeyFingerprint(key: String) {
     val fp = Brocolis.fingerprint(key) ?: ""
@@ -2176,8 +2136,6 @@ private fun KeyFingerprint(key: String) {
     )
 }
 
-private const val brocolisAbout =
-    "Brocolis chiffre vos messages une seconde fois, avec des clés que vous partagez avec vos proches dans l'app Brocolis 🥦. Talka les chiffre déjà de bout en bout ; seuls ceux qui ont la clé ouvrent cette seconde couche, ici ou dans l'app Brocolis (clavier, Partager)."
 
 /**
  * Les clés qui chiffrent ce qui part dans une discussion. Le
