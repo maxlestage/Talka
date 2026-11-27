@@ -122,6 +122,33 @@ class MemoryKeyGuard : KeyGuard {
     }
 }
 
+/** La garde des éléments secrets (l'appareil v3, les clés Brocolis), en mémoire. */
+class MemorySecretGuard : SecretGuard {
+    val items = HashMap<Pair<String, String>, ByteArray>()
+
+    /** La garde ne répond plus (verrouillée) : lectures `Failed`, écritures refusées. */
+    var failing = false
+
+    override fun read(service: String, account: String): KeyGuard.Read {
+        if (failing) return KeyGuard.Read.Failed
+        return items[service to account]?.let { KeyGuard.Read.Found(it.copyOf()) } ?: KeyGuard.Read.NotFound
+    }
+
+    override fun write(service: String, account: String, data: ByteArray): Boolean {
+        if (failing) return false
+        items[service to account] = data.copyOf()
+        return true
+    }
+
+    override fun delete(service: String, account: String) {
+        items.remove(service to account)
+    }
+
+    override fun clear(service: String) {
+        items.keys.removeAll { it.first == service }
+    }
+}
+
 /** Un dossier neuf (pas encore créé : `Store` le crée, comme sur l'iPhone). */
 fun newTempDir(prefix: String = "talka-store-"): File {
     val dir = Files.createTempDirectory(prefix).toFile()

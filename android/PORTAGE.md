@@ -22,7 +22,7 @@ kotlinx.serialization. Rien d'autre que du Kotlin pour le code de l'app.
 - [x] Squelette Gradle (`brocolis`, `talkakit`, `app` quand le SDK est là)
 - [x] `brocolis` : BrocolisProto en Kotlin, vecteurs Rust et Wycheproof verts (72 tests)
 - [x] `talkakit` : modèle (`Model.swift`), chiffrement (`Crypto.swift`), appels à plusieurs (`Mesh.swift`), vecteurs verts (39 tests)
-- [ ] `talkakit` : v3 (`V3.swift`, `EngineV3.swift`), Brocolis (`Brocolis*.swift`), v6 (`Pq6.swift`)
+- [x] `talkakit` : v3 (`V3.swift`, `V3Vault.swift`), Brocolis (`Brocolis*.swift`), v6 (`Pq6.swift`) ; 111 tests (`EngineV3.swift` va avec le moteur)
 - [x] `talkakit` : relais (`Relay.swift`, `Socket.swift`, OkHttp) et stockage (`Store.swift`, chiffré, SQLite derrière une interface) ; 79 tests
 - [ ] `talkakit` : moteur (`Engine.swift`, `EngineV4.swift`), appels à plusieurs (`Mesh.swift`)
 - [ ] `app` : bienvenue, discussions, conversation, fiche, réglages, appareils, actus, Brocolis

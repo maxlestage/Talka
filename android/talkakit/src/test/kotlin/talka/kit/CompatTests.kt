@@ -21,6 +21,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -385,10 +386,36 @@ class CompatTests {
     }
 
     /**
-     * v4 (`docs/SECURITE.md` §7.11 à §7.13) : les boîtes tournantes,
-     * l'expéditeur scellé avec son appareil et la liaison, comme le
-     * navigateur. (Le paquet d'un appareil, `V3.verifyDeviceBundle`, viendra
-     * avec la v3.)
+     * Le cliquet post-quantique (§7.17) : la même clé tirée de la même
+     * graine, la même annonce, et un jeton enveloppé par le navigateur
+     * s'ouvre ici.
+     */
+    @Test
+    fun testPq6() {
+        assertTrue(Pq6.available, "ML-KEM : BouncyCastle")
+        val pq = v.o("v6").o("pq6")
+        val seed = assertNotNull(unb64(pq.s("graine")))
+        val cle = pq.o("cle")
+        val key = assertNotNull(Pq6.Key.fromSeed(seed, 1_700_000_000uL))
+        assertEquals(cle.s("id"), key.id)
+        val keys = Pq6.Keys(listOf(key))
+        val advert = assertNotNull(keys.advert)
+        val theirs = pq.o("annonce")
+        assertEquals(theirs.s("ek"), advert.s("ek"))
+        assertEquals(key.id, Pq6.parseAdvert(theirs)?.id)
+        val opened = assertIs<Pq6.Keys.Opened.Success>(keys.open(pq.s("enveloppe")))
+        assertEquals(pq.s("jeton"), opened.token)
+        assertEquals(key.id, opened.id)
+        assertTrue(opened.first)
+        // Et ce qu'Android enveloppe s'ouvre de même.
+        val mine = assertNotNull(Pq6.wrap(theirs.s("ek"), "[[BROCOLIS:v3:AQ]]"))
+        assertEquals("[[BROCOLIS:v3:AQ]]", assertIs<Pq6.Keys.Opened.Success>(keys.open(mine)).token)
+    }
+
+    /**
+     * v4 (`docs/SECURITE.md` §7.11 à §7.13) : les boîtes tournantes, le
+     * paquet d'un appareil, l'expéditeur scellé avec son appareil et la
+     * liaison, comme le navigateur.
      */
     @Test
     fun testV4() {
@@ -415,6 +442,13 @@ class CompatTests {
         assertEquals("00000000000000a2", TalkaCrypto.openSealedFrom(b, ours)?.fd)
         val old = assertNotNull(TalkaCrypto.sealSender(a.code, b.code, b.dh, "x"))
         assertEquals("", TalkaCrypto.openSealedFrom(b, old)?.fd)
+        // Le paquet d'un appareil : lié au code et à l'appareil.
+        val paquet = v4.o("paquet")
+        val (pdev, pbundle, psig) = Triple(paquet.s("dev"), paquet.s("bundle"), paquet.s("sig"))
+        assertNotNull(V3.verifyDeviceBundle(a.code, a.sign, a.dh, pdev, pbundle, psig))
+        assertNull(V3.verifyDeviceBundle(a.code, a.sign, a.dh, "00000000000000a2", pbundle, psig))
+        assertNull(V3.verifyBundle(a.code, a.sign, a.dh, pbundle, psig))
+        assertNull(V3.verifyDeviceBundle(b.code, b.sign, b.dh, pdev, pbundle, psig))
         // La liaison : le texte du QR code, sa boîte, la clé, les morceaux.
         val lien = v4.o("lien")
         val offer = assertNotNull(TalkaV4.LinkOffer.parse(lien.s("texte")))
