@@ -26,6 +26,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.withResumed
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.suspendCancellableCoroutine
+import talka.app.call.CallEngine
+import talka.app.call.CallSystem
 import javax.crypto.Cipher
 import kotlin.coroutines.resume
 
@@ -53,6 +55,7 @@ class MainActivity : FragmentActivity() {
         val m = model
         m.biometrics = PromptBiometrics(this)
         m.askNotifications = { requestNotifications() }
+        m.askPermission = { requestPermission(it) }
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
                 when (event) {
@@ -64,7 +67,12 @@ class MainActivity : FragmentActivity() {
             },
         )
         watchNetwork()
-        if (savedInstanceState == null) intent?.let { openLink(it) }
+        if (savedInstanceState == null) {
+            intent?.let {
+                openLink(it)
+                openCall(it)
+            }
+        }
         setContent {
             TalkaTheme(m) {
                 // L'écran sécurisé : noir dans les captures, les enregistrements
@@ -78,6 +86,11 @@ class MainActivity : FragmentActivity() {
                         }
                     }
                 }
+                // Un appel (qui sonne ou en cours) s'affiche par-dessus l'écran
+                // verrouillé, et l'allume ; plus dès qu'il est fini.
+                LaunchedEffect(Unit) {
+                    snapshotFlow { m.call?.let { it.phase != CallEngine.Phase.ended } == true }.collect { showOverLock(it) }
+                }
                 RootView()
             }
         }
@@ -86,6 +99,27 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         openLink(intent)
+        openCall(intent)
+    }
+
+    /** Les notifications d'appel : Répondre, ou l'écran d'appel (plein écran, même verrouillé). */
+    private fun openCall(intent: Intent) {
+        if (intent.action != CallSystem.ACTION_ANSWER && intent.action != CallSystem.ACTION_SHOW) return
+        val call = model.call ?: return
+        // Tout de suite (sans attendre l'écran) : l'appel s'ouvre par-dessus l'écran verrouillé.
+        if (call.phase != CallEngine.Phase.ended) showOverLock(true)
+        if (intent.action == CallSystem.ACTION_ANSWER && call.phase == CallEngine.Phase.ringing) model.launch { call.accept() }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun showOverLock(on: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(on)
+            setTurnScreenOn(on)
+        } else {
+            val flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            if (on) window.addFlags(flags) else window.clearFlags(flags)
+        }
     }
 
     override fun onDestroy() {
@@ -114,6 +148,23 @@ class MainActivity : FragmentActivity() {
             network = callback
         } catch (e: RuntimeException) {
         }
+    }
+
+    /** Une permission du système (le micro, la caméra d'un appel). */
+    private suspend fun requestPermission(name: String): Boolean {
+        if (ContextCompat.checkSelfPermission(this, name) == PackageManager.PERMISSION_GRANTED) return true
+        permission?.complete(false)
+        val wait = CompletableDeferred<Boolean>()
+        permission = wait
+        model.leavingOnPurpose()
+        try {
+            askPermission.launch(name)
+        } catch (e: IllegalStateException) {
+            // L'activité n'est plus là.
+            permission = null
+            return false
+        }
+        return wait.await()
     }
 
     private suspend fun requestNotifications(): Boolean {

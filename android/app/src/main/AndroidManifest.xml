@@ -12,6 +12,24 @@
     <!-- Prendre une photo avec l'appareil (le profil), sans l'exiger. -->
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
+    <!-- Les appels audio et vidéo (WebRTC) : le micro, la caméra, le son de
+         l'appel (mode communication, haut-parleur), le vibreur de la sonnerie,
+         l'appel qui arrive en plein écran même verrouillé, et le service au
+         premier plan pendant l'appel (de type appel téléphonique, micro et
+         caméra ; `MANAGE_OWN_CALLS` le permet sans être l'application
+         Téléphone). Ni l'un ni l'autre n'est exigé de l'appareil. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
     <application
         android:name=".TalkaApp"
         android:allowBackup="false"
@@ -44,5 +62,15 @@
                 <data android:scheme="https" android:host="${talkaHost}" android:pathPrefix="/c/" />
             </intent-filter>
         </activity>
+
+        <!-- Les appels : le service au premier plan pendant l'appel, et les
+             boutons des notifications (Refuser, Raccrocher). -->
+        <service
+            android:name=".call.CallService"
+            android:exported="false"
+            android:foregroundServiceType="phoneCall|microphone|camera" />
+        <receiver
+            android:name=".call.CallActions"
+            android:exported="false" />
     </application>
 </manifest>

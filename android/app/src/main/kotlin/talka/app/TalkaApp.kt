@@ -218,7 +218,9 @@ fun RootView() {
             }
             val call = model.call
             if (call != null) {
-                Box(Modifier.fillMaxSize().zIndex(1f)) { CallScreen(call) }
+                // Par-dessus le verrou, comme le `fullScreenCover` de l'iPhone :
+                // un appel qui arrive se prend sans le code (il reste ensuite).
+                Box(Modifier.fillMaxSize().zIndex(3.5f)) { CallScreen(call) }
             }
             if (model.locked || model.codeLocked) {
                 Box(Modifier.fillMaxSize().zIndex(3f)) { LockView() }

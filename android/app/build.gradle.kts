@@ -87,6 +87,11 @@ dependencies {
     implementation("androidx.fragment:fragment-ktx:1.8.5")
     // Le fil principal d'Android comme fil du moteur (`Dispatchers.Main`).
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // Les appels audio et vidéo : WebRTC de Google (`org.webrtc`), compilé
+    // pour Android et publié sur Maven Central par Stream (la même
+    // bibliothèque que l'iPhone, `stasel/WebRTC`, à la même branche de
+    // Chromium ou presque). Rien d'autre de Stream : ni service ni compte.
+    implementation("io.getstream:stream-webrtc-android:1.3.10")
     debugImplementation("androidx.compose.ui:ui-tooling")
     // Les écrans dans les tests (Robolectric) : l'activité vide où ils se dessinent.
     debugImplementation("androidx.compose.ui:ui-test-manifest")

@@ -88,6 +88,10 @@ class AppEnv(
     val splashMs: Long = 1200,
     /** Le temps de retrouver le relais (ms) : hors ligne, on montre tout de suite les discussions gardées. */
     val netWaitMs: Long = 2500,
+    /** Les appels : WebRTC (null : `WebRtcMedia`), ou une fausse liaison dans les tests. */
+    val callMedia: (() -> talka.app.call.CallMedia)? = null,
+    /** Les signaux d'appel : par le moteur, chiffrés (null), ou un faux réseau dans les tests. */
+    val callSignals: ((String, Body) -> Unit)? = null,
 ) {
     /** Les réglages de l'appareil (les `UserDefaults` de l'iPhone). */
     val prefs: SharedPreferences = context.getSharedPreferences("talka.reglages", Context.MODE_PRIVATE)
@@ -158,6 +162,9 @@ class AppModel(val env: AppEnv) {
 
     /** Demande la permission des notifications (Android 13 et plus), branché par l'activité. */
     var askNotifications: (suspend () -> Boolean)? = null
+
+    /** Demande une permission du système (le micro, la caméra d'un appel), branché par l'activité. */
+    var askPermission: (suspend (String) -> Boolean)? = null
 
     /**
      * Talka part de lui-même vers une autre activité (choisir une photo, un
@@ -702,7 +709,8 @@ class AppModel(val env: AppEnv) {
             } else {
                 if (b.video) "📹 Appel vidéo entrant" else "📞 Appel entrant"
             }
-            Notifier.message(e.displayName(from), what, "call", true)
+            // La notification d'appel : elle sonne, et ouvre l'écran d'appel même verrouillé.
+            c.alert(what)
         }
     }
 
