@@ -138,7 +138,18 @@ fun randomBytes(n: Int): ByteArray = ByteArray(n).also { random.nextBytes(it) }
 /** Un identifiant aléatoire, en hexadécimal. */
 fun randomId(bytes: Int = 12): String = hex(randomBytes(bytes))
 
-internal fun hex(data: ByteArray): String = data.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+private val hexDigits = "0123456789abcdef".toCharArray()
+
+/** En hexadécimal minuscule, deux chiffres par octet (sans `String.format`, lent : un appel par octet). */
+internal fun hex(data: ByteArray): String {
+    val out = CharArray(data.size * 2)
+    for ((i, b) in data.withIndex()) {
+        val v = b.toInt() and 0xff
+        out[2 * i] = hexDigits[v ushr 4]
+        out[2 * i + 1] = hexDigits[v and 0x0f]
+    }
+    return String(out)
+}
 
 /** Le texte UTF-8 d'octets, ou rien s'ils n'en sont pas (comme `String(data:encoding:)`). */
 internal fun utf8(data: ByteArray): String? {
