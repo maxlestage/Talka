@@ -74,6 +74,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.ArrowCircleUp
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -85,7 +86,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
@@ -96,12 +96,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.NotificationsOff
-import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PersonOutline
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -109,9 +104,6 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Timer
@@ -130,10 +122,8 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -264,7 +254,6 @@ private class ConversationState(e: Engine, val chatId: String) {
     var sharingContact by mutableStateOf(false)
     var composingCapsule by mutableStateOf(false)
     var choosingBrocolis by mutableStateOf(false)
-    var managingBrocolis by mutableStateOf(false)
 
     /** Combien de messages sont affichés, à partir des derniers. */
     var shown by mutableIntStateOf(page)
@@ -379,7 +368,6 @@ fun ConversationView(chatId: String) {
             }
         }
         s.showInfo -> if (chat.group) GroupInfoView(chatId, onBack = { s.showInfo = false }) else ContactInfoView(chatId, onBack = { s.showInfo = false })
-        s.managingBrocolis -> BrocolisKeysView(onBack = { s.managingBrocolis = false })
         else -> {
             if (!wide) BackHandler(onBack = back)
             // Les vocaux de cette discussion s'enchaînent (l'`.environment(voiceChain)` de l'iPhone).
@@ -669,9 +657,14 @@ private fun ConversationScreen(e: Engine, chat: Chat, s: ConversationState, onBa
                             IconButton(onClick = { model.launch { model.callChat(chatId, video = true) } }) { Icon(Icons.Filled.Videocam, "Appel vidéo") }
                             IconButton(onClick = { model.launch { model.callChat(chatId, video = false) } }) { Icon(Icons.Filled.Call, "Appel audio") }
                         }
-                        ConversationMenu(e, chat, s, onExport = {
-                            e.exportChat(chatId)?.let { share(it.text.toByteArray(), it.filename, "text/plain") }
-                        })
+                        ChatMoreMenu(
+                            chatId,
+                            searching = s.search != null,
+                            onSearch = { s.search = if (s.search == null) "" else null },
+                            onInfo = { s.showInfo = true },
+                            onExport = { e.exportChat(chatId)?.let { share(it.text.toByteArray(), it.filename, "text/plain") } },
+                            onBrocolis = { s.choosingBrocolis = true },
+                        )
                     },
                 )
             },
@@ -789,10 +782,7 @@ private fun ConversationScreen(e: Engine, chat: Chat, s: ConversationState, onBa
     s.info?.let { m -> MessageInfoSheet(e, m, onDismiss = { s.info = null }) }
     s.reactions?.let { m -> ReactionsSheet(e, m, onDismiss = { s.reactions = null }) }
     s.viewing?.let { m -> ImageViewer(e, m, onDismiss = { s.viewing = null }) }
-    if (s.choosingBrocolis) ChatBrocolisSheet(chatId, onDismiss = { s.choosingBrocolis = false }, onManage = {
-        s.choosingBrocolis = false
-        s.managingBrocolis = true
-    })
+    if (s.choosingBrocolis) BrocolisChatSheet(chatId, onDismiss = { s.choosingBrocolis = false })
     s.deleting?.let { m ->
         val red = MaterialTheme.colorScheme.error
         AlertDialog(
@@ -968,162 +958,6 @@ private fun PinBar(e: Engine, m: Message, onOpen: () -> Unit, onUnpin: () -> Uni
             }
             IconButton(onClick = onUnpin) { Icon(Icons.Filled.Close, "Désépingler", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
-    }
-}
-
-// ----- Le menu ⋮ de la discussion -----
-
-/**
- * Le menu ⋮ d'une discussion : les mêmes choix, dans le même ordre, que
- * celui du navigateur (`chat_menu`), comme WhatsApp. (`ChatMoreMenu` de
- * l'iPhone.)
- */
-@Composable
-private fun ConversationMenu(e: Engine, chat: Chat, s: ConversationState, onExport: () -> Unit) {
-    val model = LocalAppModel.current
-    model.revision
-    val chatId = chat.id
-    var open by remember { mutableStateOf(false) }
-    var timer by remember { mutableStateOf(false) }
-    var muting by remember { mutableStateOf(false) }
-    var wallpaper by remember { mutableStateOf(false) }
-    var clearing by remember { mutableStateOf<Boolean?>(null) }
-    var deleting by remember { mutableStateOf(false) }
-    var adding by remember { mutableStateOf(false) }
-    var contactName by remember { mutableStateOf("") }
-    val red = MaterialTheme.colorScheme.error
-
-    @Composable
-    fun item(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, danger: Boolean = false, action: () -> Unit) {
-        DropdownMenuItem(
-            text = { Text(label, color = if (danger) red else Color.Unspecified) },
-            leadingIcon = { Icon(icon, null, tint = if (danger) red else MaterialTheme.colorScheme.onSurfaceVariant) },
-            onClick = {
-                open = false
-                action()
-            },
-        )
-    }
-
-    Box {
-        IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, "Plus d'options") }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            item(if (chat.group) "Infos du groupe" else "Infos du contact", Icons.Filled.Info) { s.showInfo = true }
-            item(if (s.search == null) "Rechercher" else "Fermer la recherche", Icons.Filled.Search) {
-                s.search = if (s.search == null) "" else null
-            }
-            item("Messages éphémères", Icons.Filled.Timer) { timer = true }
-            item("Exporter la discussion", Icons.Filled.Share, action = onExport)
-            item(
-                if (chat.brocolis.isEmpty()) "Chiffrer avec Brocolis 🥦" else "Brocolis 🥦 : ${e.chatBrocolis(chat).joinToString(", ") { it.name }}",
-                Icons.Filled.Shield,
-            ) { s.choosingBrocolis = true }
-            if (chat.muted) {
-                item("Réactiver les notifications", Icons.Filled.Notifications) { e.mute(chatId, 0.0) }
-            } else {
-                item("Mettre en sourdine", Icons.Filled.NotificationsOff) { muting = true }
-            }
-            item("Fond d'écran", Icons.Filled.Palette) { wallpaper = true }
-            // Quelqu'un qui nous a écrit sans être dans nos contacts.
-            if (!chat.group && e.contact(chatId)?.saved != true) {
-                item("Ajouter aux contacts", Icons.Filled.PersonAdd) {
-                    contactName = e.contact(chatId)?.profileName ?: ""
-                    adding = true
-                }
-            }
-            if (!chat.group) {
-                if (e.blocked(chatId)) {
-                    item("Débloquer", Icons.Filled.Block) { e.setBlocked(chatId, false) }
-                } else {
-                    item("Bloquer", Icons.Filled.Block, danger = true) { e.setBlocked(chatId, true) }
-                }
-            }
-            item("Vider la discussion", Icons.Filled.DeleteSweep, danger = true) { clearing = e.hasStarred(chatId) }
-            item(if (chat.group) "Quitter et supprimer" else "Supprimer la discussion", Icons.Filled.Delete, danger = true) { deleting = true }
-        }
-    }
-
-    if (timer) {
-        AlertDialog(
-            onDismissRequest = { timer = false },
-            title = { Text("Messages éphémères") },
-            text = {
-                Column {
-                    for ((label, secs) in listOf("Désactivés" to 0L, "24 heures" to 86_400L, "7 jours" to 7 * 86_400L, "90 jours" to 90 * 86_400L)) {
-                        Row(
-                            Modifier.fillMaxWidth().clickable {
-                                timer = false
-                                if (chat.timer != secs) e.setTimer(chatId, secs)
-                            }.padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = chat.timer == secs, onClick = null)
-                            Text(label, Modifier.padding(start = 12.dp))
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { timer = false }) { Text("Annuler") } },
-        )
-    }
-    if (muting) MuteChoicesDialog(e, chatId, muted = false, onDismiss = { muting = false })
-    clearing?.let { keepable -> ClearChatDialog(e, chatId, keepable, onDismiss = { clearing = null }) }
-    if (wallpaper) {
-        Sheet("Fond d'écran", onDismiss = { wallpaper = false }, actions = { TextButton(onClick = { wallpaper = false }) { Text("OK") } }) { padding ->
-            Column(Modifier.padding(padding)) {
-                WallpaperRows(e.chat(chatId)?.wallpaper ?: "", onChange = { v -> e.updateChat(chatId) { it.copy(wallpaper = v) } }, allowDefault = true)
-            }
-        }
-    }
-    if (adding) {
-        AlertDialog(
-            onDismissRequest = { adding = false },
-            title = { Text("Ajouter aux contacts") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(TalkaCode.pretty(chatId), fontFamily = FontFamily.Monospace)
-                    OutlinedTextField(
-                        value = contactName,
-                        onValueChange = { contactName = it },
-                        label = { Text("Nom (facultatif)") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    adding = false
-                    val name = contactName
-                    model.launch {
-                        try {
-                            e.addContact(chatId, name)
-                        } catch (x: CancellationException) {
-                            throw x
-                        } catch (x: Exception) {
-                        }
-                    }
-                }) { Text("Ajouter") }
-            },
-            dismissButton = { TextButton(onClick = { adding = false }) { Text("Annuler") } },
-        )
-    }
-    if (deleting) {
-        AlertDialog(
-            onDismissRequest = { deleting = false },
-            title = { Text("Supprimer la discussion ?") },
-            text = { Text("Elle disparaîtra de cet appareil avec tous ses messages.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    deleting = false
-                    if (chat.group && !chat.left) e.leaveGroup(chatId)
-                    e.deleteChat(chatId)
-                    model.path = emptyList()
-                }) { Text("Supprimer", color = red) }
-            },
-            dismissButton = { TextButton(onClick = { deleting = false }) { Text("Annuler") } },
-        )
     }
 }
 
@@ -2080,98 +1914,6 @@ private fun ReactionsSheet(e: Engine, message: Message, onDismiss: () -> Unit) {
 }
 
 // ----- Brocolis 🥦 -----
-
-@Composable
-private fun KeyFingerprint(key: String) {
-    val fp = Brocolis.fingerprint(key) ?: ""
-    Text(
-        fp,
-        style = MaterialTheme.typography.bodySmall,
-        fontFamily = FontFamily.Monospace,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.semantics { contentDescription = "Empreinte $fp" },
-    )
-}
-
-
-/**
- * Les clés qui chiffrent ce qui part dans une discussion. Le
- * `BrocolisChatSheet` de l'iPhone (`BrocolisViews.swift`), dont le menu de
- * la discussion a besoin.
- */
-@Composable
-private fun ChatBrocolisSheet(chatId: String, onDismiss: () -> Unit, onManage: () -> Unit) {
-    val model = LocalAppModel.current
-    model.revision
-    val e = model.engine ?: return
-    var selected by remember { mutableStateOf(e.chat(chatId)?.brocolis?.toSet() ?: emptySet()) }
-    val keys = e.brocolisKeys.filter { !it.retired }
-
-    // Une clé neuve, au nom de la discussion : activée ici et envoyée par Talka.
-    fun createAndSend() {
-        val title = e.chat(chatId)?.let { e.title(it) } ?: ""
-        val k = try {
-            e.addBrocolisKey(title, Brocolis.generateKey())
-        } catch (x: Exception) {
-            return
-        }
-        e.setChatBrocolis(chatId, (e.chat(chatId)?.brocolis ?: emptyList()) + k.id)
-        e.shareBrocolisKey(chatId, k.id)
-        model.show("🥦 Clé créée, envoyée par Talka et activée ici")
-        onDismiss()
-    }
-
-    Sheet(
-        "Brocolis 🥦",
-        onDismiss,
-        actions = {
-            TextButton(onClick = {
-                val ids = e.brocolisKeys.map { it.id }.filter { it in selected }
-                e.setChatBrocolis(chatId, ids)
-                model.show(if (ids.isEmpty()) "Brocolis désactivé pour cette discussion" else "🥦 Brocolis activé pour cette discussion")
-                onDismiss()
-            }) { Text("Enregistrer") }
-        },
-    ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
-            if (keys.isEmpty()) {
-                Text("Ajoutez d'abord une clé, partagée avec vos correspondants.", Modifier.padding(16.dp))
-                SectionFooter(brocolisAbout)
-            } else {
-                for (k in keys) {
-                    ListItem(
-                        headlineContent = { Text("🥦 ${k.name}") },
-                        supportingContent = { KeyFingerprint(k.key) },
-                        trailingContent = {
-                            Switch(checked = k.id in selected, onCheckedChange = { on -> selected = if (on) selected + k.id else selected - k.id })
-                        },
-                    )
-                }
-                SectionFooter(
-                    "Ce qui part dans cette discussion sera chiffré avec les clés choisies, en plus de Talka. Écrivez ((comme ceci)) pour ne chiffrer qu'un passage. Plusieurs clés : un seul message, lisible par chacune.",
-                )
-            }
-            ListItem(
-                headlineContent = { Text("Créer une clé et l'envoyer ici") },
-                leadingContent = { Icon(Icons.AutoMirrored.Filled.Send, null) },
-                modifier = Modifier.clickable { createAndSend() },
-            )
-            if (selected.isNotEmpty()) {
-                ListItem(
-                    headlineContent = { Text("Envoyer les clés cochées ici") },
-                    leadingContent = { Icon(Icons.Filled.Key, null) },
-                    modifier = Modifier.clickable {
-                        for (id in keys.map { it.id }) if (id in selected) e.shareBrocolisKey(chatId, id)
-                        model.show("🥦 Clé envoyée par Talka")
-                        onDismiss()
-                    },
-                )
-            }
-            SectionFooter("Une clé envoyée par Talka voyage chiffrée de bout en bout ; vos correspondants l'ajoutent d'un geste. Comparez son empreinte de vive voix.")
-            ListItem(headlineContent = { Text("Gérer les clés") }, modifier = Modifier.clickable(onClick = onManage))
-        }
-    }
-}
 
 /**
  * Un message Brocolis qu'aucune de vos clés n'ouvre : pourquoi, et quoi

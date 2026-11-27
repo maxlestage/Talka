@@ -52,7 +52,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -61,12 +60,11 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -74,6 +72,7 @@ import kotlinx.coroutines.withContext
 import talka.app.LocalAppModel
 import talka.app.Logo
 import talka.app.TalkaColors
+import talka.app.launch
 import talka.kit.StoreVault
 import talka.kit.TalkaCrypto
 import kotlin.math.ceil
@@ -120,10 +119,13 @@ fun WelcomeView() {
         val pw = password
         password = ""
         restoring = true
-        scope.launch {
+        // Dans la portée de l'application : l'accueil s'en va dès que le compte revient.
+        model.launch {
             try {
                 model.restore(data, pw)
                 model.show("Sauvegarde restaurée ✓")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 error = e.message ?: "La sauvegarde n'a pas pu être restaurée."
             }
@@ -228,7 +230,11 @@ fun WelcomeView() {
     }
 }
 
-/** Une alerte qui demande un mot de passe (sauvegarde). */
+/**
+ * Une alerte qui demande un mot de passe (sauvegarde) : le
+ * `SecureField` des alertes de l'iPhone. Le schéma de [TextFieldDialog]
+ * (une carte au milieu d'une fenêtre plein écran, qui suit le clavier).
+ */
 @Composable
 fun PasswordDialog(
     title: String,
@@ -241,29 +247,17 @@ fun PasswordDialog(
     onDismiss: () -> Unit,
     destructive: Boolean = false,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(message)
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = onPassword,
-                    label = { Text(placeholder) },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { onConfirm() }),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text(confirm, color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified)
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
+    TextFieldDialog(
+        title = title,
+        value = password,
+        onValue = onPassword,
+        label = placeholder,
+        confirm = confirm,
+        onConfirm = onConfirm,
+        onDismiss = onDismiss,
+        message = message,
+        secret = true,
+        destructive = destructive,
     )
 }
 

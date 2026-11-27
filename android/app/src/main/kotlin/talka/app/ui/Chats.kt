@@ -355,7 +355,7 @@ fun ChatList(
                     filter == ChatFilter.all -> "Ajoutez un contact avec son code Talka pour commencer."
                     filter == ChatFilter.unread -> "Tout est lu."
                     filter == ChatFilter.groups -> "Créez-en un depuis « Nouvelle discussion »."
-                    else -> "Touchez longuement une discussion pour l'archiver."
+                    else -> "Balayez une discussion vers la gauche pour l'archiver."
                 }
                 EmptyState(title, hint, Icons.Filled.Forum, Modifier.padding(top = 40.dp)) {
                     if (query.isEmpty() && filter == ChatFilter.all) {
@@ -370,75 +370,86 @@ fun ChatList(
 }
 
 /**
- * Une discussion de la liste et ses actions : un toucher l'ouvre, un
- * toucher long montre ce que l'iPhone met sous le balayage (lu / non lu,
- * épingler, archiver, sourdine, vider, supprimer).
+ * Les actions de balayage d'une discussion, celles de l'iPhone : vers la
+ * droite, lu / non lu (bleu) et épingler (orange) ; vers la gauche,
+ * supprimer (rouge), archiver (gris) et la sourdine (indigo).
+ */
+fun chatSwipeActions(e: Engine, chat: Chat, onMute: () -> Unit): Pair<List<SwipeAction>, List<SwipeAction>> {
+    val unread = chat.unread > 0 || chat.markedUnread
+    val leading = listOf(
+        SwipeAction(if (unread) "Lu" else "Non lu", if (unread) Icons.Filled.MarkChatRead else Icons.Filled.MarkChatUnread, SwipeColors.blue) {
+            e.updateChat(chat.id) {
+                if (it.unread > 0 || it.markedUnread) it.copy(unread = 0, markedUnread = false, mentioned = false) else it.copy(markedUnread = true)
+            }
+            if (chat.unread > 0) e.markRead(chat.id)
+        },
+        SwipeAction(if (chat.pinned) "Désépingler" else "Épingler", if (chat.pinned) Icons.Outlined.PushPin else Icons.Filled.PushPin, SwipeColors.orange) {
+            e.updateChat(chat.id) { it.copy(pinned = !it.pinned) }
+        },
+    )
+    val trailing = listOf(
+        SwipeAction("Supprimer", Icons.Filled.Delete, SwipeColors.red) { e.deleteChat(chat.id) },
+        SwipeAction(if (chat.archived) "Désarchiver" else "Archiver", if (chat.archived) Icons.Filled.Unarchive else Icons.Filled.Archive, SwipeColors.gray) {
+            e.updateChat(chat.id) { it.copy(archived = !it.archived) }
+        },
+        SwipeAction(if (chat.muted) "Son" else "Silence", if (chat.muted) Icons.Filled.Notifications else Icons.Filled.NotificationsOff, SwipeColors.indigo) {
+            if (chat.muted) e.mute(chat.id, 0.0) else onMute()
+        },
+    )
+    return leading to trailing
+}
+
+/**
+ * Une discussion de la liste et ses actions : un toucher l'ouvre ; un
+ * balayage montre celles de l'iPhone (lu / non lu, épingler ; supprimer,
+ * archiver, sourdine) ; un toucher long les montre aussi, en menu, avec
+ * « Vider la discussion ».
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatRowWithActions(e: Engine, chat: Chat, selected: Boolean, onOpen: () -> Unit, onMute: () -> Unit, onClear: () -> Unit) {
+    LocalAppModel.current.revision
     var menu by remember { mutableStateOf(false) }
-    val unread = chat.unread > 0 || chat.markedUnread
-    Box {
-        ChatRow(
-            e,
-            chat,
-            Modifier
-                .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-                .combinedClickable(onClick = onOpen, onLongClick = { menu = true }, onLongClickLabel = "Actions"),
-        )
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            DropdownMenuItem(
-                text = { Text(if (unread) "Lu" else "Non lu") },
-                leadingIcon = { Icon(if (unread) Icons.Filled.MarkChatRead else Icons.Filled.MarkChatUnread, null) },
-                onClick = {
-                    menu = false
-                    e.updateChat(chat.id) {
-                        if (it.unread > 0 || it.markedUnread) it.copy(unread = 0, markedUnread = false, mentioned = false) else it.copy(markedUnread = true)
-                    }
-                    if (chat.unread > 0) e.markRead(chat.id)
-                },
+    val (leading, trailing) = chatSwipeActions(e, chat, onMute)
+    SwipeActionsBox(leading, trailing) { actions ->
+        Box {
+            ChatRow(
+                e,
+                chat,
+                Modifier
+                    .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+                    .combinedClickable(onClick = onOpen, onLongClick = { menu = true }, onLongClickLabel = "Actions")
+                    .then(actions),
             )
-            DropdownMenuItem(
-                text = { Text(if (chat.pinned) "Désépingler" else "Épingler") },
-                leadingIcon = { Icon(if (chat.pinned) Icons.Outlined.PushPin else Icons.Filled.PushPin, null) },
-                onClick = {
-                    menu = false
-                    e.updateChat(chat.id) { it.copy(pinned = !it.pinned) }
-                },
-            )
-            DropdownMenuItem(
-                text = { Text(if (chat.archived) "Désarchiver" else "Archiver") },
-                leadingIcon = { Icon(if (chat.archived) Icons.Filled.Unarchive else Icons.Filled.Archive, null) },
-                onClick = {
-                    menu = false
-                    e.updateChat(chat.id) { it.copy(archived = !it.archived) }
-                },
-            )
-            DropdownMenuItem(
-                text = { Text(if (chat.muted) "Son" else "Silence") },
-                leadingIcon = { Icon(if (chat.muted) Icons.Filled.Notifications else Icons.Filled.NotificationsOff, null) },
-                onClick = {
-                    menu = false
-                    if (chat.muted) e.mute(chat.id, 0.0) else onMute()
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("Vider la discussion") },
-                leadingIcon = { Icon(Icons.Filled.DeleteSweep, null) },
-                onClick = {
-                    menu = false
-                    onClear()
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("Supprimer", color = MaterialTheme.colorScheme.error) },
-                leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                onClick = {
-                    menu = false
-                    e.deleteChat(chat.id)
-                },
-            )
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                for (a in leading + trailing.drop(1)) {
+                    DropdownMenuItem(
+                        text = { Text(a.label) },
+                        leadingIcon = { Icon(a.icon, null) },
+                        onClick = {
+                            menu = false
+                            a.run()
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Vider la discussion") },
+                    leadingIcon = { Icon(Icons.Filled.DeleteSweep, null) },
+                    onClick = {
+                        menu = false
+                        onClear()
+                    },
+                )
+                val delete = trailing.first()
+                DropdownMenuItem(
+                    text = { Text(delete.label, color = MaterialTheme.colorScheme.error) },
+                    leadingIcon = { Icon(delete.icon, null, tint = MaterialTheme.colorScheme.error) },
+                    onClick = {
+                        menu = false
+                        delete.run()
+                    },
+                )
+            }
         }
     }
 }

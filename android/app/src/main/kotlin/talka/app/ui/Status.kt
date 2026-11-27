@@ -194,6 +194,8 @@ private fun viewers(items: List<StatusItem>): Int = items.flatMap { it.viewers.k
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun StatusRow(e: Engine, owner: String, items: List<StatusItem>, open: () -> Unit) {
+    // Ce qu'il montre vient du moteur (hors de l'état de Compose) : il suit `revision`.
+    LocalAppModel.current.revision
     val muted = e.contact(owner)?.statusMuted == true
     var menu by remember { mutableStateOf(false) }
     Box {

@@ -194,6 +194,8 @@ fun Avatar(id: String, name: String, image: String = "", group: Boolean = false,
 /** L'avatar d'un code ou d'une discussion. */
 @Composable
 fun EngineAvatar(e: Engine, id: String, size: Dp = 48.dp, modifier: Modifier = Modifier) {
+    // Ce qu'il montre vient du moteur (hors de l'état de Compose) : il suit `revision`.
+    LocalAppModel.current.revision
     val c = e.chat(id)
     if (c != null && c.group) {
         Avatar(id, c.name, c.avatar, group = true, size = size, modifier = modifier)

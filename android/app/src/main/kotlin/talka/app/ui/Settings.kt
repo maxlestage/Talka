@@ -80,11 +80,13 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import talka.app.LocalAppModel
 import talka.app.TalkaColors
+import talka.app.launch
 import talka.kit.Engine
 import talka.kit.Settings
 import talka.kit.TalkaCode
@@ -178,6 +180,8 @@ fun SettingsForm(e: Engine, modifier: Modifier = Modifier, push: (SettingsPage) 
     }
 
     LazyColumn(modifier.fillMaxSize()) {
+        // Ce que le moteur change (hors de l'état de Compose) : la liste suit `revision`.
+        model.revision
         item { ProfileSection(e, onShowCode = { showCode = true }) }
         item {
             SectionHeader("Confidentialité")
@@ -317,10 +321,15 @@ fun SettingsForm(e: Engine, modifier: Modifier = Modifier, push: (SettingsPage) 
                 val pw = password
                 importData = null
                 password = ""
-                scope.launch {
+                // Dans la portée de l'application, pas de l'écran : la
+                // restauration arrête le moteur, l'écran des réglages s'en va
+                // (l'accueil passe un instant) et ne doit pas l'interrompre.
+                model.launch {
                     try {
                         model.restore(data, pw)
                         model.show("Sauvegarde restaurée ✓")
+                    } catch (x: CancellationException) {
+                        throw x
                     } catch (x: Exception) {
                         model.show(x.message ?: "La sauvegarde n'a pas pu être restaurée.")
                     }
@@ -354,7 +363,8 @@ fun SettingsForm(e: Engine, modifier: Modifier = Modifier, push: (SettingsPage) 
             confirm = "Effacer le code, les contacts et les messages",
             onConfirm = {
                 confirmWipe = false
-                scope.launch { model.leaveAndWipe() }
+                // Comme le `Task` de l'iPhone : l'écran s'en va pendant l'effacement.
+                model.launch { model.leaveAndWipe() }
             },
             onDismiss = { confirmWipe = false },
         )
@@ -364,6 +374,8 @@ fun SettingsForm(e: Engine, modifier: Modifier = Modifier, push: (SettingsPage) 
 /** Le profil : la photo, le nom, les infos, le code. */
 @Composable
 fun ProfileSection(e: Engine, onShowCode: () -> Unit) {
+    // Ce qu'il montre vient du moteur (hors de l'état de Compose) : il suit `revision`.
+    LocalAppModel.current.revision
     val context = LocalContext.current
     var name by remember { mutableStateOf(e.profile.name) }
     var about by remember { mutableStateOf(e.profile.about) }

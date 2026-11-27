@@ -115,6 +115,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -336,6 +339,8 @@ fun muteState(chat: Chat?): String {
  */
 @Composable
 fun MuteMenu(e: Engine, chat: Chat) {
+    // Ce qu'il montre vient du moteur (hors de l'état de Compose) : il suit `revision`.
+    LocalAppModel.current.revision
     var open by remember { mutableStateOf(false) }
     Box {
         ListItem(
@@ -409,6 +414,8 @@ val timerOptions = listOf(0L to "Désactivés", 86400L to "24 heures", 7L * 8640
 /** « Messages éphémères » : le choix de leur durée (pas dans un groupe qu'on a quitté). */
 @Composable
 fun TimerRow(e: Engine, chat: Chat) {
+    // Ce qu'il montre vient du moteur (hors de l'état de Compose) : il suit `revision`.
+    LocalAppModel.current.revision
     if (chat.left) {
         ListItem(
             headlineContent = { Text("Messages éphémères", color = MaterialTheme.colorScheme.onSurfaceVariant) },
@@ -423,6 +430,8 @@ fun TimerRow(e: Engine, chat: Chat) {
 /** Le fond d'écran d'une discussion (« Par défaut » : celui des réglages). */
 @Composable
 fun WallpaperPicker(e: Engine, chatId: String) {
+    // Ce qu'il montre vient du moteur (hors de l'état de Compose) : il suit `revision`.
+    LocalAppModel.current.revision
     WallpaperRows(e.chat(chatId)?.wallpaper ?: "", onChange = { v -> e.updateChat(chatId) { it.copy(wallpaper = v) } }, allowDefault = true)
 }
 
@@ -463,9 +472,14 @@ fun ClearChatDialog(engine: Engine, chatId: String, keepable: Boolean, onDismiss
 }
 
 /**
- * Une question avec un champ de texte (renommer, nommer) : une carte au
- * milieu de l'écran, comme `AlertDialog`, dans une fenêtre plein écran qui
- * suit le clavier (`imePadding`).
+ * Une question avec un champ de texte (renommer, nommer, un mot de passe) :
+ * une carte au milieu de l'écran, comme `AlertDialog`, dans une fenêtre
+ * plein écran qui suit le clavier (`imePadding`). Un `AlertDialog` de
+ * taille normale avec un champ de texte ne se stabilise pas sous
+ * Robolectric (ni ne suit le clavier) : toutes les questions à champ
+ * passent par ici. `note` : un code, en chasse fixe ; `message` : le texte
+ * de l'alerte de l'iPhone ; `secret` : un mot de passe (masqué) ;
+ * `destructive` : le bouton en rouge (le `role: .destructive`).
  */
 @Composable
 fun TextFieldDialog(
@@ -477,6 +491,9 @@ fun TextFieldDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
     note: String? = null,
+    message: String? = null,
+    secret: Boolean = false,
+    destructive: Boolean = false,
 ) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val outside = remember { MutableInteractionSource() }
@@ -498,19 +515,27 @@ fun TextFieldDialog(
             ) {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Text(title, style = MaterialTheme.typography.headlineSmall)
+                    message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     note?.let { Text(it, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     OutlinedTextField(
                         value = value,
                         onValueChange = onValue,
                         label = { Text(label) },
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                        visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+                        keyboardOptions = if (secret) {
+                            KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false, imeAction = ImeAction.Done)
+                        } else {
+                            KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done)
+                        },
                         keyboardActions = KeyboardActions(onDone = { onConfirm() }),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         TextButton(onClick = onDismiss) { Text("Annuler") }
-                        TextButton(onClick = onConfirm) { Text(confirm) }
+                        TextButton(onClick = onConfirm) {
+                            Text(confirm, color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified)
+                        }
                     }
                 }
             }
@@ -949,6 +974,8 @@ fun AddMembersSheet(chatId: String, onDismiss: () -> Unit) {
  */
 @Composable
 fun StarredRow(e: Engine, chatId: String, onClick: () -> Unit) {
+    // Ce qu'il montre vient du moteur (hors de l'état de Compose) : il suit `revision`.
+    LocalAppModel.current.revision
     val n = e.starredCount(chatId)
     if (n > 0) {
         ListItem(
@@ -1085,11 +1112,21 @@ fun LinksSection(e: Engine, chatId: String) {
  * Le menu ⋮ d'une discussion : les mêmes choix, dans le même ordre, que
  * celui du navigateur (`chat_menu`), comme WhatsApp. Pour la barre de la
  * discussion : `searching` dit si la recherche est ouverte, `onSearch`
- * l'ouvre ou la ferme, `onInfo` ouvre la fiche. Le choix des clés Brocolis,
- * le fond d'écran, l'export et les confirmations s'ouvrent d'ici.
+ * l'ouvre ou la ferme, `onInfo` ouvre la fiche, `onExport` exporte la
+ * discussion (l'écran qui le porte l'enregistre), `onBrocolis` ouvre le
+ * choix des clés Brocolis (la feuille de l'écran, comme le
+ * `choosingBrocolis` de l'iPhone). Les messages éphémères, la sourdine, le
+ * fond d'écran et les confirmations s'ouvrent d'ici.
  */
 @Composable
-fun ChatMoreMenu(chatId: String, searching: Boolean, onSearch: () -> Unit, onInfo: () -> Unit) {
+fun ChatMoreMenu(
+    chatId: String,
+    searching: Boolean,
+    onSearch: () -> Unit,
+    onInfo: () -> Unit,
+    onExport: () -> Unit,
+    onBrocolis: () -> Unit,
+) {
     val model = LocalAppModel.current
     model.revision
     val e = model.engine ?: return
@@ -1098,12 +1135,10 @@ fun ChatMoreMenu(chatId: String, searching: Boolean, onSearch: () -> Unit, onInf
     var choosingTimer by remember { mutableStateOf(false) }
     var muting by remember { mutableStateOf(false) }
     var choosingWallpaper by remember { mutableStateOf(false) }
-    var choosingBrocolis by remember { mutableStateOf(false) }
     var clearing by remember { mutableStateOf<Boolean?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var addingContact by remember { mutableStateOf(false) }
     var contactName by remember { mutableStateOf("") }
-    val share = rememberFileSharer()
 
     fun item(text: String, icon: androidx.compose.ui.graphics.vector.ImageVector, red: Boolean = false, run: () -> Unit): @Composable () -> Unit = {
         val tint = if (red) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
@@ -1123,11 +1158,9 @@ fun ChatMoreMenu(chatId: String, searching: Boolean, onSearch: () -> Unit, onInf
             item(if (chat.group) "Infos du groupe" else "Infos du contact", Icons.Filled.Info, run = onInfo)()
             item(if (searching) "Fermer la recherche" else "Rechercher", Icons.Filled.Search, run = onSearch)()
             item("Messages éphémères", Icons.Filled.Timer) { choosingTimer = true }()
-            item("Exporter la discussion", Icons.Filled.Upload) {
-                e.exportChat(chatId)?.let { share(it.text.toByteArray(), it.filename, "text/plain") }
-            }()
+            item("Exporter la discussion", Icons.Filled.Upload, run = onExport)()
             val bro = if (chat.brocolis.isEmpty()) "Chiffrer avec Brocolis 🥦" else "Brocolis 🥦 : ${e.chatBrocolis(chat).joinToString(", ") { it.name }}"
-            item(bro, Icons.Filled.Shield) { choosingBrocolis = true }()
+            item(bro, Icons.Filled.Shield, run = onBrocolis)()
             if (chat.muted) {
                 item("Réactiver les notifications", Icons.Filled.Notifications) { e.mute(chatId, 0.0) }()
             } else {
@@ -1162,7 +1195,7 @@ fun ChatMoreMenu(chatId: String, searching: Boolean, onSearch: () -> Unit, onInf
                         Row(
                             Modifier.fillMaxWidth().clickable {
                                 choosingTimer = false
-                                e.setTimer(chatId, secs)
+                                if (chat.timer != secs) e.setTimer(chatId, secs)
                             }.padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -1185,7 +1218,6 @@ fun ChatMoreMenu(chatId: String, searching: Boolean, onSearch: () -> Unit, onInf
             confirmButton = { TextButton(onClick = { choosingWallpaper = false }) { Text("OK") } },
         )
     }
-    if (choosingBrocolis) BrocolisChatSheet(chatId, onDismiss = { choosingBrocolis = false })
     clearing?.let { keepable -> ClearChatDialog(e, chatId, keepable, onDismiss = { clearing = null }) }
     if (addingContact) {
         TextFieldDialog(

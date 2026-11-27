@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,7 +44,6 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -52,6 +52,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -65,6 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -156,49 +158,62 @@ fun BrocolisKeysView(onBack: () -> Unit) {
                 item { Text("Aucune clé pour l'instant.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp)) }
             }
             items(e.brocolisKeys, key = { it.id }) { k ->
-                ListItem(
-                    leadingContent = { Text("🥦", fontSize = 24.sp) },
-                    headlineContent = { Text(k.name) },
-                    supportingContent = { BrocolisFingerprint(k.key) },
-                    trailingContent = {
-                        Row {
-                            IconButton(onClick = { exporting = k }) { Icon(Icons.Filled.Share, "Exporter la clé") }
-                            Box {
-                                IconButton(onClick = { menu = k.id }) { Icon(Icons.Filled.MoreVert, "Plus d'options pour « ${k.name} »") }
-                                DropdownMenu(expanded = menu == k.id, onDismissRequest = { menu = null }) {
-                                    DropdownMenuItem(
-                                        text = { Text("Renommer") },
-                                        leadingIcon = { Icon(Icons.Filled.Edit, null) },
-                                        onClick = {
-                                            menu = null
-                                            newName = k.name
-                                            renaming = k
-                                        },
-                                    )
-                                    if (!k.retired) {
+                // Le balayage de l'iPhone : oublier (rouge), renommer, renouveler (vert).
+                val swipe = buildList {
+                    add(SwipeAction("Oublier", Icons.Filled.Delete, SwipeColors.red) { forgetting = k })
+                    add(
+                        SwipeAction("Renommer", Icons.Filled.Edit, SwipeColors.gray) {
+                            newName = k.name
+                            renaming = k
+                        },
+                    )
+                    if (!k.retired) add(SwipeAction("Renouveler", Icons.Filled.Autorenew, SwipeColors.green) { renewing = k })
+                }
+                SwipeActionsBox(leading = emptyList(), trailing = swipe) { actions ->
+                    ListItem(
+                        leadingContent = { Text("🥦", fontSize = 24.sp) },
+                        headlineContent = { Text(k.name) },
+                        supportingContent = { BrocolisFingerprint(k.key) },
+                        trailingContent = {
+                            Row {
+                                IconButton(onClick = { exporting = k }) { Icon(Icons.Filled.Share, "Exporter la clé") }
+                                Box {
+                                    IconButton(onClick = { menu = k.id }) { Icon(Icons.Filled.MoreVert, "Plus d'options pour « ${k.name} »") }
+                                    DropdownMenu(expanded = menu == k.id, onDismissRequest = { menu = null }) {
                                         DropdownMenuItem(
-                                            text = { Text("Renouveler") },
-                                            leadingIcon = { Icon(Icons.Filled.Autorenew, null) },
+                                            text = { Text("Renommer") },
+                                            leadingIcon = { Icon(Icons.Filled.Edit, null) },
                                             onClick = {
                                                 menu = null
-                                                renewing = k
+                                                newName = k.name
+                                                renaming = k
+                                            },
+                                        )
+                                        if (!k.retired) {
+                                            DropdownMenuItem(
+                                                text = { Text("Renouveler") },
+                                                leadingIcon = { Icon(Icons.Filled.Autorenew, null) },
+                                                onClick = {
+                                                    menu = null
+                                                    renewing = k
+                                                },
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = { Text("Oublier", color = MaterialTheme.colorScheme.error) },
+                                            leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                                            onClick = {
+                                                menu = null
+                                                forgetting = k
                                             },
                                         )
                                     }
-                                    DropdownMenuItem(
-                                        text = { Text("Oublier", color = MaterialTheme.colorScheme.error) },
-                                        leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                                        onClick = {
-                                            menu = null
-                                            forgetting = k
-                                        },
-                                    )
                                 }
                             }
-                        }
-                    },
-                    modifier = Modifier.alpha(if (k.retired) 0.6f else 1f),
-                )
+                        },
+                        modifier = Modifier.alpha(if (k.retired) 0.6f else 1f).then(actions),
+                    )
+                }
             }
             item {
                 SectionFooter(brocolisAbout)
@@ -213,7 +228,7 @@ fun BrocolisKeysView(onBack: () -> Unit) {
                     leadingContent = { Icon(Icons.Filled.Key, null, tint = MaterialTheme.colorScheme.primary) },
                     modifier = Modifier.clickable { create() },
                 )
-                SectionFooter("Une clé créée ici est copiée : partagez-la par un canal sûr, ou envoyez-la par Talka depuis une discussion (⋮ → Chiffrer avec Brocolis). Touchez ⋮ à côté d'une clé pour la renommer, la renouveler ou l'oublier.\n\n$brocolisStrength")
+                SectionFooter("Une clé créée ici est copiée : partagez-la par un canal sûr, ou envoyez-la par Talka depuis une discussion (⋮ → Chiffrer avec Brocolis). Balayez une clé (ou touchez son ⋮) pour la renommer, la renouveler ou l'oublier.\n\n$brocolisStrength")
             }
         }
     }
@@ -433,9 +448,15 @@ fun ExportBrocolisKey(key: BrocolisKey, onDismiss: () -> Unit) {
     }
 }
 
-/** Les clés qui chiffrent ce qui part dans une discussion (⋮ → Chiffrer avec Brocolis). */
+/**
+ * Les clés qui chiffrent ce qui part dans une discussion (⋮ → Chiffrer avec
+ * Brocolis). « Gérer les clés » : `onManage` si l'écran qui l'ouvre montre
+ * lui-même les clés ; sinon, comme le `NavigationLink` de l'iPhone, la page
+ * des clés s'ouvre par-dessus la feuille, et le retour y ramène (les clés
+ * cochées restent cochées).
+ */
 @Composable
-fun BrocolisChatSheet(chatId: String, onDismiss: () -> Unit) {
+fun BrocolisChatSheet(chatId: String, onDismiss: () -> Unit, onManage: (() -> Unit)? = null) {
     val model = LocalAppModel.current
     model.revision
     val e = model.engine ?: return
@@ -488,8 +509,9 @@ fun BrocolisChatSheet(chatId: String, onDismiss: () -> Unit) {
                     ListItem(
                         headlineContent = { Text("🥦 ${k.name}") },
                         supportingContent = { BrocolisFingerprint(k.key) },
-                        trailingContent = { Checkbox(checked = on, onCheckedChange = null) },
-                        modifier = Modifier.clickable { if (on) selected.remove(k.id) else selected.add(k.id) },
+                        // Un interrupteur, comme le `Toggle` de l'iPhone.
+                        trailingContent = { Switch(checked = on, onCheckedChange = null) },
+                        modifier = Modifier.toggleable(value = on, role = Role.Switch) { now -> if (now) selected.add(k.id) else selected.remove(k.id) },
                     )
                 }
                 SectionFooter("Ce qui part dans cette discussion sera chiffré avec les clés choisies, en plus de Talka. Écrivez ((comme ceci)) pour ne chiffrer qu'un passage. Plusieurs clés : un seul message, lisible par chacune.")
@@ -516,7 +538,7 @@ fun BrocolisChatSheet(chatId: String, onDismiss: () -> Unit) {
             ListItem(
                 headlineContent = { Text("Gérer les clés") },
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null) },
-                modifier = Modifier.clickable { managing = true },
+                modifier = Modifier.clickable { if (onManage != null) onManage() else managing = true },
             )
         }
     }
