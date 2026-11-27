@@ -67,9 +67,9 @@ android {
         if (keystore != null) {
             create("talka") {
                 storeFile = file(keystore)
-                storePassword = System.getenv("TALKA_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("TALKA_KEY_ALIAS")
-                keyPassword = System.getenv("TALKA_KEY_PASSWORD")
+                storePassword = System.getenv("TALKA_KEYSTORE_PASSWORD")?.trim()
+                keyAlias = System.getenv("TALKA_KEY_ALIAS")?.trim()
+                keyPassword = System.getenv("TALKA_KEY_PASSWORD")?.trim()
             }
         }
     }

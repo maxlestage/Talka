@@ -48,10 +48,25 @@ jobs:
       - name: Clé de signature
         env:
           TALKA_KEYSTORE_B64: ${{ secrets.TALKA_KEYSTORE_B64 }}
+          TALKA_KEYSTORE_PASSWORD: ${{ secrets.TALKA_KEYSTORE_PASSWORD }}
+          TALKA_KEY_ALIAS: ${{ secrets.TALKA_KEY_ALIAS }}
         run: |
           if [ -n "$TALKA_KEYSTORE_B64" ]; then
-            echo "$TALKA_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/talka.jks"
+            # Les blancs copiés avec les secrets (retour à la ligne, espace) ne comptent pas.
+            printf '%s' "$TALKA_KEYSTORE_B64" | tr -d ' \t\r\n' | base64 -d > "$RUNNER_TEMP/talka.jks"
             echo "TALKA_KEYSTORE=$RUNNER_TEMP/talka.jks" >> "$GITHUB_ENV"
+            # La clé s'ouvre-t-elle avec ces secrets ? Sinon, dire lequel ne va pas.
+            pass=$(printf '%s' "$TALKA_KEYSTORE_PASSWORD" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            alias=$(printf '%s' "$TALKA_KEY_ALIAS" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            if ! KS_PASS="$pass" keytool -list -keystore "$RUNNER_TEMP/talka.jks" -storepass:env KS_PASS > /dev/null 2>&1; then
+              echo "::error::TALKA_KEYSTORE_PASSWORD n'ouvre pas la clé de TALKA_KEYSTORE_B64 : les deux secrets ne vont pas ensemble."
+              exit 1
+            fi
+            if ! KS_PASS="$pass" keytool -list -keystore "$RUNNER_TEMP/talka.jks" -storepass:env KS_PASS -alias "$alias" > /dev/null 2>&1; then
+              echo "::error::TALKA_KEY_ALIAS ne nomme aucune clé de TALKA_KEYSTORE_B64."
+              exit 1
+            fi
+            echo "La clé de signature s'ouvre avec les secrets."
           else
             echo "::notice::Pas de clé de signature dans les secrets : APK signé par une clé de débogage."
           fi
