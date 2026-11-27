@@ -534,7 +534,7 @@ class Relay(
             ack
         }
 
-    private suspend fun anonSend(id: String, message: JsonObject, wake: Boolean, apercu: String?): Ack {
+    internal suspend fun anonSend(id: String, message: JsonObject, wake: Boolean, apercu: String?): Ack {
         // Un léger délai au hasard (v6, §7.15) : l'heure du dépôt ne colle
         // plus à la frappe. Pas pour ce qui est en direct, ni pour la liaison
         // d'un appareil (`ttl`).

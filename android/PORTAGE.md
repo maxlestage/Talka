@@ -24,7 +24,7 @@ kotlinx.serialization. Rien d'autre que du Kotlin pour le code de l'app.
 - [x] `talkakit` : modèle (`Model.swift`), chiffrement (`Crypto.swift`), appels à plusieurs (`Mesh.swift`), vecteurs verts (39 tests)
 - [x] `talkakit` : v3 (`V3.swift`, `V3Vault.swift`), Brocolis (`Brocolis*.swift`), v6 (`Pq6.swift`) ; 111 tests (`EngineV3.swift` va avec le moteur)
 - [x] `talkakit` : relais (`Relay.swift`, `Socket.swift`, OkHttp) et stockage (`Store.swift`, chiffré, SQLite derrière une interface) ; 79 tests
-- [ ] `talkakit` : moteur (`Engine.swift`, `EngineV4.swift`), appels à plusieurs (`Mesh.swift`)
+- [x] `talkakit` : moteur (`Engine.swift`, `EngineV3.swift`, `EngineV4.swift`, montre, widgets) ; 194 tests, dont les 7 en direct contre le relais local (sautés sans `TALKA_SERVER`)
 - [ ] `app` : bienvenue, discussions, conversation, fiche, réglages, appareils, actus, Brocolis
 - [ ] `app` : appels (WebRTC), vocaux, photos, notifications
 - [x] CI : tests JVM + APK (`.github/workflows/android.yml`) ; signature : les secrets restent à ajouter

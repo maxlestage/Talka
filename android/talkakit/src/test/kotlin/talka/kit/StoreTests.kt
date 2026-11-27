@@ -1110,11 +1110,14 @@ class StoreTests {
 
 /**
  * Un membre (ou un ancien membre) ne prend pas un groupe en main ; comme
- * `only_admins_change_a_group` du navigateur. (Les tests de ce groupe qui
- * passent par le moteur, `testKeepArchived`, `testGroupDescription` et la
- * fin de `testOnlyAdminsWrite`, viendront avec lui.)
+ * `only_admins_change_a_group` du navigateur.
  */
 class GroupRulesTests {
+    private val phones = Phones()
+
+    @AfterTest
+    fun cleanUp() = phones.close()
+
     fun group(members: List<String>, admins: List<String>): Chat =
         Chat(id = "g:g1", group = true, name = "Les amis", members = members, admins = admins, v = 5)
 
@@ -1150,10 +1153,10 @@ class GroupRulesTests {
 
     /**
      * « Seuls les admins peuvent écrire » : comme `only_admins_write_when_asked`
-     * du navigateur (la partie sans le moteur).
+     * du navigateur ; reçu d'un admin, gardé ; absent, inchangé.
      */
     @Test
-    fun testOnlyAdminsWrite() {
+    fun testOnlyAdminsWrite() = phones.run {
         var g = group(listOf("A", "B"), listOf("A"))
         assertTrue(g.canWrite("B"))
         g = g.copy(adminsOnly = true)
@@ -1162,6 +1165,17 @@ class GroupRulesTests {
         g = g.copy(left = true)
         assertFalse(g.canWrite("A"))
         assertTrue(Chat(id = "X").canWrite("B"))
+        val e = phones.engine(phones.store(), "http://127.0.0.1:9")
+        val admin = "ADMIN00000"
+        var grp = GroupInfo(id = "ga", name = "Annonces", members = listOf(admin, e.me.code), admins = listOf(admin), avatar = "", v = 1, adminsOnly = true)
+        assertEquals(false, e.groupChat(admin, grp, 1.0).first?.canWrite(e.me.code))
+        grp = grp.copy(v = 2, adminsOnly = null)
+        e.groupChat(admin, grp, 2.0)
+        assertEquals(true, e.chat("g:ga")?.adminsOnly, "absent : inchangé")
+        grp = grp.copy(v = 3, adminsOnly = false)
+        e.groupChat(admin, grp, 3.0)
+        assertEquals(true, e.chat("g:ga")?.canWrite(e.me.code))
+        assertTrue(JSON.encode(e.groupInfo(assertNotNull(e.chat("g:ga")))).contains("\"admins_only\":false"))
     }
 
     /**
@@ -1176,5 +1190,51 @@ class GroupRulesTests {
         c = c.copy(statusMuted = true)
         assertTrue(JSON.encode(c).contains("\"status_muted\":true"))
         assertEquals(true, JSON.decode(Contact, JSON.encode(c))?.statusMuted)
+    }
+
+    /**
+     * « Garder les discussions archivées » : un message reçu la laisse dans
+     * les archives ; sans le réglage, elle en sort. Comme le navigateur
+     * (`archived_chats_come_back_unless_kept`).
+     */
+    @Test
+    fun testKeepArchived() = phones.run {
+        val e = phones.engine(phones.store(), "http://127.0.0.1:9")
+        val c = Chat(id = "WGSEAJNSZJ").copy(archived = true)
+        e.saveChat(c)
+        e.saveSettings { it.copy(keepArchived = true) }
+        e.storeMessage(Message(c.id, "m1", c.id, 1.0, Content(text = "Coucou")))
+        assertEquals(true, e.chat(c.id)?.archived, "gardée archivée")
+        // Le réglage s'écrit comme dans le navigateur.
+        assertTrue(JSON.encode(e.settings).contains("\"keep_archived\":true"))
+        e.saveSettings { it.copy(keepArchived = false) }
+        e.storeMessage(Message(c.id, "m2", c.id, 2.0, Content(text = "Encore")))
+        assertEquals(false, e.chat(c.id)?.archived, "sans le réglage, elle ressort")
+        assertEquals(false, JSON.decode(Settings, """{"theme":"dark"}""")?.keepArchived)
+    }
+
+    /**
+     * La description d'un groupe : envoyée par les admins, gardée telle que
+     * le navigateur la garde ; absente (un ancien client), elle ne change pas.
+     */
+    @Test
+    fun testGroupDescription() = phones.run {
+        val e = phones.engine(phones.store(), "http://127.0.0.1:9")
+        val admin = "ADMIN00000"
+        var grp = GroupInfo(id = "gd", name = "Sorties", members = listOf(admin, e.me.code), admins = listOf(admin), avatar = "", v = 1, desc = "  Le samedi matin  ")
+        assertEquals("Le samedi matin", e.groupChat(admin, grp, 1.0).first?.desc)
+        grp = grp.copy(v = 2, name = "Sorties du samedi", desc = null)
+        assertTrue(e.groupChat(admin, grp, 2.0).second)
+        assertEquals("Le samedi matin", e.chat("g:gd")?.desc, "absente : inchangée")
+        grp = grp.copy(v = 3, desc = "a".repeat(600))
+        e.groupChat(admin, grp, 3.0)
+        assertEquals(maxGroupDesc, e.chat("g:gd")?.desc?.length)
+        grp = grp.copy(v = 4, desc = "")
+        e.groupChat(admin, grp, 4.0)
+        assertEquals("", e.chat("g:gd")?.desc)
+        // Ce qui part : la description, même vide (pour qu'on puisse l'effacer).
+        val sent = assertNotNull(JSON.parse(JSON.encode(e.groupInfo(assertNotNull(e.chat("g:gd"))))) as? JsonObject)
+        assertEquals(JsonPrimitive(""), sent["desc"])
+        assertNull((JSON.parse(JSON.encode(GroupInfo(id = "g", name = "", members = emptyList(), admins = emptyList(), avatar = "", v = 1))) as? JsonObject)?.get("desc"))
     }
 }

@@ -93,6 +93,12 @@ object JSON {
         // JSON n'a ni NaN ni infini : serde_json écrit `null`.
         if (!d.isFinite()) return "null"
         if (d == Math.rint(d) && abs(d) < 1e15) return "${d.toLong()}.0"
+        // Comme serde_json (ryu) : sans exposant de 1e-5 à 1e16 (une heure
+        // en millisecondes avec ses fractions : `1795740793297.5`).
+        if (abs(d) >= 1e-5 && abs(d) < 1e16) {
+            val plain = java.math.BigDecimal(d.toString()).stripTrailingZeros().toPlainString()
+            return if (plain.contains('.')) plain else "$plain.0"
+        }
         return d.toString()
     }
 
@@ -261,7 +267,9 @@ sealed class JSONValue : JsonEncodable {
             is Number -> if (value == Math.rint(value) && abs(value) < 1e15) JsonPrimitive(value.toLong()) else JsonPrimitive(value)
             is Str -> JsonPrimitive(value)
             is Array -> JsonArray(value.map { it.toJson() })
-            is Object -> JsonObject(value.mapValues { it.value.toJson() })
+            // Les clés dans l'ordre, comme `serde_json::Value` du navigateur
+            // (un `BTreeMap` : par points de code).
+            is Object -> JsonObject(value.toSortedMap(::compareCodePoints).mapValues { it.value.toJson() })
         }
 
     /** En objets Kotlin (pour WebRTC). */

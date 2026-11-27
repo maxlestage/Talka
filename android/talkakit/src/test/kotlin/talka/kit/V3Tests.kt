@@ -3,7 +3,7 @@
 // réponses, désordre, doublon, deux côtés qui commencent ensemble, vieux
 // message rejoué sans réparation, session perdue qui guérit, gros contenu en
 // ancien format ; et le cliquet post-quantique (v6). (Le moteur entier, ce
-// qu'il garde et où, viendra avec `Engine`.)
+// qu'il garde et où : `V3EngineStoreTests`.)
 
 package talka.kit
 
@@ -335,26 +335,133 @@ class V3Tests {
 }
 
 /**
- * Les transactions de la mémoire s'imbriquent (`V3EngineStoreTests` de
- * l'iPhone : le seul de ses tests qui ne demande pas le moteur, ici sur une
- * mémoire seule).
+ * Le moteur entier, sans relais : ce qu'il garde, et où. Comme
+ * `V3EngineStoreTests` de l'iPhone.
  */
-class V3StoreTests {
-    private val stores = Stores()
+class V3EngineStoreTests {
+    private val phones = Phones()
 
     @AfterTest
-    fun tearDown() = stores.closeAll()
+    fun tearDown() = phones.close()
+
+    private fun phone(name: String): Engine {
+        val store = phones.store()
+        Engine.createAccount(store, name, "")
+        return phones.engine(store, "http://127.0.0.1:9")
+    }
+
+    /**
+     * Les clés publiées, sans leurs signatures : Ed25519 comme P-256 signent
+     * avec un hasard sur l'iPhone, deux paquets du même appareil n'ont donc
+     * pas toujours les mêmes octets.
+     */
+    private fun keys(e: Engine): List<List<Byte>>? {
+        val b = e.v3?.bundle() ?: return null
+        val p = e.v3?.published(e.me) ?: return null
+        V3.verifyBundle(e.me.code, e.me.sign, e.me.dh, p.bundle, p.sig) ?: return null
+        return listOf(b.identity.dh, b.identity.sign, b.spk, b.pq?.key ?: ByteArray(0)).map { it.toList() }
+    }
 
     @Test
-    fun testTransactionsNest() {
-        val dir = stores.dir()
-        val s = stores.open(dir)
-        s.transaction {
-            s.writeRaw("kv", "x", "1")
-            s.transaction { s.writeRaw("kv", "y", "2") }
+    fun testDeviceIsCreatedOnceAndKept() = phones.run {
+        val e = phone("Alice")
+        val device = assertNotNull(e.store.readRaw("kv", V3.deviceKey))
+        val again = phones.engine(e.store, "http://127.0.0.1:9")
+        assertEquals(device, again.store.readRaw("kv", V3.deviceKey))
+        assertEquals(keys(e), keys(again))
+        assertNotNull(keys(e))
+    }
+
+    @Test
+    fun testReceivedMessageAndSessionAreStoredTogether() = phones.run {
+        val a = phone("Alice")
+        val b = phone("Bob")
+        // Bob connaît les clés d'Alice (sinon il les demanderait au relais).
+        b.saveContact(Contact(code = a.me.code, sign = a.me.sign, dh = a.me.dh, saved = true))
+        b.ensureDirectChat(a.me.code)
+        val bundle = assertNotNull(b.v3?.bundle())
+        val wire = Wire(Body.Msg("m1", nowMs(), "", Content(text = "Bonjour 🥦")))
+        val sealed = assertNotNull(a.v3?.seal(a.me, b.me.code, b.me.dh, bundle, wire.json()))
+        assertTrue(sealed.v3)
+        b.receive(envelope("from" to a.me.code, "body" to sealed.body, "ts" to nowMs()))
+        assertEquals("Bonjour 🥦", b.messages(a.me.code).last().text)
+        // La session est dans la base, à côté du message.
+        assertNotNull(b.store.readRaw("kv", V3.sessionPrefix + a.me.code))
+        assertEquals(V3.Protection.Ratchet(V3.postQuantum), b.v3?.sessionProtection(a.me.code))
+        val protection = b.protection(a.me.code)
+        // Avec ML-KEM, Alice a annoncé sa clé : le cliquet post-quantique (v6).
+        assertEquals(if (Pq6.available) V3.Protection.RatchetPq6 else V3.Protection.Ratchet(V3.postQuantum), protection)
+        // Le même message, renvoyé par le relais : ignoré, sans réparation
+        // (rien ne part vers Alice).
+        val outbox = b.store.all("outbox", OutItem).size
+        b.receive(envelope("from" to a.me.code, "body" to sealed.body, "ts" to nowMs()))
+        assertEquals(1, b.messages(a.me.code).count { it.text == "Bonjour 🥦" })
+        assertEquals(outbox, b.store.all("outbox", OutItem).size)
+
+        // Relu d'une base neuve (l'application relancée) : la session revient.
+        val again = phones.engine(b.store, "http://127.0.0.1:9")
+        val next = Wire(Body.Msg("m2", nowMs(), "", Content(text = "Encore")))
+        val s2 = assertNotNull(a.v3?.seal(a.me, b.me.code, b.me.dh, null, next.json()))
+        assertTrue(s2.v3)
+        again.receive(envelope("from" to a.me.code, "body" to s2.body, "ts" to nowMs()))
+        assertEquals("Encore", again.messages(a.me.code).last().text)
+    }
+
+    @Test
+    fun testALostSessionIsRepairedOnce() = phones.run {
+        val a = phone("Alice")
+        val b = phone("Bob")
+        b.saveContact(Contact(code = a.me.code, sign = a.me.sign, dh = a.me.dh))
+        // Une session établie, confirmée des deux côtés…
+        val first = assertNotNull(a.v3?.seal(a.me, b.me.code, b.me.dh, b.v3?.bundle(), "{}"))
+        b.receive(envelope("from" to a.me.code, "body" to first.body, "ts" to nowMs()))
+        assertTrue(b.v3?.hasSession(a.me.code) ?: false)
+        assertTrue(b.store.all("outbox", OutItem).isEmpty(), "rien à réparer")
+        val reply = assertNotNull(b.v3?.seal(b.me, a.me.code, a.me.dh, null, "{}"))
+        // (Avec, éventuellement, l'annonce de la clé ML-KEM de Bob : v6.)
+        val opened = a.v3?.open(a.me, b.me.code, b.me.dh, reply.body, 2_000uL) as? V3.Opened.V3
+        val obj = opened?.let { JSON.parse(it.wire) as? JsonObject } ?: fail("réponse illisible")
+        assertTrue(obj.keys.filter { it != "pq6" }.isEmpty())
+        // … que Bob perd (ses données effacées).
+        b.v3?.forget(a.me.code)
+        b.saveV3()
+        val lost = assertNotNull(a.v3?.seal(a.me, b.me.code, b.me.dh, null, "{}"))
+        assertTrue(lost.v3)
+        b.receive(envelope("from" to a.me.code, "body" to lost.body, "ts" to nowMs()))
+        // Bob renvoie son profil (une session neuve) : une seule fois.
+        val profiles = b.store.all("outbox", OutItem).filter { it.to == a.me.code }
+        assertEquals(1, profiles.size)
+        b.receive(envelope("from" to a.me.code, "body" to lost.body, "ts" to nowMs()))
+        assertEquals(1, b.store.all("outbox", OutItem).count { it.to == a.me.code })
+    }
+
+    @Test
+    fun testBackupCarriesTheDeviceButNotTheSessions() = phones.run {
+        val a = phone("Alice")
+        val b = phone("Bob")
+        val bundle = assertNotNull(b.v3?.bundle())
+        a.v3?.seal(a.me, b.me.code, b.me.dh, bundle, "{}")
+        a.saveV3()
+        assertNotNull(a.store.readRaw("kv", V3.sessionPrefix + b.me.code))
+        val file = assertNotNull(a.exportBackup("motdepasse"))
+        val other = phones.store()
+        Engine.importBackup(other, "motdepasse", file)
+        assertEquals(a.store.readRaw("kv", V3.deviceKey), other.readRaw("kv", V3.deviceKey))
+        assertNull(other.readRaw("kv", V3.sessionPrefix + b.me.code))
+        // Le même appareil, donc le même paquet.
+        val restored = phones.engine(other, "http://127.0.0.1:9")
+        assertEquals(keys(a), keys(restored))
+        assertNotNull(keys(a))
+    }
+
+    @Test
+    fun testTransactionsNest() = phones.run {
+        val e = phone("Alice")
+        e.store.transaction {
+            e.store.writeRaw("kv", "x", "1")
+            e.store.transaction { e.store.writeRaw("kv", "y", "2") }
         }
-        s.close()
-        val again = stores.open(s.dir)
+        val again = phones.reopen(e.store.dir)
         assertEquals("1", again.readRaw("kv", "x"))
         assertEquals("2", again.readRaw("kv", "y"))
     }

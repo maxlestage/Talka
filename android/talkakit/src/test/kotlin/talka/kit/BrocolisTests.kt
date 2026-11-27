@@ -1,7 +1,8 @@
 // Brocolis 🥦 : les jetons du navigateur s'ouvrent ici, et l'inverse (même
 // format que l'app Brocolis) ; une discussion et un message gardent leur
-// réglage Brocolis d'un appareil à l'autre. Comme `BrocolisTests.swift` de
-// l'iPhone (sans ce qui passe par le moteur : il viendra avec `Engine`).
+// réglage Brocolis d'un appareil à l'autre ; dans le moteur, une clé partagée
+// ne reste jamais dans les messages gardés, et la neuve remplace l'ancienne
+// des deux côtés. Comme `BrocolisTests.swift` de l'iPhone.
 
 package talka.kit
 
@@ -13,9 +14,11 @@ import talka.brocolis.Hasard
 import talka.brocolis.ReplayGuard
 import talka.brocolis.Session
 import talka.brocolis.Token
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -170,16 +173,149 @@ class BrocolisTokenTests {
 }
 
 /**
- * Le seul test de `BrocolisEngineTests` (iPhone) qui ne demande pas le
- * moteur : l'empreinte d'une clé, comme le navigateur.
+ * Brocolis dans le moteur : une clé partagée ne reste jamais dans les
+ * messages gardés, et la neuve remplace l'ancienne des deux côtés.
  */
 class BrocolisEngineTests {
+    private val phones = Phones()
+
+    @AfterTest
+    fun cleanUp() = phones.close()
+
+    private fun phone() = phones.phone("Léa")
+
     @Test
     fun testFingerprintMatchesTheBrowser() {
         val v = Vectors.v.o("brocolis")
         val k1 = assertNotNull((v["keys"] as? JsonArray)?.firstOrNull()?.jsonObject?.s("key"))
         assertEquals(v.s("fingerprint_k1"), Brocolis.fingerprint(k1))
         assertNull(Brocolis.fingerprint("pas une clé"))
+    }
+
+    @Test
+    fun testSharingKeepsNoKeyInTheMessages() = phones.run {
+        val e = phone()
+        val chat = e.ensureDirectChat("K7Q2MX9PRT")
+        val k = e.addBrocolisKey("Nous", Brocolis.generateKey())
+        val m = assertNotNull(e.shareBrocolisKey(chat.id, k.id))
+        assertEquals("brokey", m.kind)
+        val stored = assertNotNull(e.store.message(chat.id, m.id))
+        assertEquals("", stored.data, "la clé ne reste pas dans les messages")
+        assertEquals(k.id, stored.code)
+        assertEquals(k, e.sharedKey(stored))
+        assertFalse(stored.bro, "une clé partagée ne se scelle pas")
+        assertEquals("🥦 Clé Brocolis « Nous »", Engine.preview(stored))
+    }
+
+    /**
+     * « Déchiffrer » : un message du clavier, chiffré par une clé liée à une
+     * autre discussion (que la réception n'essaie pas), s'ouvre à la demande,
+     * se garde en clair, et « Copier chiffré » rend le jeton.
+     */
+    @Test
+    fun testDecryptNowTriesEveryKey() = phones.run {
+        val e = phone()
+        val chat = e.ensureDirectChat("K7Q2MX9PRT")
+        val other = e.ensureDirectChat("WGSEAJNSZJ")
+        val raw = ByteArray(32) { 5 }
+        val k = e.addBrocolisKey("Clavier", b64(raw))
+        e.setChatBrocolis(other.id, listOf(k.id))
+        val token = Session.initiatePsk(raw, Hasard.system()).encrypt("Lu au clavier 🥦")
+        val m = e.openMessage(Message(chat.id, "m1", "K7Q2MX9PRT", 1.0, Content(text = token))).second
+        e.store.writeMessage(m)
+        assertTrue(Brocolis.hasToken(e.store.message(chat.id, "m1")!!.text), "pas la clé de cette discussion")
+        assertTrue(e.decryptNow(chat.id, "m1"))
+        val opened = assertNotNull(e.store.message(chat.id, "m1"))
+        assertEquals("Lu au clavier 🥦", opened.text)
+        assertTrue(opened.bro)
+        assertEquals(token, e.brocolisOriginal(opened))
+        assertFalse(e.decryptNow(chat.id, "m1"), "déjà ouvert")
+    }
+
+    /**
+     * Une clé ajoutée ouvre les messages déjà reçus qu'elle déverrouille,
+     * dans toutes les discussions, sans les charger : elles sont relues une
+     * à une, au passage.
+     */
+    @Test
+    fun testAddingAKeyReopensEveryChatWithoutLoadingAny() = phones.run {
+        val e = phone()
+        val a = e.ensureDirectChat("K7Q2MX9PRT")
+        val b = e.ensureDirectChat("WGSEAJNSZJ")
+        val pasted = Brocolis.generateKey()
+        val key = assertNotNull(Brocolis.key(pasted))
+        val other = assertNotNull(Brocolis.key(Brocolis.generateKey()))
+        e.store.transaction {
+            for (i in 0 until 700) {
+                for (chat in listOf(a.id, b.id)) {
+                    var text = "Message $i"
+                    if (i % 150 == 20) text = Brocolis.sealToken("Secret $i de $chat", listOf(key))!!
+                    if (i == 333) text = Brocolis.sealToken("Pour une autre clé", listOf(other))!!
+                    var m = Message(chat, "m$i", chat, i.toDouble(), Content(text = text))
+                    if (i == 400) m = m.copy(reply = Reply("m20", chat, Brocolis.sealToken("Citation secrète", listOf(key))!!))
+                    e.store.writeMessage(m)
+                }
+            }
+        }
+        val cold = phones.engine(phones.reopen(e.store.dir))
+        assertTrue(Brocolis.hasToken(assertNotNull(cold.store.message(a.id, "m170")).text))
+        assertEquals(listOf(a.id, b.id).sorted(), cold.store.chatsWithMessages())
+        assertEquals((0 until 700).map { "m$it" }, cold.store.passingMessages(a.id).map { it.id })
+        assertTrue(cold.store.messages.isEmpty())
+
+        val k = cold.addBrocolisKey("Nous", pasted)
+        assertTrue(cold.store.messages.isEmpty(), "aucune discussion chargée")
+        for (chat in listOf(a.id, b.id)) {
+            for (i in listOf(20, 170, 320, 470, 620)) {
+                val m = assertNotNull(cold.store.message(chat, "m$i"))
+                assertEquals("Secret $i de $chat", m.text)
+                assertTrue(m.bro)
+            }
+            assertEquals("Citation secrète", cold.store.message(chat, "m400")?.reply?.text)
+            assertTrue(Brocolis.hasToken(assertNotNull(cold.store.message(chat, "m333")).text), "pas la bonne clé")
+            assertEquals("Message 21", cold.store.message(chat, "m21")?.text)
+            assertEquals(700, cold.messages(chat).size)
+        }
+        assertEquals(listOf(k.id), cold.brocolisKeys.map { it.id })
+    }
+
+    @Test
+    fun testAcceptingARenewedKeyRetiresTheOldOne() = phones.run {
+        val e = phone()
+        val chat = e.ensureDirectChat("K7Q2MX9PRT")
+        val old = e.addBrocolisKey("Nous", Brocolis.generateKey())
+        e.setChatBrocolis(chat.id, listOf(old.id))
+        // Une clé neuve reçue, qui renouvelle l'ancienne.
+        val fresh = Brocolis.generateKey()
+        var m = Message(chat.id, "m1", "K7Q2MX9PRT", 1.0, Content(kind = "brokey", data = fresh, name = "Nous", code = Brocolis.fingerprint(old.key)!!))
+        e.store.writeMessage(m)
+        val k = e.acceptBrocolisKey(m)
+        assertEquals(fresh, k.key)
+        assertEquals(listOf(k.id), e.chat(chat.id)?.brocolis)
+        assertTrue(assertNotNull(e.brocolisKeys.firstOrNull { it.id == old.id }).retired)
+        assertEquals(listOf(k.id), e.chatBrocolis(e.chat(chat.id)!!).map { it.id })
+        m = assertNotNull(e.store.message(chat.id, "m1"))
+        assertEquals("", m.data)
+        assertEquals(k, e.acceptBrocolisKey(m), "accepter deux fois ne change rien")
+    }
+
+    @Test
+    fun testRenewingReplacesTheKeyInItsChats() = phones.run {
+        val e = phone()
+        val chat = e.ensureDirectChat("K7Q2MX9PRT")
+        val old = e.addBrocolisKey("Nous", Brocolis.generateKey())
+        e.setChatBrocolis(chat.id, listOf(old.id))
+        assertEquals(1, e.renewBrocolisKey(old.id))
+        val ids = assertNotNull(e.chat(chat.id)?.brocolis)
+        assertEquals(1, ids.size)
+        assertNotEquals(old.id, ids.first())
+        assertTrue(e.brocolisKeys.first { it.id == old.id }.retired)
+        // L'ancienne ouvre encore l'historique ; la neuve chiffre.
+        val sealed = Brocolis.seal("avant", listOf(Brocolis.key(old.key)!!))
+        assertEquals("avant", Brocolis.open(sealed, e.allBrocolisKeys).text)
+        val sent = assertNotNull(e.send(chat.id, Content(text = "après")))
+        assertTrue(sent.bro)
+        assertEquals("après", sent.text)
     }
 }
 

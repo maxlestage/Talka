@@ -1602,8 +1602,14 @@ data class Wire(
     }
 }
 
-/** L'heure en millisecondes, comme `Date.now()`. */
-fun nowMs(): Double = System.currentTimeMillis().toDouble()
+/**
+ * L'heure en millisecondes, comme `Date.now()`, avec ses fractions
+ * (comme `Date().timeIntervalSince1970 * 1000` de l'iPhone).
+ */
+fun nowMs(): Double {
+    val t = java.time.Instant.now()
+    return t.epochSecond * 1000.0 + t.nano / 1_000_000.0
+}
 
 /**
  * Le relais de Talka : un seul, le même pour le navigateur, l'iPhone,
