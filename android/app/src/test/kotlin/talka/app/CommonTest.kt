@@ -161,6 +161,12 @@ class CommonTest {
         val s = styles(a)
         assertEquals(listOf("@léa", "@LEA"), s.map { it.first })
         assertTrue(s.all { it.second.color == TalkaColors.accent && it.second.fontWeight == FontWeight.Bold })
+        // L'accent écrit à part (forme décomposée), dans le texte ou dans le nom : trouvée aussi, accent compris.
+        val apart = richText("Salut @Le\u0301a !", listOf("Léa"))
+        assertEquals(listOf("@Le\u0301a"), styles(apart).map { it.first })
+        assertEquals(listOf("@Léa"), styles(richText("Salut @Léa !", listOf("Le\u0301a"))).map { it.first })
+        assertEquals(listOf("@lea"), styles(richText("@lea\u0301", listOf("Lea"))).map { it.first.take(4) })
+        assertEquals(listOf("@Zoé", "@zoe"), styles(richText("@Zoé@zoe", listOf("Zoe\u0301"))).map { it.first })
         // Sans mention, ou avec une mention vide : rien.
         assertTrue(richText("Salut @Léa", emptyList()).spanStyles.isEmpty())
         assertTrue(richText("Salut @Léa", listOf("")).spanStyles.isEmpty())

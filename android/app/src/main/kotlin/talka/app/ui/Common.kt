@@ -534,30 +534,54 @@ fun richText(text: String, mentions: List<String>): AnnotatedString {
     return out
 }
 
-/** Une lettre sans accent ni majuscule (« É » → « e »), pour comparer comme `.diacriticInsensitive`. */
-private fun fold(c: Char): Char = Normalizer.normalize(c.toString(), Normalizer.Form.NFD)[0].lowercaseChar()
+/**
+ * Un texte sans accent ni majuscule (« É » → « e »), pour chercher comme
+ * `.caseInsensitive` et `.diacriticInsensitive` : ses lettres, et pour
+ * chacune sa place dans le texte d'origine. Un accent écrit à part (la forme
+ * décomposée, « e » puis son accent) ne compte pas : « é » se trouve quelle
+ * que soit la façon dont il est écrit.
+ */
+private class Folded(text: String) {
+    val chars = StringBuilder()
+    val at = ArrayList<Int>()
+
+    init {
+        for ((i, c) in text.withIndex()) {
+            if (isAccent(c)) continue
+            for (d in Normalizer.normalize(c.toString(), Normalizer.Form.NFD)) {
+                if (isAccent(d)) continue
+                chars.append(d.lowercaseChar())
+                at.add(i)
+            }
+        }
+    }
+
+    private fun isAccent(c: Char): Boolean =
+        when (Character.getType(c)) {
+            Character.NON_SPACING_MARK.toInt(), Character.ENCLOSING_MARK.toInt(), Character.COMBINING_SPACING_MARK.toInt() -> true
+            else -> false
+        }
+}
 
 private fun richTextWithMentions(text: String, mentions: List<String>): AnnotatedString {
     val base = richText(text)
     val plain = base.text
+    val hay = Folded(plain)
     val found = ArrayList<IntRange>()
     for (label in mentions) {
         if (label.isEmpty()) continue
-        val needle = "@$label"
+        val needle = Folded("@$label").chars.toString()
+        if (needle.length < 2) continue
         var from = 0
-        while (from + needle.length <= plain.length) {
-            var i = from
-            var hit = -1
-            while (i + needle.length <= plain.length) {
-                if (needle.indices.all { fold(plain[i + it]) == fold(needle[it]) }) {
-                    hit = i
-                    break
-                }
-                i++
-            }
+        while (true) {
+            val hit = hay.chars.indexOf(needle, from)
             if (hit < 0) break
-            found.add(hit until hit + needle.length)
             from = hit + needle.length
+            // Dans le texte d'origine : de sa première lettre à la suivante (ses accents compris).
+            val start = hay.at[hit]
+            val end = if (from < hay.at.size) hay.at[from] else plain.length
+            // Une mention ne s'arrête pas au milieu d'une lettre décomposée en deux (« ǆ ») : elle la prend entière.
+            found.add(start until maxOf(end, hay.at[from - 1] + 1))
         }
     }
     if (found.isEmpty()) return base
