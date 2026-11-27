@@ -393,7 +393,9 @@ class CallEngine(
     private suspend fun media(): Boolean {
         if (!permit(Manifest.permission.RECORD_AUDIO)) return false
         if (phase == Phase.ended) return false
-        system.audioStart(speaker)
+        // Un casque ou une oreillette prend l'appel, au début ou en cours : le bouton le montre.
+        system.routeChanged = { on -> speaker = on }
+        speaker = system.audioStart(speaker)
         mediaStarted = true
         if (!media.startAudio()) return false
         if (video) {

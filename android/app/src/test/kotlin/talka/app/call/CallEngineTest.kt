@@ -425,6 +425,35 @@ class CallEngineTest : AppTestBase() {
     }
 
     @Test
+    fun aHeadsetTakesTheCallAndTheSpeakerButtonShowsIt() {
+        val am = app.getSystemService(AudioManager::class.java)
+        fun device(type: Int) = org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder().setType(type).build()
+        val headset = device(android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+        shadowOf(am).setAvailableCommunicationDevices(listOf(device(android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER), headset))
+        val lea = phone("Léa")
+        val max = phone("Max")
+        // Un appel vidéo : le haut-parleur par défaut, mais l'oreillette est là.
+        run(lea) { lea.startCall(code(max), video = true) }
+        val out = call(lea)
+        assertFalse(out.speaker)
+        assertEquals(android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, am.communicationDevice?.type)
+        // Le bouton force le haut-parleur, puis rend l'appel à l'oreillette.
+        out.toggleSpeaker()
+        assertTrue(out.speaker)
+        assertEquals(android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, am.communicationDevice?.type)
+        out.toggleSpeaker()
+        assertEquals(android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, am.communicationDevice?.type)
+        // L'oreillette s'éteint : le haut-parleur de l'appel vidéo, et le bouton le dit.
+        shadowOf(am).removeAvailableCommunicationDevice(headset, true)
+        idle()
+        assertTrue(out.speaker)
+        assertEquals(android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, am.communicationDevice?.type)
+        out.hangup()
+        idle()
+        assertNull(am.communicationDevice)
+    }
+
+    @Test
     fun anIncomingCallInTheBackgroundRingsInFullScreen() {
         val lea = phone("Léa")
         val max = phone("Max")

@@ -76,6 +76,15 @@ class NotifierTest : AppTestBase() {
     }
 
     @Test
+    fun aLongMessageIsCutAt160CharactersNotInTheMiddleOfAnEmoji() {
+        // `String(body.prefix(160))` : 160 caractères au sens de Swift (un emoji compte pour un).
+        Notifier.message("Max", "a".repeat(159) + "😀😀", "MAX", sound = true, unread = 1)
+        assertEquals("a".repeat(159) + "😀", text(assertNotNull(of("MAX"))))
+        Notifier.message("Zoé", "😀".repeat(200), "ZOE", sound = true, unread = 1)
+        assertEquals("😀".repeat(160), text(assertNotNull(of("ZOE"))))
+    }
+
+    @Test
     fun aReadOrDismissedNotificationStartsAgainFromNothing() {
         Notifier.message("Max", "Coucou", "MAX", sound = true, unread = 1)
         Notifier.message("Max", "Tu es là ?", "MAX", sound = true, unread = 2)
@@ -97,6 +106,28 @@ class NotifierTest : AppTestBase() {
         // Tout marquer comme lu : plus rien.
         Notifier.cancelAll()
         assertEquals(0, manager.activeNotifications.size)
+    }
+
+    /**
+     * Talka fermé, réveillé par la montre (aucune activité) : il est en
+     * arrière-plan, comme sur l'iPhone. Un message qui arrive alors est
+     * annoncé par une notification, pas par un bandeau que personne ne voit.
+     */
+    @Test
+    fun wokenWithoutAnActivityTalkaIsInTheBackground() {
+        val m = model(startsActive = false)
+        m.createAccount("Léa", "")
+        idle()
+        val e = assertNotNull(m.engine)
+        e.saveSettings { it.copy(notify = true) }
+        val chat = e.ensureDirectChat("K7Q2MX9PRT")
+        m.incoming(chat, Message(chat.id, "m1", "K7Q2MX9PRT", 1.0, Content(text = "Coucou")), false)
+        assertEquals("Coucou", text(assertNotNull(of(chat.id), "pas de notification")))
+        assertNull(m.toast)
+        // L'activité arrive : au premier plan, un bandeau.
+        m.scene(AppModel.Phase.active)
+        m.incoming(chat, Message(chat.id, "m2", "K7Q2MX9PRT", 2.0, Content(text = "Tu es là ?")), false)
+        assertEquals("K7Q2M-X9PRT : Tu es là ?", m.toast?.text)
     }
 
     /** En arrière-plan, le moteur annonce le message avec les non-lus de la discussion. */

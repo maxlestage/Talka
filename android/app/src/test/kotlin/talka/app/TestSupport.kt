@@ -192,6 +192,7 @@ open class AppTestBase {
         watch: talka.app.watch.WatchPort? = null,
         reloadWidgets: () -> Unit = {},
         fullScreenCalls: () -> Boolean = { true },
+        startsActive: Boolean = true,
     ): AppModel {
         val env = AppEnv(
             RuntimeEnvironment.getApplication(),
@@ -205,6 +206,7 @@ open class AppTestBase {
             watch = watch,
             reloadWidgets = reloadWidgets,
             fullScreenCalls = fullScreenCalls,
+            startsActive = startsActive,
         )
         return AppModel(env).also {
             it.biometrics = biometrics

@@ -3,6 +3,7 @@ package talka.app
 import android.Manifest
 import android.app.KeyguardManager
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
@@ -50,6 +51,11 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Un téléphone reste debout, une tablette (ou un pliable ouvert) tourne
+        // librement : les `UISupportedInterfaceOrientations` de l'iPhone et de l'iPad.
+        if (phoneSized(resources.configuration.smallestScreenWidthDp)) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
         // Le sélecteur d'apps ne montre jamais les discussions (Android 13 et plus).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) setRecentsScreenshotEnabled(false)
         val m = model
@@ -179,6 +185,9 @@ class MainActivity : FragmentActivity() {
         return wait.await()
     }
 }
+
+/** Un écran de téléphone (moins de 600 dp au plus étroit), pas de tablette. */
+fun phoneSized(smallestWidthDp: Int): Boolean = smallestWidthDp < 600
 
 /** L'empreinte ou le visage par `BiometricPrompt` ; le code de l'appareil quand c'est permis. */
 class PromptBiometrics(val activity: FragmentActivity) : Biometrics {

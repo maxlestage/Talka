@@ -3,7 +3,8 @@
 //
 // - « Non lus » : le nombre de messages non lus et le dernier arrivé. Petit
 //   carré ; étiré en bandeau bas, le rectangle de l'écran verrouillé de
-//   l'iPhone (le logo, le nombre, le dernier message).
+//   l'iPhone (le logo, le nombre, le dernier message) ; réduit à deux cases,
+//   sa ligne (« 3 non lus ») ; à une seule, son rond (l'icône et le nombre).
 // - « Discussions » : les discussions récentes, chacune ouvre la sienne
 //   d'un toucher (moyen : trois ; grand : six).
 //
@@ -127,17 +128,28 @@ class UnreadWidget : GlanceAppWidget() {
         /** Le petit carré (`systemSmall`). */
         val SMALL = DpSize(110.dp, 110.dp)
 
-        /** Le bandeau, bas et large (le rectangle de l'écran verrouillé de l'iPhone). */
+        /** Le bandeau, bas et large (le rectangle de l'écran verrouillé de l'iPhone, `accessoryRectangular`). */
         val RECTANGULAR = DpSize(180.dp, 48.dp)
+
+        /** La ligne (`accessoryInline`) : deux cases de large, une de haut. */
+        val INLINE = DpSize(110.dp, 48.dp)
+
+        /** Le rond (`accessoryCircular`) : une seule case. */
+        val CIRCULAR = DpSize(48.dp, 48.dp)
     }
 
-    override val sizeMode = SizeMode.Responsive(setOf(SMALL, RECTANGULAR))
+    override val sizeMode = SizeMode.Responsive(setOf(CIRCULAR, INLINE, RECTANGULAR, SMALL))
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         TalkaWidgets.refresh()
         provideContent {
             val data by TalkaWidgets.data.collectAsState()
-            if (LocalSize.current == RECTANGULAR) RectangularView(data) else SmallView(data)
+            when (LocalSize.current) {
+                CIRCULAR -> CircularView(data)
+                INLINE -> InlineView(data)
+                RECTANGULAR -> RectangularView(data)
+                else -> SmallView(data)
+            }
         }
     }
 }
@@ -176,6 +188,51 @@ internal fun SmallView(data: WidgetData?) {
             Spacer(GlanceModifier.height(4.dp))
             Text(latest, style = TextStyle(color = color(Color.White.copy(alpha = 0.9f)), fontSize = 11.sp), maxLines = 2)
         }
+    }
+}
+
+/** Le rond : sur le vert de Talka, la bulle (pleine s'il y a des non-lus) et leur nombre (« 99+ » au-delà). */
+@Composable
+internal fun CircularView(data: WidgetData?) {
+    val context = LocalContext.current
+    val white = color(WidgetColors.white)
+    val unread = data?.unread ?: 0
+    Box(
+        GlanceModifier
+            .fillMaxSize()
+            .clickable(openLink(context, WidgetContent.unreadLink(data)))
+            .semantics { contentDescription = WidgetContent.description(data) },
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(ImageProvider(R.drawable.widget_circle), null, GlanceModifier.size(48.dp), colorFilter = ColorFilter.tint(color(WidgetColors.talka)))
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Image(
+                ImageProvider(if (unread > 0) R.drawable.ic_widget_bubble else R.drawable.ic_widget_bubble_outline),
+                null,
+                GlanceModifier.size(13.dp),
+                colorFilter = ColorFilter.tint(white),
+            )
+            Text(WidgetContent.badge(unread), style = TextStyle(color = white, fontSize = 17.sp, fontWeight = FontWeight.Bold), maxLines = 1)
+        }
+    }
+}
+
+/** La ligne : la bulle, puis « 3 non lus », « Talka : rien de nouveau », ou « Talka » tant que rien n'est écrit. */
+@Composable
+internal fun InlineView(data: WidgetData?) {
+    val context = LocalContext.current
+    val white = color(WidgetColors.white)
+    Row(
+        GlanceModifier
+            .fillMaxSize()
+            .background(ImageProvider(R.drawable.widget_rectangular_background))
+            .padding(horizontal = 12.dp)
+            .clickable(openLink(context, WidgetContent.unreadLink(data))),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Image(ImageProvider(R.drawable.ic_widget_bubble), null, GlanceModifier.size(14.dp), colorFilter = ColorFilter.tint(white))
+        Spacer(GlanceModifier.width(6.dp))
+        Text(WidgetContent.inline(data), style = TextStyle(color = white, fontSize = 14.sp, fontWeight = FontWeight.Medium), maxLines = 1)
     }
 }
 

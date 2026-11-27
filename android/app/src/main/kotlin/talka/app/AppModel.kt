@@ -52,7 +52,9 @@ import talka.kit.leaveAccount
 import talka.kit.nowMs
 import talka.kit.randomId
 import java.io.File
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneOffset
 
 /**
  * L'empreinte ou le visage (`BiometricPrompt`), branché par l'activité ;
@@ -99,6 +101,12 @@ class AppEnv(
     val reloadWidgets: () -> Unit = {},
     /** Android 14 et plus : un appel qui arrive peut-il s'afficher en plein écran (`canUseFullScreenIntent`) ? */
     val fullScreenCalls: () -> Boolean = { talka.app.ui.FullScreenCalls.allowed(context) },
+    /**
+     * Talka est-il à l'écran dès sa création ? L'application dit non : tant
+     * qu'aucune activité n'est là (réveillée par la montre, Talka fermé),
+     * elle est en arrière-plan (`applicationState` de l'iPhone).
+     */
+    val startsActive: Boolean = true,
 ) {
     /** Les réglages de l'appareil (les `UserDefaults` de l'iPhone). */
     val prefs: SharedPreferences = context.getSharedPreferences("talka.reglages", Context.MODE_PRIVATE)
@@ -161,7 +169,7 @@ class AppModel(val env: AppEnv) {
         private set
 
     /** Talka est-il au premier plan (`UIApplication.shared.applicationState == .active`) ? */
-    var active by mutableStateOf(true)
+    var active by mutableStateOf(env.startsActive)
         private set
 
     /** L'empreinte ou le visage, branché par l'activité. */
@@ -731,7 +739,7 @@ class AppModel(val env: AppEnv) {
     // ----- Sauvegarde -----
 
     /** Le fichier de sauvegarde chiffrée : « talka-sauvegarde-2026-10-21.talka ». */
-    val backupFilename: String get() = "talka-sauvegarde-${LocalDate.now()}.talka"
+    val backupFilename: String get() = backupFilename(Instant.now())
 
     /** Arrête tout (l'activité est détruite pour de bon, ou les tests). */
     fun close() {
@@ -742,6 +750,13 @@ class AppModel(val env: AppEnv) {
     }
 
     companion object {
+        /**
+         * Le nom d'une sauvegarde faite à `now` : le jour en temps universel,
+         * comme l'iPhone (`ISO8601DateFormatter`), pour le même nom sur les
+         * deux au même instant.
+         */
+        fun backupFilename(now: Instant): String = "talka-sauvegarde-${LocalDate.ofInstant(now, ZoneOffset.UTC)}.talka"
+
         private var nextToast = 0L
         private const val faceIdKey = "talka.faceid"
         private const val failsKey = "talka.essais"

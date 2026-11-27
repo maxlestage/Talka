@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- « Non lus » : un petit carré, ou étiré en bandeau. -->
+<!-- « Non lus » : un petit carré ; étiré en bandeau ; réduit à une ligne
+     (deux cases) ou à un rond (une case). -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/widget_unread_description"
     android:initialLayout="@layout/glance_default_loading_layout"
     android:minWidth="110dp"
     android:minHeight="110dp"
-    android:minResizeWidth="110dp"
+    android:minResizeWidth="48dp"
     android:minResizeHeight="40dp"
     android:previewLayout="@layout/widget_unread_preview"
     android:resizeMode="horizontal|vertical"

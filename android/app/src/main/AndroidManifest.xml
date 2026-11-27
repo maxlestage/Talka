@@ -16,7 +16,8 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <!-- Les appels audio et vidéo (WebRTC) : le micro, la caméra, le son de
-         l'appel (mode communication, haut-parleur), le vibreur de la sonnerie,
+         l'appel (mode communication, haut-parleur, oreillette), le vibreur de
+         la sonnerie,
          l'appel qui arrive en plein écran même verrouillé, et le service au
          premier plan pendant l'appel (de type appel téléphonique, micro et
          caméra ; `MANAGE_OWN_CALLS` le permet sans être l'application

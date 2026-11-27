@@ -9,7 +9,9 @@ import android.appwidget.AppWidgetManager
 import android.content.Intent
 import android.os.Looper
 import androidx.glance.appwidget.testing.unit.runGlanceAppWidgetUnitTest
+import androidx.glance.testing.unit.hasContentDescriptionEqualTo
 import androidx.glance.testing.unit.hasText
+import androidx.glance.testing.unit.hasTextEqualTo
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -267,6 +269,65 @@ class WidgetViewsTest {
         setContext(context)
         provideComposable { RectangularView(null) }
         onNode(hasText("Vos messages s'afficheront ici")).assertExists()
+    }
+
+    @Test
+    fun theCircleOfTheIPhoneLockScreenInOneCell() = runGlanceAppWidgetUnitTest {
+        // `accessoryCircular` : le nombre, « 99+ » au-delà ; le résumé pour le lecteur d'écran.
+        setAppWidgetSize(UnreadWidget.CIRCULAR)
+        setContext(context)
+        provideComposable { CircularView(sample.copy(unread = 120)) }
+        onNode(hasText("99+")).assertExists()
+        onNode(hasContentDescriptionEqualTo("120 messages non lus")).assertExists()
+        onNode(hasText("Léa")).assertDoesNotExist()
+    }
+
+    @Test
+    fun theCircleBeforeTalkaWroteAnything() = runGlanceAppWidgetUnitTest {
+        setAppWidgetSize(UnreadWidget.CIRCULAR)
+        setContext(context)
+        provideComposable { CircularView(null) }
+        onNode(hasText("0")).assertExists()
+    }
+
+    @Test
+    fun theLineOfTheIPhoneLockScreenInTwoCells() = runGlanceAppWidgetUnitTest {
+        // `accessoryInline` : « 3 non lus », jamais de nom ni de message.
+        setAppWidgetSize(UnreadWidget.INLINE)
+        setContext(context)
+        provideComposable { InlineView(sample) }
+        onNode(hasText("3 non lus")).assertExists()
+        onNode(hasText("Léa")).assertDoesNotExist()
+    }
+
+    @Test
+    fun theLineWithNothingNewOrNothingYet() = runGlanceAppWidgetUnitTest {
+        setAppWidgetSize(UnreadWidget.INLINE)
+        setContext(context)
+        provideComposable {
+            androidx.glance.layout.Column {
+                InlineView(WidgetData())
+                InlineView(null)
+                InlineView(WidgetData(unread = 1))
+            }
+        }
+        onNode(hasTextEqualTo("Talka : rien de nouveau")).assertExists()
+        onNode(hasTextEqualTo("Talka")).assertExists()
+        onNode(hasTextEqualTo("1 non lu")).assertExists()
+    }
+
+    @Test
+    fun theUnreadWidgetHasTheFourShapesOfTheIPhone() {
+        val sizes = (UnreadWidget().sizeMode as androidx.glance.appwidget.SizeMode.Responsive).sizes
+        assertEquals(setOf(UnreadWidget.CIRCULAR, UnreadWidget.INLINE, UnreadWidget.RECTANGULAR, UnreadWidget.SMALL), sizes)
+        // Une case : le rond ; deux de large : la ligne ; plus large : le bandeau ; deux sur deux : le carré.
+        fun fits(size: androidx.compose.ui.unit.DpSize, w: Int, h: Int) = size.width.value <= w && size.height.value <= h
+        fun best(w: Int, h: Int) = sizes.filter { fits(it, w, h) }.maxByOrNull { it.width.value * it.height.value }
+        assertEquals(UnreadWidget.CIRCULAR, best(60, 80))
+        assertEquals(UnreadWidget.INLINE, best(140, 80))
+        assertEquals(UnreadWidget.RECTANGULAR, best(220, 80))
+        assertEquals(UnreadWidget.SMALL, best(140, 160))
+        assertEquals(UnreadWidget.SMALL, best(300, 160))
     }
 
     @Test

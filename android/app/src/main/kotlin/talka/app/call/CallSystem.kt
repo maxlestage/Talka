@@ -1,7 +1,8 @@
 // Ce qu'un appel demande à Android, hors de WebRTC :
 //
-// - le son (`AudioManager`) : le mode communication, le haut-parleur, la
-//   priorité sur la musique (ce que `AVAudioSession` fait sur l'iPhone) ;
+// - le son (`AudioManager`) : le mode communication, le casque ou
+//   l'oreillette Bluetooth s'il y en a, le haut-parleur, la priorité sur la
+//   musique (ce que `AVAudioSession` fait sur l'iPhone) ;
 // - la sonnerie : l'appel qui sonne chez l'autre (« tuut… »), et celui qui
 //   sonne ici (la sonnerie du téléphone, et le vibreur) ;
 // - un appel qui arrive quand Talka n'est pas à l'écran : une notification
@@ -29,6 +30,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -59,9 +61,32 @@ class CallSystem(context: Context) {
 
     // ----- Le son -----
 
-    /** L'appel commence : le mode communication (l'annulation d'écho), la priorité sur le reste. */
-    fun audioStart(speaker: Boolean) {
-        val am = audio ?: return
+    /** Sans casque : le haut-parleur (un appel vidéo, `.defaultToSpeaker`), ou l'écouteur. */
+    private var defaultSpeaker = false
+
+    /** Le casque ou l'oreillette qui porte l'appel, s'il y en a (pour ne suivre que ses changements). */
+    private var headset: Int? = null
+
+    /** `startBluetoothSco` est en cours (avant Android 12). */
+    private var sco = false
+    private var devices: AudioDeviceCallback? = null
+
+    /**
+     * Le son a changé de sortie de lui-même (un casque branché, une
+     * oreillette qui s'éteint) : `true`, il est sur le haut-parleur.
+     */
+    var routeChanged: ((Boolean) -> Unit)? = null
+
+    /**
+     * L'appel commence : le mode communication (l'annulation d'écho), la
+     * priorité sur le reste. Le son va au casque ou à l'oreillette Bluetooth
+     * s'il y en a (`.allowBluetooth` de l'iPhone), sinon au haut-parleur
+     * (`speaker` : un appel vidéo) ou à l'écouteur ; et il suit ce qu'on
+     * branche pendant l'appel. Rend `true` s'il est sur le haut-parleur.
+     */
+    fun audioStart(speaker: Boolean): Boolean {
+        val am = audio ?: return speaker
+        defaultSpeaker = speaker
         try {
             am.mode = AudioManager.MODE_IN_COMMUNICATION
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -73,24 +98,86 @@ class CallSystem(context: Context) {
             }
         } catch (e: RuntimeException) {
         }
-        setSpeaker(speaker)
+        headset = headset(outputs(am))
+        val target = route(defaultSpeaker, headset)
+        apply(am, target)
+        watchDevices(am)
+        return target == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
     }
 
-    /** Le haut-parleur, ou l'écouteur (ou le casque, s'il y en a un). */
+    /**
+     * Le bouton : le haut-parleur, même avec un casque
+     * (`overrideOutputAudioPort(.speaker)`) ; ou retour au casque, sinon à
+     * l'écouteur.
+     */
     fun setSpeaker(on: Boolean) {
         val am = audio ?: return
+        apply(am, if (on) AudioDeviceInfo.TYPE_BUILTIN_SPEAKER else headset(outputs(am)))
+    }
+
+    /** Les sorties possibles d'un appel (leurs types). */
+    private fun outputs(am: AudioManager): List<Int> =
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (on) {
-                    am.availableCommunicationDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                        ?.let { am.setCommunicationDevice(it) }
-                } else {
-                    am.clearCommunicationDevice()
-                }
+                am.availableCommunicationDevices.map { it.type }
             } else {
-                @Suppress("DEPRECATION")
-                am.isSpeakerphoneOn = on
+                am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map { it.type }
             }
+        } catch (e: RuntimeException) {
+            emptyList()
+        }
+
+    /** Envoie le son à cette sortie (`null` : l'écouteur, ou ce qu'Android choisit de lui-même). */
+    private fun apply(am: AudioManager, target: Int?) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val device = target?.let { t -> am.availableCommunicationDevices.firstOrNull { it.type == t } }
+                if (device != null) am.setCommunicationDevice(device) else am.clearCommunicationDevice()
+            } else {
+                // Avant Android 12 : l'oreillette Bluetooth se demande à part ; un casque à fil se prend de lui-même.
+                val bluetooth = target == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                if (bluetooth != sco) {
+                    sco = bluetooth
+                    @Suppress("DEPRECATION")
+                    if (bluetooth) {
+                        am.startBluetoothSco()
+                        am.isBluetoothScoOn = true
+                    } else {
+                        am.isBluetoothScoOn = false
+                        am.stopBluetoothSco()
+                    }
+                }
+                @Suppress("DEPRECATION")
+                am.isSpeakerphoneOn = target == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            }
+        } catch (e: RuntimeException) {
+        }
+    }
+
+    /**
+     * Un casque branché ou une oreillette allumée pendant l'appel le prend
+     * (même le haut-parleur forcé : l'iPhone aussi) ; débranché, le son
+     * retourne à l'écouteur, ou au haut-parleur en vidéo.
+     */
+    private fun watchDevices(am: AudioManager) {
+        if (devices != null) return
+        val callback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>?) = changed()
+
+            override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>?) = changed()
+
+            private fun changed() {
+                val now = headset(outputs(am))
+                if (now == headset) return
+                headset = now
+                val target = route(defaultSpeaker, now)
+                apply(am, target)
+                routeChanged?.invoke(target == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+            }
+        }
+        try {
+            am.registerAudioDeviceCallback(callback, Handler(Looper.getMainLooper()))
+            devices = callback
         } catch (e: RuntimeException) {
         }
     }
@@ -98,13 +185,15 @@ class CallSystem(context: Context) {
     /** L'appel est fini : le son redevient celui d'avant. */
     fun audioStop() {
         val am = audio ?: return
+        routeChanged = null
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                am.clearCommunicationDevice()
-            } else {
-                @Suppress("DEPRECATION")
-                am.isSpeakerphoneOn = false
-            }
+            devices?.let { am.unregisterAudioDeviceCallback(it) }
+        } catch (e: RuntimeException) {
+        }
+        devices = null
+        headset = null
+        apply(am, null)
+        try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) focus?.let { am.abandonAudioFocusRequest(it) }
             focus = null
             am.mode = AudioManager.MODE_NORMAL
@@ -267,6 +356,26 @@ class CallSystem(context: Context) {
     companion object {
         /** L'appel en cours : pour les boutons des notifications (Refuser, Raccrocher). */
         var current: CallEngine? = null
+
+        /**
+         * Ce qui prend un appel avant l'écouteur et le haut-parleur, par
+         * ordre de préférence : l'oreillette Bluetooth (classique, basse
+         * énergie, appareil auditif), puis le casque à fil ou USB.
+         */
+        private val headsets = listOf(
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_HEARING_AID,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_USB_HEADSET,
+        )
+
+        /** Le casque ou l'oreillette parmi ces sorties (leurs types), s'il y en a. */
+        fun headset(outputs: List<Int>): Int? = headsets.firstOrNull { it in outputs }
+
+        /**
+         * Où va le son sans que le bouton s'en mêle : le casque s'il y en a
+         * un, sinon le haut-parleur (`speaker`), sinon l'écouteur (`null`).
+         */
+        fun route(speaker: Boolean, headset: Int?): Int? =
+            headset ?: if (speaker) AudioDeviceInfo.TYPE_BUILTIN_SPEAKER else null
 
         const val ACTION_SHOW = "talka.app.call.SHOW"
         const val ACTION_ANSWER = "talka.app.call.ANSWER"

@@ -8,7 +8,9 @@ package talka.app
 import android.app.Application
 import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -140,6 +142,8 @@ class TalkaApp : Application() {
                 unlockCipher = { account -> g.unlockCipher(account) },
                 watch = WearDataLayer(this),
                 reloadWidgets = { TalkaWidgets.reload(this) },
+                // En arrière-plan tant qu'aucune activité n'est à l'écran (`MainActivity` le dira).
+                startsActive = false,
             ),
         )
     }
@@ -244,13 +248,24 @@ fun RootView() {
                 // un appel qui arrive se prend sans le code (il reste ensuite).
                 Box(Modifier.fillMaxSize().zIndex(3.5f)) { CallScreen(call) }
             }
-            if (model.locked || model.codeLocked) {
-                Box(Modifier.fillMaxSize().zIndex(3f)) { LockView() }
-            }
+            // Le verrou vient d'un coup (rien ne se lit à travers) et s'efface
+            // en 0,2 s, l'écran de chargement en 0,35 s : les fondus de l'iPhone.
+            AnimatedVisibility(
+                visible = model.locked || model.codeLocked,
+                enter = EnterTransition.None,
+                exit = fadeOut(tween(200)),
+                modifier = Modifier.fillMaxSize().zIndex(3f),
+            ) { LockView() }
             val step = model.loading
-            if (step != null) {
-                Box(Modifier.fillMaxSize().zIndex(4f)) { LoadingView(step) }
-            }
+            // L'étape gardée pendant qu'il s'efface.
+            val lastStep = remember { arrayOf("") }
+            if (step != null) lastStep[0] = step
+            AnimatedVisibility(
+                visible = step != null,
+                enter = EnterTransition.None,
+                exit = fadeOut(tween(350, easing = LinearOutSlowInEasing)),
+                modifier = Modifier.fillMaxSize().zIndex(4f),
+            ) { LoadingView(step ?: lastStep[0]) }
             // Android 14 et plus : une fois, de quoi faire sonner les appels en plein écran.
             if (model.engine != null && call == null && step == null && !model.locked && !model.codeLocked && model.active) {
                 FullScreenCallsGuide()
@@ -260,21 +275,27 @@ fun RootView() {
                 Box(Modifier.fillMaxSize().zIndex(5f)) { PrivacyCover() }
             }
             val toast = model.toast
-            AnimatedVisibility(
-                visible = toast != null,
-                enter = slideInVertically { it } + fadeIn(),
-                exit = slideOutVertically { it } + fadeOut(),
-                modifier = Modifier.align(Alignment.BottomCenter).zIndex(6f),
-            ) {
-                // Gardé pendant la disparition.
-                val shown = toast ?: return@AnimatedVisibility
-                ToastView(
-                    shown.text,
-                    Modifier
-                        .navigationBarsPadding()
-                        .padding(start = 16.dp, end = 16.dp, bottom = 88.dp)
-                        .clickable { model.toast = null },
-                )
+            // Sous le verrou et sous l'écran de confidentialité, comme sur
+            // l'iPhone : un message qui arrive ne se lit pas par-dessus (il
+            // est là, ses trois secondes durant, si Talka s'ouvre entre-temps).
+            val covered = model.locked || model.codeLocked || (!model.active && model.engine != null)
+            if (!covered) {
+                AnimatedVisibility(
+                    visible = toast != null,
+                    enter = slideInVertically { it } + fadeIn(),
+                    exit = slideOutVertically { it } + fadeOut(),
+                    modifier = Modifier.align(Alignment.BottomCenter).zIndex(6f),
+                ) {
+                    // Gardé pendant la disparition.
+                    val shown = toast ?: return@AnimatedVisibility
+                    ToastView(
+                        shown.text,
+                        Modifier
+                            .navigationBarsPadding()
+                            .padding(start = 16.dp, end = 16.dp, bottom = 88.dp)
+                            .clickable { model.toast = null },
+                    )
+                }
             }
             if (toast != null) {
                 LaunchedEffect(toast.id) {

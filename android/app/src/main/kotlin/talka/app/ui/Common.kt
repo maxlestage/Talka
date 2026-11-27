@@ -277,10 +277,14 @@ object Images {
         return image
     }
 
+    /** Le plus grand côté d'une photo dans une bulle (340 points sur l'écran le plus dense de l'iPhone). */
+    const val bubbleSide = 1020
+
     /**
      * Une photo pour une bulle de discussion : au plus 1 020 pixels de côté,
-     * au lieu des 1 600 de la photo entière. La photo entière reste celle
-     * qu'on ouvre.
+     * au lieu des 1 600 de la photo entière (deux fois et demie moins de
+     * pixels à garder ; à l'écran, la même image). La photo entière reste
+     * celle qu'on ouvre.
      */
     fun bubble(url: String): ImageBitmap? {
         if (url.isEmpty()) return null
@@ -289,9 +293,20 @@ object Images {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
         var sample = 1
-        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 1020) sample *= 2
-        val image = BitmapFactory.decodeByteArray(data, 0, data.size, BitmapFactory.Options().apply { inSampleSize = sample })
-            ?.asImageBitmap() ?: return fromDataURL(url)
+        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= bubbleSide) sample *= 2
+        val decoded = BitmapFactory.decodeByteArray(data, 0, data.size, BitmapFactory.Options().apply { inSampleSize = sample })
+            ?: return fromDataURL(url)
+        // Le décodeur ne réduit que par deux : le reste ici, jusqu'aux 1 020 pixels.
+        val side = max(decoded.width, decoded.height)
+        val small = if (side > bubbleSide) {
+            val scale = bubbleSide.toFloat() / side
+            val w = (decoded.width * scale).roundToInt().coerceAtLeast(1)
+            val h = (decoded.height * scale).roundToInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(decoded, w, h, true).also { if (it !== decoded) decoded.recycle() }
+        } else {
+            decoded
+        }
+        val image = small.asImageBitmap()
         bubbles.put(url, image)
         return image
     }
@@ -615,7 +630,7 @@ fun richText(source: String): AnnotatedString {
 
 /** Un message fait seulement de 1 à 3 emojis s'affiche en grand. */
 fun onlyEmoji(text: String): Boolean {
-    val t = text.trim(' ', '\t')
+    val t = text.trimSpaces()
     if (t.isEmpty()) return false
     val it = BreakIterator.getCharacterInstance()
     it.setText(t)
@@ -679,11 +694,12 @@ object Dates {
 
     /** L'heure d'un élément de liste : `14:05`, « Hier », « Lundi », `03/03/26`. */
     fun list(ms: Double): String =
-        when (val d = daysAgo(ms)) {
+        when (daysAgo(ms)) {
             0 -> clock(ms)
             1 -> "Hier"
             in 2..6 -> capitalized(day.format(date(ms)))
-            else -> if (d < 0) clock(ms) else short.format(date(ms))
+            // Plus vieux, ou un jour à venir (l'horloge de l'autre avance) : la date, comme le Swift.
+            else -> short.format(date(ms))
         }
 
     /** « Aujourd'hui », « Hier », « Lundi », « 3 mars 2026 ». */
@@ -797,7 +813,8 @@ object Notifier {
         }
         if (!shown) lines.remove(thread)
         val kept = lines.getOrPut(thread) { ArrayDeque() }
-        kept.addLast(body.take(160))
+        // 160 caractères au sens de Swift (`body.prefix(160)`) : jamais la moitié d'un emoji.
+        kept.addLast(body.firstChars(160))
         while (kept.size > maxLines) kept.removeFirst()
         val open = Intent(Intent.ACTION_VIEW, Uri.parse(if (thread == "call") "talka://chats" else WidgetData.link(thread)), c, MainActivity::class.java)
         val pending = PendingIntent.getActivity(c, id, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
