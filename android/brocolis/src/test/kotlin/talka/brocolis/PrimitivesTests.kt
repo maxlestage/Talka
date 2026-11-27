@@ -4,7 +4,7 @@
 
 package talka.brocolis
 
-import kotlin.test.AfterTest
+import org.junit.jupiter.api.AfterAll
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -221,12 +221,14 @@ class PrimitivesTests {
     }
 
     /**
-     * L'équation calculée ici et celle de BouncyCastle jugent de même des
-     * signatures honnêtes et altérées (clés canoniques).
+     * L'équation calculée ici (`verifyEquationSlow`, le chemin des clés non
+     * canoniques) et celle de BouncyCastle (`verifyEquation`, les autres)
+     * jugent de même des signatures honnêtes et altérées.
      */
     @Test
-    fun equationCommeBouncyCastle() {
+    fun equationIciCommeBouncyCastle() {
         val rng = Deterministic("ed25519/equation")
+        var acceptees = 0
         for (i in 0 until 64) {
             val seed = rng.bytes(32)
             val pk = Kdf.ed25519Public(seed)
@@ -238,7 +240,19 @@ class PrimitivesTests {
             }
             val bc = org.bouncycastle.math.ec.rfc8032.Ed25519.verify(sig, 0, pk, 0, msg, 0, msg.size)
             assertEquals(bc, essai { Kdf.ed25519Verify(pk, msg, sig) } != null, "cas $i")
+            val r = sig.copyOf(32)
+            val s = sig.copyOfRange(32, 64)
+            if (Ed25519Strict.isCanonicalScalar(s) && !Ed25519Strict.isWeak(r)) {
+                val ici = Ed25519Strict.verifyEquationSlow(pk, r, s, msg)
+                assertEquals(Ed25519Strict.verifyEquation(pk, r, s, msg), ici, "cas $i")
+                if (ici) acceptees++
+            }
         }
+        assertTrue(acceptees >= 32)
+        // Une écriture non canonique (y ≥ p) passe par le calcul d'ici.
+        val nonCanonique = ByteArray(32) { 0xff.toByte() }.also { it[0] = 0xee.toByte(); it[31] = 0x7f }
+        assertFalse(Ed25519Strict.isCanonicalY(nonCanonique))
+        assertTrue(Ed25519Strict.isCanonicalY(Kdf.ed25519Public(h32("canonique"))))
     }
 
     // MARK: ML-KEM (contrôle du module)
@@ -353,8 +367,11 @@ class PrimitivesTests {
         assertNotEquals(hex(Hasard.system().bytes(32)), hex(Hasard.system().bytes(32)))
     }
 
-    @AfterTest
-    fun bilan() {
-        println("Vecteurs des RFC (Argon2) retrouvés (cumul) : ${Compteur.total("rfc")}")
+    companion object {
+        @JvmStatic
+        @AfterAll
+        fun bilan() {
+            println("Vecteurs des RFC (Argon2) retrouvés : ${Compteur.total("rfc")}")
+        }
     }
 }

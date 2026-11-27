@@ -35,6 +35,9 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          # Pas le paquet « tools » par défaut : il n'existe plus.
+          packages: platform-tools platforms;android-35 build-tools;35.0.0
       - uses: gradle/actions/setup-gradle@v4
       - name: Protocole et cœur — tests (vecteurs du navigateur)
         run: ./gradlew --no-daemon :brocolis:test :talkakit:test

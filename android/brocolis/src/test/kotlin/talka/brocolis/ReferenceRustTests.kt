@@ -12,11 +12,11 @@
 
 package talka.brocolis
 
+import org.junit.jupiter.api.AfterAll
 import kotlinx.serialization.json.Json as KJson
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -157,8 +157,11 @@ class ReferenceRustTests {
         egal(texte(pskA.decryptText(pskB.encrypt("PSK de Kotlin"), T0, rng)), "PSK de Kotlin", "PSK retour", categorie = "rust")
     }
 
-    @AfterTest
-    fun bilan() {
-        println("Valeurs comparées à la référence Rust (cumul) : ${Compteur.total("rust")}")
+    companion object {
+        @JvmStatic
+        @AfterAll
+        fun bilan() {
+            println("Valeurs comparées à la référence Rust : ${Compteur.total("rust")}")
+        }
     }
 }

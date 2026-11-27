@@ -8,8 +8,14 @@
 // - l'équation sans cofacteur : l'écriture canonique de [S]B − [k]A, k =
 //   SHA-512(R ‖ A ‖ M) mod L, doit être **les octets mêmes** de R.
 //
-// BouncyCastle refuse aussi une clé A dont y ≥ p, que dalek accepte : pour
-// juger chaque signature comme la référence, l'équation est calculée ici.
+// Les contrôles de points et de scalaire sont faits ici. L'équation, elle,
+// est celle de BouncyCastle quand A est écrite canoniquement (y < p) : sans
+// cofacteur, R comparé à l'écriture canonique du résultat, exactement celle
+// de dalek une fois A et R contrôlés — et bien plus rapide. BouncyCastle
+// refuse en revanche une clé A dont y ≥ p, que dalek accepte : pour celle-là
+// seulement, l'équation est calculée ici (`verifyEquationSlow`). Les deux
+// chemins sont comparés par les tests (Wycheproof et signatures tirées).
+//
 // L'arithmétique de GF(2²⁵⁵ − 19) est celle de TweetNaCl (16 membres de 16
 // bits), en temps variable — elle ne voit que des données publiques.
 
@@ -252,6 +258,14 @@ internal object Ed25519Strict {
         return out
     }
 
+    /** Vrai si l'écriture d'un point a y < p (bit 255, le signe de x, mis à part). */
+    fun isCanonicalY(b: ByteArray): Boolean {
+        if (b.size != 32) return false
+        // y ≥ p ⇔ y = 2²⁵⁵ − 19 + k, k < 19 : 0x7f, 30 × 0xff, puis ≥ 0xed.
+        return !(b[31].toInt() and 0x7f == 0x7f && (1 until 31).all { b[it] == 0xff.toByte() } &&
+            (b[0].toInt() and 0xff) >= 0xed)
+    }
+
     /**
      * L'équation de vérification de dalek (`RCompute`) : l'écriture de
      * [S]B + [k](−A), k = SHA-512(R ‖ A ‖ M) mod L, est-elle les octets de R ?
@@ -259,6 +273,13 @@ internal object Ed25519Strict {
      * canonique.
      */
     fun verifyEquation(publicKey: ByteArray, r: ByteArray, s: ByteArray, message: ByteArray): Boolean {
+        if (!isCanonicalY(publicKey)) return verifyEquationSlow(publicKey, r, s, message)
+        val sig = Octets.concat(r, s)
+        return org.bouncycastle.math.ec.rfc8032.Ed25519.verify(sig, 0, publicKey, 0, message, 0, message.size)
+    }
+
+    /** La même équation, calculée ici (toute clé A qui est un point). */
+    fun verifyEquationSlow(publicKey: ByteArray, r: ByteArray, s: ByteArray, message: ByteArray): Boolean {
         val a = decode(publicKey) ?: return false
         val k = reduce(Kdf.sha512(Octets.concat(r, publicKey, message)))
         val expected = add(scalarMult(base, s), scalarMult(negate(a), k))

@@ -6,12 +6,12 @@
 
 package talka.brocolis
 
+import org.junit.jupiter.api.AfterAll
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.bouncycastle.math.ec.rfc8032.Ed25519
-import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -122,14 +122,31 @@ class WycheproofTests {
     @Test
     fun ed25519Strict() {
         var n = 0
+        var lents = 0
         for ((g, t) in tests(Depot.wycheproof("ed25519_test.json"))) {
             val pk = unhex(g.obj("publicKey"), "pk")
             val sig = unhex(t, "sig")
             val ok = essai { Kdf.ed25519Verify(pk, unhex(t, "msg"), sig) } != null
             assertEquals(t.valid(), ok, "tcId ${t.id()} ${t["comment"]}")
+            // L'équation calculée ici juge comme celle de BouncyCastle (une
+            // fois A, R et S contrôlés).
+            if (pk.size == 32 && sig.size == 64 && !Ed25519Strict.isWeak(pk)) {
+                val r = sig.copyOf(32)
+                val s = sig.copyOfRange(32, 64)
+                if (Ed25519Strict.isCanonicalScalar(s) && !Ed25519Strict.isWeak(r)) {
+                    assertEquals(
+                        Ed25519Strict.verifyEquation(pk, r, s, unhex(t, "msg")),
+                        Ed25519Strict.verifyEquationSlow(pk, r, s, unhex(t, "msg")),
+                        "tcId ${t.id()} (équation)",
+                    )
+                    lents++
+                }
+            }
             n++
         }
         assertTrue(n > 140)
+        assertTrue(lents > 50)
+        println("Wycheproof Ed25519 : équation d'ici comparée à BouncyCastle sur $lents cas")
         compter(n, "Ed25519")
     }
 
@@ -207,8 +224,11 @@ class WycheproofTests {
         compter(n, "ML-KEM-768")
     }
 
-    @AfterTest
-    fun bilan() {
-        println("Cas Wycheproof vérifiés (cumul) : ${Compteur.total("wycheproof")}")
+    companion object {
+        @JvmStatic
+        @AfterAll
+        fun bilan() {
+            println("Cas Wycheproof vérifiés : ${Compteur.total("wycheproof")}")
+        }
     }
 }

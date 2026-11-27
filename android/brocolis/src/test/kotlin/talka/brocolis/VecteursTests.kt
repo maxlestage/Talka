@@ -11,7 +11,7 @@
 
 package talka.brocolis
 
-import kotlin.test.AfterTest
+import org.junit.jupiter.api.AfterAll
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -383,8 +383,11 @@ class VecteursTests {
         attendreErreur(Erreur.Dechiffrement) { other.decrypt(Token.Message(env), now, Deterministic("x")) }
     }
 
-    @AfterTest
-    fun bilan() {
-        println("Valeurs des vecteurs retrouvées (cumul) : ${Compteur.total("vecteurs")}")
+    companion object {
+        @JvmStatic
+        @AfterAll
+        fun bilan() {
+            println("Valeurs des vecteurs retrouvées : ${Compteur.total("vecteurs")}")
+        }
     }
 }

@@ -18,7 +18,7 @@
 //
 // Tout vient de BouncyCastle (API légère, en Java pur : le même code sur la
 // JVM et sur Android, quel que soit le fournisseur JCA de l'appareil), sauf
-// la vérification Ed25519 stricte (`Ed25519Strict`).
+// les contrôles de la vérification Ed25519 stricte (`Ed25519Strict`).
 
 package talka.brocolis
 
