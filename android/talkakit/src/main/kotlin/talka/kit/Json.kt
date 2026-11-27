@@ -103,8 +103,16 @@ object JSON {
     }
 
     private fun quote(sb: StringBuilder, s: String) {
+        // Presque rien n'est à échapper (une photo en base64 : rien du tout) :
+        // ce qui ne l'est pas est recopié par blocs, pas caractère par caractère.
+        sb.ensureCapacity(sb.length + s.length + 2)
         sb.append('"')
-        for (ch in s) {
+        var from = 0
+        for (i in s.indices) {
+            val ch = s[i]
+            if (ch >= ' ' && ch != '"' && ch != '\\') continue
+            sb.append(s, from, i)
+            from = i + 1
             when (ch) {
                 '"' -> sb.append("\\\"")
                 '\\' -> sb.append("\\\\")
@@ -113,9 +121,10 @@ object JSON {
                 '\t' -> sb.append("\\t")
                 '\b' -> sb.append("\\b")
                 '\u000C' -> sb.append("\\f")
-                else -> if (ch < ' ') sb.append("\\u%04x".format(ch.code)) else sb.append(ch)
+                else -> sb.append("\\u%04x".format(ch.code))
             }
         }
+        sb.append(s, from, s.length)
         sb.append('"')
     }
 }
