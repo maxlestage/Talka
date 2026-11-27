@@ -769,34 +769,68 @@ object Notifier {
     /** Les notifications sont-elles permises ? */
     fun allowed(): Boolean = context?.let { NotificationManagerCompat.from(it).areNotificationsEnabled() } ?: false
 
+    /** Les derniers messages annoncés de chaque discussion, tant que sa notification est affichée. */
+    private val lines = HashMap<String, ArrayDeque<String>>()
+
+    /** Ce qu'une notification garde de messages (les plus récents). */
+    private const val maxLines = 6
+
+    /**
+     * Annonce un message. Comme sur l'iPhone, où les notifications d'une
+     * discussion s'empilent, la notification de la discussion garde les
+     * messages annoncés depuis qu'elle est affichée (elle repart de zéro
+     * une fois lue ou balayée). `unread` : les non-lus de la discussion,
+     * pour la pastille de l'icône (le `setBadgeCount` de l'iPhone ; les
+     * lanceurs d'Android additionnent ceux des notifications affichées).
+     */
     @SuppressLint("MissingPermission")
-    fun message(title: String, body: String, thread: String, sound: Boolean) {
+    fun message(title: String, body: String, thread: String, sound: Boolean, unread: Int = 0) {
         val c = context ?: return
         if (!allowed()) return
+        val id = thread.hashCode()
+        val manager = c.getSystemService(NotificationManager::class.java)
+        // Balayée ou lue entre-temps : ses anciens messages ne reviennent pas.
+        val shown = try {
+            manager?.activeNotifications?.any { it.id == id } ?: false
+        } catch (e: RuntimeException) {
+            false
+        }
+        if (!shown) lines.remove(thread)
+        val kept = lines.getOrPut(thread) { ArrayDeque() }
+        kept.addLast(body.take(160))
+        while (kept.size > maxLines) kept.removeFirst()
         val open = Intent(Intent.ACTION_VIEW, Uri.parse(if (thread == "call") "talka://chats" else WidgetData.link(thread)), c, MainActivity::class.java)
-        val pending = PendingIntent.getActivity(c, thread.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val pending = PendingIntent.getActivity(c, id, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val style = if (kept.size == 1) {
+            NotificationCompat.BigTextStyle().bigText(kept.last())
+        } else {
+            NotificationCompat.InboxStyle().also { inbox -> for (line in kept) inbox.addLine(line) }
+        }
         val n = NotificationCompat.Builder(c, if (sound) withSound else silent)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title)
-            .setContentText(body.take(160))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body.take(160)))
+            .setContentText(kept.last())
+            .setStyle(style)
+            .setNumber(maxOf(unread, kept.size))
             .setContentIntent(pending)
             .setAutoCancel(true)
             .setGroup(thread)
             .setColor(0xFF00A884.toInt())
             .build()
         try {
-            NotificationManagerCompat.from(c).notify(thread.hashCode(), n)
+            NotificationManagerCompat.from(c).notify(id, n)
         } catch (e: SecurityException) {
         }
     }
 
     /** La discussion est lue : sa notification part. */
     fun cancel(thread: String) {
+        lines.remove(thread)
         context?.let { NotificationManagerCompat.from(it).cancel(thread.hashCode()) }
     }
 
     fun cancelAll() {
+        lines.clear()
         context?.let { NotificationManagerCompat.from(it).cancelAll() }
     }
 }

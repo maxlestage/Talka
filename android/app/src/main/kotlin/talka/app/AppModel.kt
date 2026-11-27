@@ -638,7 +638,7 @@ class AppModel(val env: AppEnv) {
         } else if (e.settings.notify) {
             // L'écran verrouillé ne montre que ce qu'on a choisi.
             val shown = e.settings.notification(e.title(chat), body)
-            Notifier.message(shown.title, shown.body, chat.id, e.settings.sound)
+            Notifier.message(shown.title, shown.body, chat.id, e.settings.sound, unread = e.chat(chat.id)?.unread ?: chat.unread)
         }
         watch.push()
     }
