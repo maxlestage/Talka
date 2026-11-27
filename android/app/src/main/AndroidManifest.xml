@@ -90,6 +90,13 @@
         <receiver
             android:name=".call.CallActions"
             android:exported="false" />
+        <!-- Un message vocal s'enregistre même si l'on quitte Talka un instant
+             (le mode d'arrière-plan « audio » de l'iPhone) : le service qui
+             tient le micro, le temps de l'enregistrement. -->
+        <service
+            android:name=".sys.RecordingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
         <!-- Les widgets de l'écran d'accueil (Jetpack Glance) : « Non lus » et
              « Discussions », ceux de l'iPhone. -->
         <receiver

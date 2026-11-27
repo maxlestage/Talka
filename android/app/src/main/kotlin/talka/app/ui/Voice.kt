@@ -21,6 +21,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import talka.app.sys.RecordingService
 import talka.kit.Content
 import java.io.File
 import java.util.UUID
@@ -54,10 +55,16 @@ class VoiceRecorder(private val context: Context) {
             f.delete()
             return false
         }
+        // 2 minutes : le micro s'arrête de lui-même, et le service qui le tient en arrière-plan aussi.
+        r.setOnInfoListener { _, what, _ ->
+            if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) RecordingService.stop()
+        }
         recorder = r
         file = f
         started = System.currentTimeMillis()
         recording = true
+        // Quitter Talka un instant ne coupe pas l'enregistrement (comme sur l'iPhone).
+        RecordingService.start(context)
         return true
     }
 
@@ -93,6 +100,7 @@ class VoiceRecorder(private val context: Context) {
     private fun halt() {
         val r = recorder ?: return
         recorder = null
+        RecordingService.stop()
         // Arrêté de lui-même au bout de 2 minutes : `stop` lève alors une exception.
         try {
             r.stop()
