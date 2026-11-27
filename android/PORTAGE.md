@@ -28,7 +28,9 @@ kotlinx.serialization. Rien d'autre que du Kotlin pour le code de l'app.
 - [x] `app` : base (modèle, onglets, verrou PIN/biométrie, SQLite et Keystore), bienvenue, discussions, réglages ; 19 tests Robolectric
 - [x] `app` : conversation, fiche, appareils (QR), actus, Brocolis
 - [x] `app` : appels (WebRTC, à plusieurs), vocaux (AAC/MP4), photos ; 59 tests Robolectric
-- [ ] `app` : notifications quand l'app est fermée (push), widgets, partager vers Talka, Wear OS
+- [ ] `app` : widgets d'écran d'accueil, pont vers la montre, app Wear OS
+
+Comme l'iPhone, pas de notification quand Talka est fermée (l'iPhone n'en a pas : il prévient tant que l'app tourne) ni d'extension « Partager vers Talka ».
 - [ ] Essayer sur un vrai téléphone (pas d'émulateur ici) : WebRTC, caméra, micro, biométrie, Keystore
 - [x] CI : tests JVM + APK (`.github/workflows/android.yml`) ; signature : les secrets restent à ajouter
 
@@ -76,7 +78,6 @@ cocher quand l'Android la fait de la même façon (et parle le même protocole).
 - [ ] Notifications (avec aperçu chiffré si permis), sonnerie d'appel
 - [ ] Widgets d'écran d'accueil (non-lus, discussions récentes), comme ceux de l'iPhone
 - [ ] Montre (Wear OS), comme l'Apple Watch : à faire en dernier
-- [ ] Partager vers Talka (photos, texte) depuis les autres apps
 
 ## Construire
 
