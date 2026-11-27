@@ -50,6 +50,9 @@ android {
 
     buildFeatures { compose = true }
 
+    // Les tests de la JVM avec Robolectric : SQLite d'Android, sans appareil.
+    testOptions { unitTests.isIncludeAndroidResources = true }
+
     packaging {
         resources { excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "META-INF/versions/9/OSGI-INF/MANIFEST.MF") }
     }
@@ -69,4 +72,20 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    testImplementation(kotlin("test"))
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+}
+
+// L'image d'Android que Robolectric fait tourner, téléchargée par Gradle (qui
+// réessaie et la garde en cache) plutôt que par Robolectric au milieu des tests.
+val robolectricAndroid: Configuration by configurations.creating { isTransitive = false }
+dependencies { robolectricAndroid("org.robolectric:android-all-instrumented:15-robolectric-12650502-i7") }
+tasks.withType<Test>().configureEach {
+    val dir = layout.buildDirectory.dir("robolectric").get().asFile
+    inputs.files(robolectricAndroid)
+    doFirst { project.copy { from(robolectricAndroid); into(dir) } }
+    systemProperty("robolectric.offline", "true")
+    systemProperty("robolectric.dependency.dir", dir.path)
 }

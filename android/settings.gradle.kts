@@ -22,6 +22,12 @@ pluginManagement {
 dependencyResolutionManagement {
     repositories {
         google()
+        // Robolectric (les tests de l'app) depuis le miroir de Maven Central
+        // tenu par Google : son image d'Android est lourde, et Maven Central
+        // la refuse souvent aux machines partagées (429).
+        maven("https://maven-central.storage-download.googleapis.com/maven2/") {
+            content { includeGroup("org.robolectric") }
+        }
         mavenCentral()
     }
 }

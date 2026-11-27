@@ -51,14 +51,14 @@ jobs:
           else
             echo "::notice::Pas de clé de signature dans les secrets : APK signé par une clé de débogage."
           fi
-      - name: Application — APK
+      - name: Application — tests (Robolectric) et APK
         env:
           TALKA_KEYSTORE_PASSWORD: ${{ secrets.TALKA_KEYSTORE_PASSWORD }}
           TALKA_KEY_ALIAS: ${{ secrets.TALKA_KEY_ALIAS }}
           TALKA_KEY_PASSWORD: ${{ secrets.TALKA_KEY_PASSWORD }}
           TALKA_VERSION_CODE: ${{ github.run_number }}
           TALKA_VERSION_NAME: 1.0.${{ github.run_number }}
-        run: ./gradlew --no-daemon :app:assembleRelease
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease
       - uses: actions/upload-artifact@v4
         with:
           name: talka-android
