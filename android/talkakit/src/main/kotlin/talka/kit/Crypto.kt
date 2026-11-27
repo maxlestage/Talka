@@ -141,8 +141,12 @@ fun randomId(bytes: Int = 12): String = hex(randomBytes(bytes))
 internal fun hex(data: ByteArray): String = data.joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
 /** Le texte UTF-8 d'octets, ou rien s'ils n'en sont pas (comme `String(data:encoding:)`). */
-internal fun utf8(data: ByteArray): String? =
-    try {
+internal fun utf8(data: ByteArray): String? {
+    // Que de l'ASCII (une photo en base64, la plupart des JSON) : c'est déjà
+    // de l'UTF-8 valide, recopié d'un coup, bien plus vite que le décodeur
+    // strict.
+    if (isAscii(data)) return String(data, Charsets.US_ASCII)
+    return try {
         Charsets.UTF_8.newDecoder()
             .onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT)
@@ -151,6 +155,12 @@ internal fun utf8(data: ByteArray): String? =
     } catch (e: CharacterCodingException) {
         null
     }
+}
+
+private fun isAscii(data: ByteArray): Boolean {
+    for (b in data) if (b < 0) return false
+    return true
+}
 
 // ----- Les briques : SHA-256, HMAC, HKDF, AES-GCM, P-256 -----------------------
 
