@@ -50,6 +50,7 @@ class WebRtcMedia(context: Context) : CallMedia {
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
     private var capturer: CameraVideoCapturer? = null
+    @Volatile private var capturing: CaptureFormat? = null
     private var helper: SurfaceTextureHelper? = null
     private val cameras: CameraEnumerator by lazy {
         if (Camera2Enumerator.isSupported(this.context)) Camera2Enumerator(this.context) else Camera1Enumerator(true)
@@ -72,8 +73,11 @@ class WebRtcMedia(context: Context) : CallMedia {
             val h = SurfaceTextureHelper.create("talka-camera", egl.eglBaseContext)
             val source = factory.createVideoSource(false)
             cap.initialize(h, context, source.capturerObserver)
-            // Au plus près de 1280 × 720, 30 images par seconde au plus (l'iPhone aussi).
-            cap.startCapture(1280, 720, 30)
+            // Le format de la caméra le plus proche de 1280 × 720, 30 images
+            // par seconde au plus (l'iPhone aussi).
+            val format = captureFormat(name)
+            cap.startCapture(format.width, format.height, format.fps)
+            capturing = format
             capturer = cap
             helper = h
             videoSource = source
@@ -81,6 +85,16 @@ class WebRtcMedia(context: Context) : CallMedia {
         } catch (e: Throwable) {
             return null
         }
+    }
+
+    /** Le format choisi pour cette caméra (`CaptureFormat.closest`), `framerate` en millièmes. */
+    private fun captureFormat(name: String): CaptureFormat {
+        val formats = try {
+            cameras.getSupportedFormats(name).orEmpty().map { CaptureFormat(it.width, it.height, it.framerate.max / 1000) }
+        } catch (e: Throwable) {
+            emptyList()
+        }
+        return CaptureFormat.closest(formats) ?: CaptureFormat.preferred
     }
 
     /** La caméra avant (ou arrière), sinon la première. */
@@ -123,8 +137,25 @@ class WebRtcMedia(context: Context) : CallMedia {
     override fun switchCamera(front: Boolean) {
         val cap = capturer ?: return
         val name = camera(front) ?: return
+        val format = captureFormat(name)
         try {
-            cap.switchCamera(null, name)
+            // L'autre caméra, puis son propre format (l'iPhone relance la
+            // capture avec celui de la caméra choisie).
+            cap.switchCamera(
+                object : CameraVideoCapturer.CameraSwitchHandler {
+                    override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                        if (format == capturing) return
+                        capturing = format
+                        try {
+                            cap.changeCaptureFormat(format.width, format.height, format.fps)
+                        } catch (e: Throwable) {
+                        }
+                    }
+
+                    override fun onCameraSwitchError(errorDescription: String?) {}
+                },
+                name,
+            )
         } catch (e: Throwable) {
         }
     }
@@ -144,6 +175,7 @@ class WebRtcMedia(context: Context) : CallMedia {
             }
         }
         capturer = null
+        capturing = null
         helper = null
         videoTrack = null
         videoSource = null

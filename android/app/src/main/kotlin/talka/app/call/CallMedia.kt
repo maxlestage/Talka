@@ -19,6 +19,7 @@ import kotlinx.serialization.json.contentOrNull
 import talka.kit.JSONValue
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.math.abs
 
 /** Un serveur STUN ou TURN (`RTCIceServer`). */
 data class IceServer(val urls: List<String>, val username: String? = null, val credential: String? = null) {
@@ -152,4 +153,23 @@ interface CallMedia {
 
     /** L'appel est fini : le micro et la caméra s'arrêtent. */
     fun stop()
+}
+
+/** Un format de la caméra : sa taille, et ses images par seconde au plus. */
+data class CaptureFormat(val width: Int, val height: Int, val maxFps: Int) {
+    /** Les images par seconde demandées : 30 au plus (l'iPhone aussi), 30 si la caméra ne le dit pas. */
+    val fps: Int get() = if (maxFps <= 0) 30 else minOf(30, maxFps)
+
+    companion object {
+        /** Sans liste de la caméra : ce que demande l'iPhone. */
+        val preferred = CaptureFormat(1280, 720, 30)
+
+        /**
+         * Le format le plus proche de 1280 × 720 (la somme des écarts de
+         * largeur et de hauteur), le premier en cas d'égalité : le choix de
+         * `CallEngine.startCapture` sur l'iPhone.
+         */
+        fun closest(formats: List<CaptureFormat>): CaptureFormat? =
+            formats.minByOrNull { abs(it.width - preferred.width) + abs(it.height - preferred.height) }
+    }
 }

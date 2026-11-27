@@ -182,5 +182,6 @@ fun testEnv(
         netWaitMs = 0,
         callMedia = media,
         callSignals = signals,
+        fullScreenCalls = { true },
     )
 }

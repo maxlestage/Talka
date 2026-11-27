@@ -6,6 +6,12 @@
 package talka.app.ui
 
 import android.app.KeyguardManager
+import android.app.NotificationManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -46,6 +52,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -84,6 +91,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.delay
 import talka.app.LocalAppModel
 import talka.app.TalkaColors
@@ -117,6 +128,8 @@ fun CallScreen(call: CallEngine) {
     }
     // Le retour d'Android ne cache pas l'appel (comme le plein écran de l'iPhone).
     BackHandler {}
+    // Un appel vidéo prend tout l'écran (`statusBarHidden` de l'iPhone).
+    HideSystemBars(call.video)
     val live = call.phase == CallEngine.Phase.live
     Box(Modifier.fillMaxSize().background(callBackground).clickable(enabled = true, onClick = {})) {
         if (call.video && live && call.remoteVideos.isNotEmpty()) RemoteGrid(call)
@@ -297,6 +310,23 @@ private fun CallControls(call: CallEngine) {
                 }
             }
         }
+    }
+}
+
+/**
+ * Ni barre d'état ni barre de navigation (le mode immersif) tant que `on` :
+ * un glissement depuis le bord les montre un instant, comme sur l'iPhone.
+ */
+@Composable
+private fun HideSystemBars(on: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(view, on) {
+        val window = view.context.findActivity()?.window
+        if (!on || window == null) return@DisposableEffect onDispose {}
+        val bars = WindowCompat.getInsetsController(window, view)
+        bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        bars.hide(WindowInsetsCompat.Type.systemBars())
+        onDispose { bars.show(WindowInsetsCompat.Type.systemBars()) }
     }
 }
 
@@ -526,4 +556,92 @@ fun MultiContactPicker(
             }
         }
     }
+}
+
+// ----- Les appels en plein écran (Android 14 et plus) -----
+
+/**
+ * Android 14 et plus ne laisse un appel qui arrive s'afficher en plein écran
+ * (même le téléphone verrouillé, comme CallKit sur l'iPhone) qu'aux
+ * applications que l'utilisateur y autorise. Sinon, l'appel n'est qu'une
+ * notification en haut de l'écran. Talka le dit une fois, et mène au réglage.
+ */
+object FullScreenCalls {
+    /** Le guide déjà montré (les préférences de l'appareil). */
+    const val shownKey = "talka.appels.pleinecran"
+
+    /** Le réglage d'Android 14 (`Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT`). */
+    const val settingsAction = "android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT"
+
+    /** Un appel qui arrive peut-il s'afficher en plein écran ? Toujours avant Android 14. */
+    fun allowed(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return true
+        return try {
+            context.getSystemService(NotificationManager::class.java)?.canUseFullScreenIntent() ?: true
+        } catch (x: Exception) {
+            true
+        }
+    }
+
+    /** Montrer le guide : Android 14 et plus, le plein écran refusé, et pas encore montré. */
+    fun needsGuide(sdk: Int, allowed: Boolean, shown: Boolean): Boolean =
+        sdk >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !allowed && !shown
+
+    /** Le réglage de Talka : « Notifications plein écran ». */
+    fun settings(context: Context): Intent =
+        Intent(settingsAction, Uri.parse("package:${context.packageName}"))
+
+    /** Si le réglage n'existe pas (un Android modifié) : les notifications de Talka. */
+    fun fallbackSettings(context: Context): Intent =
+        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+}
+
+/**
+ * Le guide, une fois : pourquoi, et le bouton vers le réglage. Revu en
+ * revenant à Talka (le réglage a pu changer) ; rien si les notifications
+ * sont coupées (l'appel ne s'afficherait pas du tout).
+ */
+@Composable
+fun FullScreenCallsGuide() {
+    val model = LocalAppModel.current
+    val context = LocalContext.current
+    val prefs = model.env.prefs
+    var show by remember {
+        mutableStateOf(
+            NotificationManagerCompat.from(context).areNotificationsEnabled() &&
+                FullScreenCalls.needsGuide(Build.VERSION.SDK_INT, model.env.fullScreenCalls(), prefs.getBoolean(FullScreenCalls.shownKey, false)),
+        )
+    }
+    if (!show) return
+    fun done() {
+        show = false
+        prefs.edit().putBoolean(FullScreenCalls.shownKey, true).apply()
+    }
+    AlertDialog(
+        onDismissRequest = { done() },
+        icon = { Icon(Icons.Filled.Call, null, tint = TalkaColors.green) },
+        title = { Text("Les appels en plein écran", textAlign = TextAlign.Center) },
+        text = {
+            Text(
+                "Pour qu'un appel qui arrive s'affiche en plein écran, même le téléphone verrouillé, " +
+                    "autorisez Talka dans les réglages d'Android : « Notifications plein écran ». " +
+                    "Sinon, l'appel n'apparaît qu'en bandeau, en haut de l'écran.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                done()
+                model.leavingOnPurpose()
+                try {
+                    context.startActivity(FullScreenCalls.settings(context))
+                } catch (x: Exception) {
+                    try {
+                        context.startActivity(FullScreenCalls.fallbackSettings(context))
+                    } catch (y: Exception) {
+                    }
+                }
+            }) { Text("Ouvrir les réglages") }
+        },
+        dismissButton = { TextButton(onClick = { done() }) { Text("Plus tard") } },
+    )
 }

@@ -66,6 +66,20 @@
             </intent-filter>
         </activity>
 
+        <!-- Les fichiers donnés à une autre application (`SharedFiles`) : la
+             feuille de partage, et la photo de l'appareil photo en pleine
+             taille. Rien que deux dossiers du cache (`fichiers.xml`), et
+             seulement à l'application choisie. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fichiers"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/fichiers" />
+        </provider>
+
         <!-- Les appels : le service au premier plan pendant l'appel, et les
              boutons des notifications (Refuser, Raccrocher). -->
         <service

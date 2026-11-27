@@ -7,6 +7,7 @@ package talka.app
 
 import android.Manifest
 import android.os.Looper
+import android.view.View
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -16,7 +17,11 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.performClick
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -30,6 +35,7 @@ import org.robolectric.annotation.GraphicsMode
 import talka.app.call.CallEngine
 import talka.app.call.FakeMedia
 import talka.app.call.testEnv
+import talka.app.ui.findActivity
 import talka.kit.Body
 import talka.kit.CallEntry
 import talka.kit.Identity
@@ -83,10 +89,16 @@ class CallsUiTest : AppTestBase() {
         assertTrue(run(model) { e.addContact(max.code, "Max") })
         assertTrue(run(model) { e.addContact(zoe.code, "Zoé") })
         model.tab = AppModel.Tab.calls
-        compose.setContent { TalkaTheme(model) { RootView() } }
+        compose.setContent {
+            view = LocalView.current
+            TalkaTheme(model) { RootView() }
+        }
         compose.waitForIdle()
         return model
     }
+
+    /** La vue de l'écran (sa fenêtre : les barres du système). */
+    private var view: View? = null
 
     private fun waitUntil(done: () -> Boolean) {
         val end = System.currentTimeMillis() + 30_000
@@ -207,5 +219,46 @@ class CallsUiTest : AppTestBase() {
         compose.onNodeWithTag("hangup").performClick()
         waitUntil { m.call?.phase == CallEngine.Phase.ended }
         assertEquals("end", sent.last().second.op)
+    }
+
+    @Test
+    fun aVideoCallHidesTheSystemBarsLikeTheIPhone() {
+        val m = lea()
+        val window = assertNotNull(view?.context?.findActivity()).window
+        // Ce que la fenêtre demande à Android (`InsetsController.getRequestedVisibleTypes`, caché).
+        fun requested(type: Int): Boolean {
+            val controller = assertNotNull(window.insetsController)
+            val types = controller.javaClass.getMethod("getRequestedVisibleTypes").invoke(controller) as Int
+            return types and type != 0
+        }
+        fun statusBar() = requested(WindowInsetsCompat.Type.statusBars())
+        fun navigationBar() = requested(WindowInsetsCompat.Type.navigationBars())
+        assertTrue(statusBar())
+        assertTrue(navigationBar())
+
+        // Un appel vidéo : ni barre d'état ni barre de navigation ; un glissement les montre un instant.
+        m.callSignal(max.code, Body.Call("offer", "appel-v", video = true, sdp = "v=0 offre", cand = null), true)
+        compose.waitForIdle()
+        compose.onNodeWithText("Appel vidéo entrant…").assertIsDisplayed()
+        assertEquals(
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE,
+            WindowCompat.getInsetsController(window, window.decorView).systemBarsBehavior,
+        )
+        assertEquals(false, statusBar())
+        assertEquals(false, navigationBar())
+
+        // Fini : elles reviennent.
+        compose.onNodeWithContentDescription("Refuser").performClick()
+        waitUntil { m.call?.phase == CallEngine.Phase.ended }
+        later(1_500)
+        assertNull(m.call)
+        assertTrue(statusBar())
+        assertTrue(navigationBar())
+
+        // Un appel audio : elles restent.
+        m.callSignal(max.code, Body.Call("offer", "appel-a", video = false, sdp = "v=0 offre", cand = null), true)
+        compose.waitForIdle()
+        compose.onNodeWithText("Appel audio entrant…").assertIsDisplayed()
+        assertTrue(statusBar())
     }
 }

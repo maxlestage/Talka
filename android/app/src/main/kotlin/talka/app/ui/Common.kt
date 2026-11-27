@@ -5,21 +5,25 @@
 package talka.app.ui
 
 import android.Manifest
+import android.app.Activity
 import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.graphics.Rect
 import android.icu.lang.UCharacter
 import android.icu.lang.UProperty
 import android.media.AudioManager
+import android.media.ExifInterface
 import android.media.RingtoneManager
 import android.media.ToneGenerator
 import android.net.Uri
@@ -58,7 +62,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -100,6 +108,7 @@ import kotlinx.coroutines.withContext
 import talka.app.LocalAppModel
 import talka.app.MainActivity
 import talka.app.TalkaColors
+import talka.app.sys.SharedFiles
 import talka.kit.Brocolis
 import talka.kit.Engine
 import talka.kit.TalkaCode
@@ -114,7 +123,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
-import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -325,15 +333,84 @@ object Images {
         } catch (e: Exception) {
             null
         }
+
+    /**
+     * La photo que l'appareil photo vient d'écrire (`ok` : prise, pas
+     * annulée), puis le fichier effacé. Décodée à `max` pixels de côté au
+     * moins (pas les 12 mégapixels entiers en mémoire), redressée selon son
+     * EXIF (l'`imageOrientation` qu'applique l'iPhone).
+     */
+    fun takenPhoto(file: File, ok: Boolean, max: Int = 1600): Bitmap? =
+        try {
+            if (ok) decodeFile(file, max) else null
+        } catch (e: Exception) {
+            null
+        } catch (e: OutOfMemoryError) {
+            null
+        } finally {
+            file.delete()
+        }
+
+    private fun decodeFile(file: File, max: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= max) sample *= 2
+        val image = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+        val orientation = try {
+            ExifInterface(file.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        } catch (e: Exception) {
+            ExifInterface.ORIENTATION_NORMAL
+        }
+        val m = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.setScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> m.setRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> m.setScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> m.apply { setRotate(90f) }.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_90 -> m.setRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> m.apply { setRotate(-90f) }.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> m.setRotate(-90f)
+            else -> return image
+        }
+        return Bitmap.createBitmap(image, 0, 0, image.width, image.height, m, true)
+    }
 }
 
-/** Un fichier temporaire (partager une photo, un document). */
-fun temporaryFile(context: Context, data: ByteArray, name: String): File {
-    val dir = File(context.cacheDir, "partage/${UUID.randomUUID()}").apply { mkdirs() }
-    val file = File(dir, name.ifEmpty { "fichier" })
-    file.writeBytes(data)
-    return file
+/**
+ * La feuille de partage d'Android pour un fichier (`UIActivityViewController`
+ * de l'iPhone) : `share(octets, nom, mime)`. Le fichier passe par le
+ * FileProvider (`SharedFiles`), lisible par la seule application choisie.
+ */
+@Composable
+fun rememberFileSharer(): (ByteArray, String, String) -> Unit {
+    val model = LocalAppModel.current
+    val context = LocalContext.current
+    return remember(model, context) {
+        { data, name, mime ->
+            try {
+                val file = SharedFiles.write(context, data, name)
+                val intent = SharedFiles.shareIntent(SharedFiles.uri(context, file), mime)
+                // Depuis l'activité (une photo en grand est dans sa propre fenêtre).
+                val activity = context.findActivity()
+                if (activity == null) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                model.leavingOnPurpose()
+                (activity ?: context).startActivity(intent)
+            } catch (x: Exception) {
+                model.show("Ce fichier n'a pas pu être partagé.")
+            }
+        }
+    }
 }
+
+/** L'activité derrière un contexte (celui d'une fenêtre, d'un thème). */
+tailrec fun Context.findActivity(): Activity? =
+    when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }
 
 // ----- Photos : la galerie et l'appareil -----
 
@@ -360,35 +437,59 @@ fun rememberPhotoPicker(onPicked: (Bitmap) -> Unit): () -> Unit {
 /** L'appareil a-t-il une caméra ? */
 fun cameraAvailable(context: Context): Boolean = context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
 
-/** Prendre une photo avec l'appareil (assez grande pour une photo de profil). */
+/**
+ * Prendre une photo avec l'appareil, en pleine taille (le `UIImagePickerController`
+ * de l'iPhone) : l'appareil photo l'écrit dans un fichier du FileProvider
+ * (`SharedFiles`), lu puis effacé aussitôt. `onPhoto` la reçoit redressée,
+ * réduite à 1 600 pixels de côté au plus (assez pour `Images.compressed`).
+ */
 @Composable
 fun rememberCameraPicker(onPhoto: (Bitmap) -> Unit): () -> Unit {
     val model = LocalAppModel.current
     val context = LocalContext.current
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-        if (bitmap != null) onPhoto(bitmap)
+    val scope = rememberCoroutineScope()
+    // Le fichier de la photo : gardé si Android recrée l'écran pendant que l'appareil photo est ouvert.
+    var pending by rememberSaveable { mutableStateOf<String?>(null) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val file = pending?.let { File(it) } ?: return@rememberLauncherForActivityResult
+        pending = null
+        scope.launch {
+            val photo = withContext(Dispatchers.IO) { Images.takenPhoto(file, ok) }
+            if (photo != null) onPhoto(photo)
+        }
+    }
+    fun open() {
+        val file = try {
+            SharedFiles.newCameraFile(context)
+        } catch (e: Exception) {
+            null
+        }
+        if (file == null) {
+            model.show("Appareil photo indisponible")
+            return
+        }
+        pending = file.path
+        model.leavingOnPurpose()
+        try {
+            camera.launch(SharedFiles.uri(context, file))
+        } catch (e: Exception) {
+            pending = null
+            file.delete()
+            model.show("Appareil photo indisponible")
+        }
     }
     // Si l'application déclare la caméra (les appels), Android exige la permission.
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) {
-            model.leavingOnPurpose()
-            camera.launch(null)
-        } else {
-            model.show("Autorisez l'appareil photo de Talka dans les réglages de l'appareil.")
-        }
+        if (ok) open() else model.show("Autorisez l'appareil photo de Talka dans les réglages de l'appareil.")
     }
     return {
-        model.leavingOnPurpose()
         if (declares(context, Manifest.permission.CAMERA) &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
         ) {
+            model.leavingOnPurpose()
             permission.launch(Manifest.permission.CAMERA)
         } else {
-            try {
-                camera.launch(null)
-            } catch (e: Exception) {
-                model.show("Appareil photo indisponible")
-            }
+            open()
         }
     }
 }

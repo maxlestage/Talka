@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ce que le FileProvider de Talka (`SharedFiles`) donne aux autres
+     applications : seulement ces deux dossiers du cache privé. -->
+<paths>
+    <!-- Une photo, un document, une discussion exportée : la feuille de partage. -->
+    <cache-path name="partage" path="partage/" />
+    <!-- La photo que l'appareil photo écrit en pleine taille. -->
+    <cache-path name="appareil" path="appareil/" />
+</paths>

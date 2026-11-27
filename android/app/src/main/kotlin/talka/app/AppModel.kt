@@ -97,6 +97,8 @@ class AppEnv(
     val watch: WatchPort? = null,
     /** Recharge les widgets de l'écran d'accueil (`TalkaWidgets.reload`). */
     val reloadWidgets: () -> Unit = {},
+    /** Android 14 et plus : un appel qui arrive peut-il s'afficher en plein écran (`canUseFullScreenIntent`) ? */
+    val fullScreenCalls: () -> Boolean = { talka.app.ui.FullScreenCalls.allowed(context) },
 ) {
     /** Les réglages de l'appareil (les `UserDefaults` de l'iPhone). */
     val prefs: SharedPreferences = context.getSharedPreferences("talka.reglages", Context.MODE_PRIVATE)

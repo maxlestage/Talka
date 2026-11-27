@@ -9,8 +9,6 @@ package talka.app.ui
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -98,7 +96,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -1021,50 +1018,17 @@ fun PhotosSection(e: Engine, chatId: String) {
     viewing?.let { m -> ImageViewer(e, m, onDismiss = { viewing = null }) }
 }
 
-/** Enregistrer un fichier où l'on veut (le sélecteur de fichiers d'Android) : `save(nom, octets)`. */
-@Composable
-private fun rememberFileSaver(mime: String): (String, ByteArray) -> Unit {
-    val model = LocalAppModel.current
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var pending by remember { mutableStateOf<ByteArray?>(null) }
-    val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(mime)) { uri ->
-        val data = pending
-        pending = null
-        if (uri == null || data == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openOutputStream(uri)?.use { it.write(data) } != null
-                } catch (x: Exception) {
-                    false
-                }
-            }
-            model.show(if (ok) "Enregistré ✓" else "Le fichier n'a pas pu être écrit.")
-        }
-    }
-    return { name, data ->
-        pending = data
-        model.leavingOnPurpose()
-        try {
-            saver.launch(name)
-        } catch (x: Exception) {
-            pending = null
-            model.show("Impossible d'enregistrer ici.")
-        }
-    }
-}
-
 /**
  * Les documents de la discussion dans sa fiche : les 20 plus récents,
- * « Tout voir (N) » pour les autres ; toucher en enregistre un.
+ * « Tout voir (N) » pour les autres ; toucher en partage ou enregistre un
+ * (la feuille de partage, comme l'iPhone).
  */
 @Composable
 fun DocumentsSection(e: Engine, chatId: String) {
     val model = LocalAppModel.current
     val docs = remember(model.revision, chatId) { e.documents(chatId) }
     var all by remember { mutableStateOf(false) }
-    val save = rememberFileSaver("application/octet-stream")
+    val share = rememberFileSharer()
     if (docs.isEmpty()) return
     Column {
         SectionHeader("Documents (${docs.size})")
@@ -1076,7 +1040,7 @@ fun DocumentsSection(e: Engine, chatId: String) {
                 supportingContent = { Text("${m.fileDetail(formatBytes(m.size))} · ${Dates.separator(m.at)}") },
                 trailingContent = { Icon(Icons.Filled.Download, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
                 modifier = Modifier
-                    .clickable { dataOfURL(m.data)?.let { save(m.saveName, it) } }
+                    .clickable { dataOfURL(m.data)?.let { share(it, m.saveName, m.mime.ifEmpty { "application/octet-stream" }) } }
                     .semantics(mergeDescendants = true) { contentDescription = "Enregistrer ${if (m.name.isEmpty()) "le fichier" else m.name}" },
             )
         }
@@ -1139,7 +1103,7 @@ fun ChatMoreMenu(chatId: String, searching: Boolean, onSearch: () -> Unit, onInf
     var confirmDelete by remember { mutableStateOf(false) }
     var addingContact by remember { mutableStateOf(false) }
     var contactName by remember { mutableStateOf("") }
-    val save = rememberFileSaver("text/plain")
+    val share = rememberFileSharer()
 
     fun item(text: String, icon: androidx.compose.ui.graphics.vector.ImageVector, red: Boolean = false, run: () -> Unit): @Composable () -> Unit = {
         val tint = if (red) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
@@ -1160,7 +1124,7 @@ fun ChatMoreMenu(chatId: String, searching: Boolean, onSearch: () -> Unit, onInf
             item(if (searching) "Fermer la recherche" else "Rechercher", Icons.Filled.Search, run = onSearch)()
             item("Messages éphémères", Icons.Filled.Timer) { choosingTimer = true }()
             item("Exporter la discussion", Icons.Filled.Upload) {
-                e.exportChat(chatId)?.let { save(it.filename, it.text.toByteArray()) }
+                e.exportChat(chatId)?.let { share(it.text.toByteArray(), it.filename, "text/plain") }
             }()
             val bro = if (chat.brocolis.isEmpty()) "Chiffrer avec Brocolis 🥦" else "Brocolis 🥦 : ${e.chatBrocolis(chat).joinToString(", ") { it.name }}"
             item(bro, Icons.Filled.Shield) { choosingBrocolis = true }()

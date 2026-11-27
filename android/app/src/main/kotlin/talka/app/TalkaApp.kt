@@ -82,10 +82,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
 import talka.app.sys.KeystoreGuard
+import talka.app.sys.SharedFiles
 import talka.app.ui.CallScreen
 import talka.app.ui.CallsTab
 import talka.app.ui.ChatsTab
 import talka.app.ui.ConversationView
+import talka.app.ui.FullScreenCallsGuide
 import talka.app.ui.LockView
 import talka.app.ui.Notifier
 import talka.app.ui.SettingsTab
@@ -118,6 +120,8 @@ class TalkaApp : Application() {
         // Ce que lisent les widgets : branché dès le lancement, car un widget
         // peut se dessiner sans que Talka ait été ouvert.
         if (WidgetShare.storage == null) WidgetShare.storage = FileWidgetStorage(this)
+        // Les fichiers partagés d'il y a plus d'une heure (`SharedFiles`), hors du fil principal.
+        Thread { SharedFiles.sweep(this) }.start()
     }
 
     val model: AppModel by lazy {
@@ -246,6 +250,10 @@ fun RootView() {
             val step = model.loading
             if (step != null) {
                 Box(Modifier.fillMaxSize().zIndex(4f)) { LoadingView(step) }
+            }
+            // Android 14 et plus : une fois, de quoi faire sonner les appels en plein écran.
+            if (model.engine != null && call == null && step == null && !model.locked && !model.codeLocked && model.active) {
+                FullScreenCallsGuide()
             }
             // Hors du premier plan (le sélecteur d'apps) : ni les discussions ni les clés.
             if (!model.active && model.engine != null) {

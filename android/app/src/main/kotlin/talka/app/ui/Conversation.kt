@@ -567,7 +567,7 @@ private fun ConversationScreen(e: Engine, chat: Chat, s: ConversationState, onBa
         model.show("Message transféré")
     }
 
-    val save = rememberSaver()
+    val share = rememberFileSharer()
     val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
         scope.launch {
             for (uri in uris) {
@@ -670,7 +670,7 @@ private fun ConversationScreen(e: Engine, chat: Chat, s: ConversationState, onBa
                             IconButton(onClick = { model.launch { model.callChat(chatId, video = false) } }) { Icon(Icons.Filled.Call, "Appel audio") }
                         }
                         ConversationMenu(e, chat, s, onExport = {
-                            e.exportChat(chatId)?.let { save(it.text.toByteArray(), it.filename, "text/plain") }
+                            e.exportChat(chatId)?.let { share(it.text.toByteArray(), it.filename, "text/plain") }
                         })
                     },
                 )
@@ -718,7 +718,7 @@ private fun ConversationScreen(e: Engine, chat: Chat, s: ConversationState, onBa
                                             }
                                         },
                                         onReactions = { s.reactions = m },
-                                    ) { close -> MessageMenu(e, chat, m, s, save, close) }
+                                    ) { close -> MessageMenu(e, chat, m, s, share, close) }
                                 }
                                 else -> Spacer(Modifier.height(1.dp).fillMaxWidth())
                             }
@@ -859,49 +859,6 @@ private fun readPicked(context: Context, uri: Uri): Picked? =
     } catch (x: Exception) {
         null
     }
-
-/**
- * « Enregistrer » une pièce jointe (le sélecteur de fichiers d'Android :
- * Téléchargements, Drive…), sous son nom : le partage de l'iPhone.
- */
-@Composable
-private fun rememberSaver(): (ByteArray, String, String) -> Unit {
-    val model = LocalAppModel.current
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val pending = remember { arrayOfNulls<Pair<ByteArray, String>>(1) }
-    val contract = remember {
-        object : ActivityResultContracts.CreateDocument("*/*") {
-            override fun createIntent(context: Context, input: String): Intent =
-                super.createIntent(context, input).setType(pending[0]?.second?.ifEmpty { null } ?: "application/octet-stream")
-        }
-    }
-    val launcher = rememberLauncherForActivityResult(contract) { uri ->
-        val data = pending[0]?.first
-        pending[0] = null
-        if (uri == null || data == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openOutputStream(uri)?.use { it.write(data) } != null
-                } catch (x: Exception) {
-                    false
-                }
-            }
-            model.show(if (ok) "Fichier enregistré ✓" else "Le fichier n'a pas pu être écrit.")
-        }
-    }
-    return { data, name, mime ->
-        pending[0] = data to mime
-        model.leavingOnPurpose()
-        try {
-            launcher.launch(name)
-        } catch (x: ActivityNotFoundException) {
-            pending[0] = null
-            model.show("Le fichier n'a pas pu être écrit.")
-        }
-    }
-}
 
 /** Le type d'une adresse `data:` (`image/jpeg`…). */
 private fun mimeOf(m: Message): String =
@@ -1247,7 +1204,7 @@ private fun MessageMenu(e: Engine, chat: Chat, m: Message, s: ConversationState,
             }
         }
         if (mine) item("Infos", Icons.Filled.Info) { s.info = m }
-        // Une photo, un vocal, un document : l'enregistrer, sous le même nom que le navigateur.
+        // Une photo, un vocal, un document : l'enregistrer (la feuille de partage), sous le même nom que le navigateur.
         if (!sealed && m.kind in listOf("image", "file", "voice") && m.data.startsWith("data:")) {
             item("Enregistrer", Icons.Filled.Download) { dataOfURL(m.data)?.let { save(it, m.saveName, mimeOf(m)) } }
         }
@@ -1941,16 +1898,16 @@ internal fun voiceBar(id: String, i: Int): Int {
     return 6 + (h % 18u).toInt()
 }
 
-/** Un document : son nom, sa taille ; le toucher l'enregistre. */
+/** Un document : son nom, sa taille ; le toucher ouvre la feuille de partage (Enregistrer, envoyer…). */
 @Composable
 fun FileBubble(message: Message) {
-    val save = rememberSaver()
+    val share = rememberFileSharer()
     Row(
         Modifier
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
             .clickable(onClickLabel = "Enregistrer") {
-                dataOfURL(message.data)?.let { save(it, message.name.ifEmpty { message.saveName }, mimeOf(message)) }
+                dataOfURL(message.data)?.let { share(it, message.name.ifEmpty { message.saveName }, mimeOf(message)) }
             }
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -2006,12 +1963,12 @@ private fun ContactBubble(e: Engine, m: Message) {
 
 // ----- Photo en grand, infos d'un message, réactions -----
 
-/** Une photo en grand, sur fond noir : pincer pour zoomer ; « Enregistrer ». */
+/** Une photo en grand, sur fond noir : pincer pour zoomer ; la partager (`ShareLink` de l'iPhone). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ImageViewer(engine: Engine, message: Message, onDismiss: () -> Unit) {
     val image = remember(message.data) { Images.fromDataURL(message.data) }
-    val save = rememberSaver()
+    val share = rememberFileSharer()
     val scale = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
     val zoom = rememberTransformableState { change, _, _ -> scope.launch { scale.snapTo(max(1f, scale.value * change)) } }
@@ -2031,8 +1988,8 @@ fun ImageViewer(engine: Engine, message: Message, onDismiss: () -> Unit) {
                     navigationIcon = { IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, "Fermer") } },
                     actions = {
                         if (image != null) {
-                            IconButton(onClick = { dataOfURL(message.data)?.let { save(it, message.saveName, mimeOf(message)) } }) {
-                                Icon(Icons.Filled.Download, "Enregistrer")
+                            IconButton(onClick = { dataOfURL(message.data)?.let { share(it, message.saveName, mimeOf(message)) } }) {
+                                Icon(Icons.Filled.Share, "Partager")
                             }
                         }
                     },
