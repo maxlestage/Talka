@@ -115,7 +115,6 @@ import talka.kit.TalkaCode
 import talka.kit.WidgetData
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.text.BreakIterator
 import java.text.Normalizer
 import java.time.Instant
 import java.time.LocalDate
@@ -155,10 +154,7 @@ object Avatars {
     fun initial(name: String): String {
         val t = name.trim('~', ' ')
         if (t.isEmpty()) return ""
-        val it = BreakIterator.getCharacterInstance(Locale.FRANCE)
-        it.setText(t)
-        val end = it.next().takeIf { it != BreakIterator.DONE } ?: t.length
-        return t.substring(0, end).uppercase(Locale.FRANCE)
+        return t.substring(0, nextCharacter(t, 0)).uppercase(Locale.FRANCE)
     }
 }
 
@@ -632,16 +628,13 @@ fun richText(source: String): AnnotatedString {
 fun onlyEmoji(text: String): Boolean {
     val t = text.trimSpaces()
     if (t.isEmpty()) return false
-    val it = BreakIterator.getCharacterInstance()
-    it.setText(t)
     val clusters = ArrayList<String>()
-    var start = it.first()
-    var end = it.next()
-    while (end != BreakIterator.DONE) {
+    var start = 0
+    while (start < t.length) {
+        val end = nextCharacter(t, start)
         clusters.add(t.substring(start, end))
         if (clusters.size > 3) return false
         start = end
-        end = it.next()
     }
     return clusters.all { cluster -> cluster.codePoints().anyMatch { isEmojiPresentation(it) || (isEmoji(it) && it > 0xFF) } }
 }
@@ -660,15 +653,68 @@ private fun isEmoji(cp: Int): Boolean =
 
 /** Les `n` premiers caractères, au sens de Swift (les graphèmes : un emoji compte pour un). */
 fun String.firstChars(n: Int): String {
-    val breaks = BreakIterator.getCharacterInstance()
-    breaks.setText(this)
     var end = 0
     repeat(n) {
-        val next = breaks.next()
-        if (next == BreakIterator.DONE) return this
-        end = next
+        if (end >= length) return this
+        end = nextCharacter(this, end)
     }
     return substring(0, end)
+}
+
+/**
+ * La fin du caractère qui commence à `from`, au sens de Swift (un graphème :
+ * une lettre et ses accents, un emoji avec sa teinte, une famille reliée par
+ * des liants, un drapeau). Écrit ici plutôt que confié à `BreakIterator` :
+ * celui-ci change d'un système à l'autre (il coupe un emoji teinté en deux
+ * sur les anciens), et le même texte doit donner partout le même résultat.
+ */
+fun nextCharacter(s: String, from: Int): Int {
+    if (from >= s.length) return s.length
+    var cp = s.codePointAt(from)
+    var i = from + Character.charCount(cp)
+    if (cp == '\r'.code) return if (i < s.length && s[i] == '\n') i + 1 else i
+    // Un drapeau : deux indicateurs régionaux.
+    if (isRegional(cp) && i < s.length && isRegional(s.codePointAt(i))) {
+        cp = s.codePointAt(i)
+        i += Character.charCount(cp)
+    }
+    while (i < s.length) {
+        val next = s.codePointAt(i)
+        when {
+            // Ce qui s'ajoute au caractère : accents, sélecteurs de variante, teintes, étiquettes.
+            isExtension(next) || isJamoAfter(cp, next) -> {
+                cp = next
+                i += Character.charCount(next)
+            }
+            // Un liant : il relie l'emoji qui suit (« 👩‍👩‍👧 »), s'il y en a un.
+            next == 0x200D -> {
+                i += 1
+                if (i < s.length && s.codePointAt(i) >= 0x203C && !Character.isWhitespace(s.codePointAt(i))) {
+                    cp = s.codePointAt(i)
+                    i += Character.charCount(cp)
+                }
+            }
+            else -> return i
+        }
+    }
+    return i
+}
+
+private fun isRegional(cp: Int): Boolean = cp in 0x1F1E6..0x1F1FF
+
+private fun isExtension(cp: Int): Boolean =
+    cp == 0x200C || cp in 0xFE00..0xFE0F || cp in 0x1F3FB..0x1F3FF || cp in 0xE0020..0xE007F || cp in 0xE0100..0xE01EF ||
+        when (Character.getType(cp)) {
+            Character.NON_SPACING_MARK.toInt(), Character.ENCLOSING_MARK.toInt(), Character.COMBINING_SPACING_MARK.toInt() -> true
+            else -> false
+        }
+
+/** Le coréen écrit lettre à lettre : une voyelle ou une finale suit sa syllabe. */
+private fun isJamoAfter(previous: Int, cp: Int): Boolean {
+    val vowelOrFinal = cp in 0x1160..0x11FF || cp in 0xD7B0..0xD7FF
+    val leading = previous in 0x1100..0x115F || previous in 0xA960..0xA97F
+    val syllable = previous in 0xAC00..0xD7A3 || previous in 0x1160..0x11FF || previous in 0xD7B0..0xD7FF
+    return (leading && (vowelOrFinal || cp in 0x1100..0x115F || cp in 0xA960..0xA97F || cp in 0xAC00..0xD7A3)) || (syllable && vowelOrFinal)
 }
 
 /** Sans espaces ni tabulations autour (`.whitespaces` du Swift : pas les retours à la ligne). */

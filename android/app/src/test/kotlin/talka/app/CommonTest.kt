@@ -23,6 +23,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import talka.app.ui.Avatars
+import talka.app.ui.nextCharacter
 import talka.app.ui.Dates
 import talka.app.ui.Images
 import talka.app.ui.dataOfURL
@@ -193,6 +194,37 @@ class CommonTest {
         assertEquals("a😀", "a😀b".firstChars(2))
         assertEquals("👍🏽", "👍🏽!".firstChars(1))
         assertEquals("abc", "abc".firstChars(160))
+    }
+
+    /** Le même découpage partout, quel que soit le système (les anciens coupent un emoji teinté en deux). */
+    @Test
+    fun aCharacterIsAWholeGrapheme() {
+        fun split(s: String): List<String> {
+            val out = ArrayList<String>()
+            var i = 0
+            while (i < s.length) {
+                val end = nextCharacter(s, i)
+                out.add(s.substring(i, end))
+                i = end
+            }
+            return out
+        }
+        assertEquals(listOf("a", "b", "c"), split("abc"))
+        assertEquals(listOf("e\u0301", "t", "e\u0301"), split("e\u0301te\u0301"), "une lettre et son accent")
+        assertEquals(listOf("👍🏽", "!"), split("👍🏽!"), "un emoji et sa teinte")
+        assertEquals(listOf("❤️", "a"), split("❤️a"), "le sélecteur de variante")
+        assertEquals(listOf("👩‍👩‍👧", "👨‍💻"), split("👩‍👩‍👧👨‍💻"), "des emojis reliés")
+        assertEquals(listOf("🇫🇷", "🇩🇪", "🇯"), split("🇫🇷🇩🇪🇯"), "les drapeaux, deux par deux")
+        assertEquals(listOf("🏴\uDB40\uDC67\uDB40\uDC62\uDB40\uDC65\uDB40\uDC6E\uDB40\uDC67\uDB40\uDC7F"), split("🏴\uDB40\uDC67\uDB40\uDC62\uDB40\uDC65\uDB40\uDC6E\uDB40\uDC67\uDB40\uDC7F"), "un drapeau à étiquettes")
+        assertEquals(listOf("1️⃣", "2"), split("1️⃣2"), "une touche")
+        assertEquals(listOf("\r\n", "a"), split("\r\na"))
+        assertEquals(listOf("한", "\u1112\u1161\u11AB"), split("한\u1112\u1161\u11AB"), "le coréen lettre à lettre")
+        assertEquals(listOf("😀", " ", "😀"), split("😀 😀"))
+        // Un liant sans emoji derrière ne prend pas la lettre qui suit.
+        assertEquals(listOf("a\u200D", "b"), split("a\u200Db"))
+        assertEquals("", "".firstChars(3))
+        assertEquals("M", Avatars.initial("~max"))
+        assertEquals("👩‍👩‍👧", Avatars.initial("👩‍👩‍👧 famille"))
     }
 
     // ----- Les dates -----
